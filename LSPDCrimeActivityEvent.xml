@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LS Immersive Life group crime intelligence catalog.
+
+  This is authored reference data, not a dispatch queue. Every activity is
+  explicitly autoDispatch="false" and intelOnly="true". No entry here spawns
+  a scene, starts a pursuit, requests backup, or calls an audio event by itself.
+  PoliceCore observes the authored location keys during quiet patrol and shows
+  the result as a manual intelligence tip in the Police UI. After the officer
+  deliberately begins a nearby investigation, LSPDCrimeActivity uses this
+  data for its owned scene without creating a Dispatch incident.
+
+  Coordinate values remain named keys rather than hard-coded event logic. The
+  LSPDCrimeActivityEvent validates/selects this catalog, and the current Crime
+  Activity owner resolves the supported keys for this GTA build. The catalog
+  stays data-driven and easy to extend.
+-->
+<LSImmersiveLifeCrimeActivityDatabase
+  version="1"
+  catalogMode="quiet-intelligence"
+  dispatchBoundary="separate"
+  automaticSceneGeneration="false">
+
+  <Rules>
+    <Rule id="separate_from_dispatch" value="true" />
+    <Rule id="manual_review_only" value="true" />
+    <Rule id="no_automatic_npc_behavior" value="true" />
+    <Rule id="no_automatic_audio" value="true" />
+    <Rule id="no_automatic_backup" value="true" />
+    <Rule id="no_automatic_transport" value="true" />
+  </Rules>
+
+  <Locations>
+    <Location id="downtown_financial" name="Downtown Financial District" district="Downtown" terrain="urban" coordinateKey="los_santos.downtown.financial" observationPointKey="downtown.rooftop.overlook" approachKey="downtown.main_avenue" escapeRouteKey="downtown.alley_grid" radiusMeters="180" />
+    <Location id="vespucci_commercial" name="Vespucci Commercial Strip" district="Vespucci" terrain="coastal-urban" coordinateKey="los_santos.vespucci.commercial" observationPointKey="vespucci.parking_garage" approachKey="vespucci.boardwalk_access" escapeRouteKey="vespucci.coastal_roads" radiusMeters="220" />
+    <Location id="south_los_santos_industrial" name="South Los Santos Industrial Blocks" district="South Los Santos" terrain="industrial" coordinateKey="los_santos.south.industrial" observationPointKey="south.industrial.rail_overlook" approachKey="south.industrial.main_gate" escapeRouteKey="south.industrial.service_roads" radiusMeters="260" />
+    <Location id="strawberry_storage" name="Strawberry Storage Corridor" district="Strawberry" terrain="warehouse" coordinateKey="los_santos.strawberry.storage" observationPointKey="strawberry.rooftop" approachKey="strawberry.loading_bay" escapeRouteKey="strawberry.underpass" radiusMeters="170" />
+    <Location id="la_mesa_garages" name="La Mesa Garage Row" district="La Mesa" terrain="industrial-urban" coordinateKey="los_santos.la_mesa.garages" observationPointKey="la_mesa.bridge" approachKey="la_mesa.service_lane" escapeRouteKey="la_mesa.freeway_ramp" radiusMeters="240" />
+    <Location id="east_vinewood_hills" name="East Vinewood Hills" district="East Vinewood" terrain="hills" coordinateKey="los_santos.east_vinewood.hills" observationPointKey="vinewood.hills.lookout" approachKey="vinewood.hills.residential_road" escapeRouteKey="vinewood.hills.switchbacks" radiusMeters="300" />
+    <Location id="vinewood_nightlife" name="Vinewood Nightlife District" district="Vinewood" terrain="urban-nightlife" coordinateKey="los_santos.vinewood.nightlife" observationPointKey="vinewood.club_rooftop" approachKey="vinewood.main_strip" escapeRouteKey="vinewood.backstreet_grid" radiusMeters="190" />
+    <Location id="mirror_park_residential" name="Mirror Park Residential Edge" district="Mirror Park" terrain="residential" coordinateKey="los_santos.mirror_park.edge" observationPointKey="mirror.park_overlook" approachKey="mirror.park.residential_loop" escapeRouteKey="mirror.park.rail_cut" radiusMeters="210" />
+    <Location id="paleto_logging" name="Paleto Logging and Timber Yard" district="Paleto Bay" terrain="rural-industrial" coordinateKey="blaine.paleto.logging" observationPointKey="paleto.quarry_road" approachKey="paleto.timber_gate" escapeRouteKey="paleto.north_tracks" radiusMeters="360" />
+    <Location id="sandy_trailer_yards" name="Sandy Shores Trailer Yards" district="Sandy Shores" terrain="desert" coordinateKey="blaine.sandy.trailer_yards" observationPointKey="sandy.airfield_road" approachKey="sandy.main_road" escapeRouteKey="sandy.dry_lake" radiusMeters="420" />
+    <Location id="grand_senora_airstrip" name="Grand Senora Airstrip Perimeter" district="Grand Senora Desert" terrain="airstrip" coordinateKey="blaine.grand_senora.airstrip" observationPointKey="airstrip.control_tower_road" approachKey="airstrip.south_gate" escapeRouteKey="airstrip.north_desert" radiusMeters="500" />
+    <Location id="chumash_coast" name="Chumash Coastal Route" district="Chumash" terrain="coastal-highway" coordinateKey="blaine.chumash.coast" observationPointKey="chumash.hill_pullout" approachKey="chumash.highway_access" escapeRouteKey="chumash.coastal_turnoffs" radiusMeters="480" />
+    <Location id="zancudo_supply_route" name="Fort Zancudo Supply Route" district="Fort Zancudo" terrain="restricted-highway" coordinateKey="blaine.zancudo.supply_route" observationPointKey="zancudo.civilian_overlook" approachKey="zancudo.supply_road" escapeRouteKey="zancudo.coastal_route" radiusMeters="600" />
+    <Location id="harmony_remote_compound" name="Harmony Remote Compound" district="Harmony" terrain="remote-rural" coordinateKey="blaine.harmony.compound" observationPointKey="harmony.water_tower" approachKey="harmony.service_road" escapeRouteKey="harmony.dirt_tracks" radiusMeters="450" />
+    <Location id="banham_canyon" name="Banham Canyon Hideout Route" district="Banham Canyon" terrain="canyon" coordinateKey="los_santos.banham.canyon" observationPointKey="banham.canyon_overlook" approachKey="banham.coastal_road" escapeRouteKey="banham.canyon_trails" radiusMeters="520" />
+    <Location id="pacific_bluffs_estate" name="Pacific Bluffs Estate Edge" district="Pacific Bluffs" terrain="estate-coast" coordinateKey="los_santos.pacific_bluffs.estate" observationPointKey="pacific.bluffs.overlook" approachKey="pacific.bluffs.drive" escapeRouteKey="pacific.bluffs.coastal_path" radiusMeters="280" />
+  </Locations>
+
+  <CriminalGroups>
+    <Group id="street_coalition" name="Street Coalition" type="organized-street-group" operatingStyle="small crews, rotating vehicles, public cover" preferredActivity="street robbery and vehicle movement">
+      <PedSet id="street_coalition_peds" name="Street Coalition Members">
+        <Ped model="g_m_y_ballasout_01" role="lookout" />
+        <Ped model="g_m_y_famca_01" role="driver" />
+        <Ped model="g_m_y_mexgoon_02" role="enforcer" />
+      </PedSet>
+      <WeaponSet id="street_coalition_weapons" name="Street Coalition Equipment">
+        <Weapon name="WEAPON_PISTOL" role="sidearm" />
+        <Weapon name="WEAPON_MICROSMG" role="close-range" />
+        <Weapon name="WEAPON_KNIFE" role="concealed" />
+      </WeaponSet>
+      <VehicleSet id="street_coalition_vehicles" name="Street Coalition Vehicles">
+        <Vehicle model="buffalo" role="fast_support" />
+        <Vehicle model="granger" role="crew_transport" />
+        <Vehicle model="speedo" role="cargo_transport" />
+      </VehicleSet>
+    </Group>
+
+    <Group id="dock_smuggling_ring" name="Dock Smuggling Ring" type="organized-smuggling" operatingStyle="night transfers, cargo concealment, spotters" preferredActivity="warehouse and coastal movement">
+      <PedSet id="dock_smuggling_peds" name="Dock Smuggling Members">
+        <Ped model="g_m_y_lost_01" role="dock_guard" />
+        <Ped model="g_m_y_lost_02" role="courier" />
+        <Ped model="g_m_y_lost_03" role="organizer" />
+      </PedSet>
+      <WeaponSet id="dock_smuggling_weapons" name="Dock Smuggling Equipment">
+        <Weapon name="WEAPON_COMBATPISTOL" role="security_sidearm" />
+        <Weapon name="WEAPON_SMG" role="security_primary" />
+        <Weapon name="WEAPON_CROWBAR" role="cargo_tool" />
+      </WeaponSet>
+      <VehicleSet id="dock_smuggling_vehicles" name="Dock Smuggling Vehicles">
+        <Vehicle model="burrito" role="cargo_van" />
+        <Vehicle model="mule" role="heavy_cargo" />
+        <Vehicle model="schafter2" role="unmarked_scout" />
+      </VehicleSet>
+    </Group>
+
+    <Group id="professional_heist_crew" name="Professional Heist Crew" type="organized-heist" operatingStyle="reconnaissance, role separation, controlled escape" preferredActivity="financial and high-value theft">
+      <PedSet id="professional_heist_peds" name="Professional Heist Members">
+        <Ped model="g_m_m_armboss_01" role="planner" />
+        <Ped model="g_m_m_armgoon_01" role="security" />
+        <Ped model="g_m_y_korlieut_01" role="technical_member" />
+      </PedSet>
+      <WeaponSet id="professional_heist_weapons" name="Professional Heist Equipment">
+        <Weapon name="WEAPON_PISTOL" role="concealed_sidearm" />
+        <Weapon name="WEAPON_CARBINERIFLE" role="security_primary" />
+        <Weapon name="WEAPON_HAMMER" role="forced_entry_tool" />
+      </WeaponSet>
+      <VehicleSet id="professional_heist_vehicles" name="Professional Heist Vehicles">
+        <Vehicle model="granger" role="recon_suv" />
+        <Vehicle model="oracle" role="escape_sedan" />
+        <Vehicle model="rumpo" role="equipment_van" />
+      </VehicleSet>
+    </Group>
+
+    <Group id="desert_weapons_broker" name="Desert Weapons Broker Network" type="remote-arms-network" operatingStyle="remote meetings, decoy vehicles, distributed storage" preferredActivity="weapons transfer and gang supply">
+      <PedSet id="desert_weapons_peds" name="Desert Weapons Network Members">
+        <Ped model="g_m_y_lost_01" role="broker" />
+        <Ped model="g_m_y_ballaeast_01" role="buyer" />
+        <Ped model="g_m_y_mexgoon_03" role="security" />
+      </PedSet>
+      <WeaponSet id="desert_weapons_equipment" name="Desert Weapons Network Equipment">
+        <Weapon name="WEAPON_PISTOL50" role="broker_sidearm" />
+        <Weapon name="WEAPON_ASSAULTRIFLE" role="stored_primary" />
+        <Weapon name="WEAPON_KNIFE" role="concealed" />
+      </WeaponSet>
+      <VehicleSet id="desert_weapons_vehicles" name="Desert Weapons Network Vehicles">
+        <Vehicle model="rebel" role="remote_transport" />
+        <Vehicle model="mesa" role="scout" />
+        <Vehicle model="dubsta" role="security_transport" />
+      </VehicleSet>
+    </Group>
+
+    <Group id="nightlife_front_network" name="Nightlife Front Network" type="commercial-front" operatingStyle="legitimate business cover, couriers, controlled access" preferredActivity="store robbery planning and illicit finance">
+      <PedSet id="nightlife_front_peds" name="Nightlife Front Members">
+        <Ped model="g_m_y_business_02" role="front_manager" />
+        <Ped model="g_m_y_business_01" role="courier" />
+        <Ped model="g_m_m_armgoon_01" role="security" />
+      </PedSet>
+      <WeaponSet id="nightlife_front_weapons" name="Nightlife Front Equipment">
+        <Weapon name="WEAPON_COMBATPISTOL" role="concealed_security" />
+        <Weapon name="WEAPON_BAT" role="venue_security" />
+        <Weapon name="WEAPON_KNIFE" role="concealed" />
+      </WeaponSet>
+      <VehicleSet id="nightlife_front_vehicles" name="Nightlife Front Vehicles">
+        <Vehicle model="fugitive" role="manager_vehicle" />
+        <Vehicle model="baller" role="security_vehicle" />
+        <Vehicle model="speedo" role="delivery_vehicle" />
+      </VehicleSet>
+    </Group>
+  </CriminalGroups>
+
+  <Activities>
+    <Activity id="group_bank_heist_recon" name="Group Bank Heist Reconnaissance" category="organized-heist" discovery="patrol-tip" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A coordinated group is repeatedly observing a financial site, access routes, and security timing." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="downtown_financial" /></Locations>
+      <Groups><GroupRef id="professional_heist_crew" /></Groups>
+      <Stages><Stage id="reconnaissance" /><Stage id="access_planning" /><Stage id="crew_confirmed" /></Stages>
+      <Resources pedSetId="professional_heist_peds" weaponSetId="professional_heist_weapons" vehicleSetId="professional_heist_vehicles" />
+    </Activity>
+
+    <Activity id="group_bank_heist_preparation" name="Group Bank Heist Preparation" category="organized-heist" discovery="patrol-tip" severity="critical" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="corroborated" summary="Multiple members are staging transport and equipment near a financial target without an active public incident." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="downtown_financial" /><LocationRef id="la_mesa_garages" /></Locations>
+      <Groups><GroupRef id="professional_heist_crew" /></Groups>
+      <Stages><Stage id="equipment_staged" /><Stage id="vehicles_positioned" /><Stage id="awaiting_signal" /></Stages>
+      <Resources pedSetId="professional_heist_peds" weaponSetId="professional_heist_weapons" vehicleSetId="professional_heist_vehicles" />
+    </Activity>
+
+    <Activity id="group_store_robbery_network" name="Group Store Robbery Network" category="commercial-robbery" discovery="merchant-tip" severity="medium" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="Several connected storefronts report the same coordinated lookout and getaway pattern." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="vespucci_commercial" /><LocationRef id="vinewood_nightlife" /></Locations>
+      <Groups><GroupRef id="nightlife_front_network" /><GroupRef id="street_coalition" /></Groups>
+      <Stages><Stage id="lookout_rotation" /><Stage id="target_selection" /><Stage id="repeat_pattern" /></Stages>
+      <Resources pedSetId="nightlife_front_peds" weaponSetId="nightlife_front_weapons" vehicleSetId="nightlife_front_vehicles" />
+    </Activity>
+
+    <Activity id="group_garage_vehicle_ring" name="Group Vehicle Theft Garage" category="vehicle-crime" discovery="vehicle-pattern" severity="medium" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="corroborated" summary="A garage row shows repeated late-night vehicle transfers, changed plates, and rotating drivers." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="la_mesa_garages" /><LocationRef id="strawberry_storage" /></Locations>
+      <Groups><GroupRef id="street_coalition" /></Groups>
+      <Stages><Stage id="vehicle_arrival" /><Stage id="identity_obscured" /><Stage id="outbound_transfer" /></Stages>
+      <Resources pedSetId="street_coalition_peds" weaponSetId="street_coalition_weapons" vehicleSetId="street_coalition_vehicles" />
+    </Activity>
+
+    <Activity id="group_dock_smuggling_transfer" name="Group Dock Smuggling Transfer" category="organized-smuggling" discovery="patrol-observation" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A cargo movement uses multiple people, a spotter vehicle, and a concealed transfer point." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="south_los_santos_industrial" /><LocationRef id="vespucci_commercial" /></Locations>
+      <Groups><GroupRef id="dock_smuggling_ring" /></Groups>
+      <Stages><Stage id="spotter_present" /><Stage id="cargo_transfer" /><Stage id="route_clearance" /></Stages>
+      <Resources pedSetId="dock_smuggling_peds" weaponSetId="dock_smuggling_weapons" vehicleSetId="dock_smuggling_vehicles" />
+    </Activity>
+
+    <Activity id="group_warehouse_consolidation" name="Group Warehouse Consolidation" category="organized-smuggling" discovery="anonymous-tip" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="Several smaller deliveries converge on one storage site under a rotating access schedule." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="strawberry_storage" /><LocationRef id="south_los_santos_industrial" /></Locations>
+      <Groups><GroupRef id="dock_smuggling_ring" /><GroupRef id="desert_weapons_broker" /></Groups>
+      <Stages><Stage id="small_delivery_pattern" /><Stage id="storage_consolidated" /><Stage id="distribution_pending" /></Stages>
+      <Resources pedSetId="dock_smuggling_peds" weaponSetId="dock_smuggling_weapons" vehicleSetId="dock_smuggling_vehicles" />
+    </Activity>
+
+    <Activity id="group_gang_meeting_hideout" name="Group Gang Meeting at Hidden Site" category="gang-organization" discovery="patrol-tip" severity="medium" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A group is using a low-visibility site for recurring meetings, vehicle swaps, and role assignment." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="east_vinewood_hills" /><LocationRef id="banham_canyon" /></Locations>
+      <Groups><GroupRef id="street_coalition" /></Groups>
+      <Stages><Stage id="meeting_window" /><Stage id="vehicle_swap" /><Stage id="departure" /></Stages>
+      <Resources pedSetId="street_coalition_peds" weaponSetId="street_coalition_weapons" vehicleSetId="street_coalition_vehicles" />
+    </Activity>
+
+    <Activity id="group_desert_weapons_broker_meet" name="Group Desert Weapons Broker Meeting" category="weapons-network" discovery="anonymous-tip" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="corroborated" summary="A buyer, broker, and security group are expected to meet away from dense civilian areas." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="sandy_trailer_yards" /><LocationRef id="grand_senora_airstrip" /><LocationRef id="harmony_remote_compound" /></Locations>
+      <Groups><GroupRef id="desert_weapons_broker" /></Groups>
+      <Stages><Stage id="buyer_arrival" /><Stage id="broker_contact" /><Stage id="cargo_departure" /></Stages>
+      <Resources pedSetId="desert_weapons_peds" weaponSetId="desert_weapons_equipment" vehicleSetId="desert_weapons_vehicles" />
+    </Activity>
+
+    <Activity id="group_remote_storage_site" name="Group Remote Storage Site" category="hidden-storage" discovery="patrol-observation" severity="medium" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A remote compound appears to be receiving protected packages and decoy vehicles at irregular intervals." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="harmony_remote_compound" /><LocationRef id="paleto_logging" /></Locations>
+      <Groups><GroupRef id="desert_weapons_broker" /><GroupRef id="dock_smuggling_ring" /></Groups>
+      <Stages><Stage id="site_identified" /><Stage id="guard_rotation" /><Stage id="package_movement" /></Stages>
+      <Resources pedSetId="desert_weapons_peds" weaponSetId="desert_weapons_equipment" vehicleSetId="desert_weapons_vehicles" />
+    </Activity>
+
+    <Activity id="group_nightlife_front_finance" name="Group Nightlife Front Finance" category="commercial-front" discovery="financial-tip" severity="medium" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A legitimate venue may be coordinating cash movement and courier handoffs for an organized group." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="vinewood_nightlife" /><LocationRef id="pacific_bluffs_estate" /></Locations>
+      <Groups><GroupRef id="nightlife_front_network" /></Groups>
+      <Stages><Stage id="front_operation" /><Stage id="courier_handoff" /><Stage id="cash_movement" /></Stages>
+      <Resources pedSetId="nightlife_front_peds" weaponSetId="nightlife_front_weapons" vehicleSetId="nightlife_front_vehicles" />
+    </Activity>
+
+    <Activity id="group_coastal_cargo_route" name="Group Coastal Cargo Route" category="organized-smuggling" discovery="road-patrol-tip" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A convoy-like civilian cargo pattern uses coastal roads and switches vehicles near turnoffs." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="chumash_coast" /><LocationRef id="banham_canyon" /></Locations>
+      <Groups><GroupRef id="dock_smuggling_ring" /></Groups>
+      <Stages><Stage id="scout_pass" /><Stage id="cargo_pass" /><Stage id="route_change" /></Stages>
+      <Resources pedSetId="dock_smuggling_peds" weaponSetId="dock_smuggling_weapons" vehicleSetId="dock_smuggling_vehicles" />
+    </Activity>
+
+    <Activity id="group_airstrip_transfer" name="Group Airstrip Transfer" category="high-value-transfer" discovery="aviation-tip" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A group is coordinating a timed transfer near an airstrip with separate security and cargo vehicles." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="grand_senora_airstrip" /><LocationRef id="zancudo_supply_route" /></Locations>
+      <Groups><GroupRef id="desert_weapons_broker" /><GroupRef id="professional_heist_crew" /></Groups>
+      <Stages><Stage id="perimeter_check" /><Stage id="cargo_arrival" /><Stage id="departure_window" /></Stages>
+      <Resources pedSetId="desert_weapons_peds" weaponSetId="desert_weapons_equipment" vehicleSetId="desert_weapons_vehicles" />
+    </Activity>
+
+    <Activity id="group_residential_recruitment" name="Group Residential Recruitment" category="gang-organization" discovery="community-tip" severity="low" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A small group is recruiting and assigning lookout roles around a residential route without an active emergency." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="mirror_park_residential" /><LocationRef id="east_vinewood_hills" /></Locations>
+      <Groups><GroupRef id="street_coalition" /><GroupRef id="nightlife_front_network" /></Groups>
+      <Stages><Stage id="recruitment" /><Stage id="role_assignment" /><Stage id="route_test" /></Stages>
+      <Resources pedSetId="street_coalition_peds" weaponSetId="street_coalition_weapons" vehicleSetId="street_coalition_vehicles" />
+    </Activity>
+
+    <Activity id="group_prisoner_transport_planning" name="Group Prisoner Transport Interference Planning" category="organized-interference" discovery="correctional-tip" severity="high" autoDispatch="false" requiresPatrol="true" intelOnly="true">
+      <Intel confidence="reported" summary="A criminal group is discussing a possible transport disruption, but no transport incident is active in this catalog." audioEventId="lsimmersivelife.police.activity.observed" />
+      <Locations><LocationRef id="south_los_santos_industrial" /><LocationRef id="la_mesa_garages" /></Locations>
+      <Groups><GroupRef id="street_coalition" /><GroupRef id="professional_heist_crew" /></Groups>
+      <Stages><Stage id="route_observation" /><Stage id="vehicle_preparation" /><Stage id="intent_unconfirmed" /></Stages>
+      <Resources pedSetId="professional_heist_peds" weaponSetId="professional_heist_weapons" vehicleSetId="professional_heist_vehicles" />
+    </Activity>
+  </Activities>
+</LSImmersiveLifeCrimeActivityDatabase>

@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Saved Police Authority profile. It is read passively at startup and applied
+  only after the player explicitly opens Police Authority.
+-->
+<LSPDImmersiveProfile version="2.0">
+  <Profile agencyId="lspd" stationId="mission_row" pedId="personal-ped-venti" vehicleId="personal-vehicle-police" weaponId="service_pistol" weaponSetId="personal-police-loadout" favoritePedId="personal-ped-venti" favoriteVehicleId="personal-vehicle-police" backupPedId="personal-backup-ped-clorinde" />
+  <Favorites>
+    <PedFavorites><Ped id="personal-ped-venti" name="Venti" model="venti" modelType="Personal Police Officer" source="Player Addon" /></PedFavorites>
+    <VehicleFavorites><Vehicle id="personal-vehicle-police" name="LSPD Police Cruiser" model="police" modelType="Patrol Cruiser" source="GTA V" /></VehicleFavorites>
+    <!-- Personal support-officer choices.  The Backup owner reads this list;
+         it never changes the universal LSPoliceModelPed library. -->
+    <BackupPedFavorites><Ped id="personal-backup-ped-clorinde" name="Clorinde" model="clorinde" modelType="Personal Backup Officer" source="Player Addon" /></BackupPedFavorites>
+    <PersonalWeaponCollection file="LSPolicePersonalWeapons.xml" setId="personal-police-loadout" activeWeaponId="service_pistol" />
+  </Favorites>
+</LSPDImmersiveProfile>

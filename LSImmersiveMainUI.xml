@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  LS Immersive Life's one editable configuration document.
+
+  Gameplay content catalogs may stay in their existing XML files, but exposed
+  behaviour, universal preferences, and keyboard controls belong here only.
+  Sections are grouped by owner so the document stays readable as new roles
+  are added.
+-->
+<LSImmersiveMainUI version="2.0">
+  <Universal>
+    <Interface showWaypoint="true"
+    showVehicleMeter="true" />
+    <Audio enabled="true" volume="55" />
+    <Environment ambientTrafficEnabled="true" 
+     ambientPedestriansEnabled="true"
+     dynamicWeatherEnabled="true"
+     trafficDensityPercent="100" 
+     pedestrianDensityPercent="100" />
+
+    <Logging runtimeEnabled="true" debugEnabled="true" 
+    verboseDiagnostics="false" sessionHeaders="true" />
+    <Performance maxManagedEntities="64" 
+    cleanupIntervalSeconds="30" 
+    heavyScanIntervalMilliseconds="1250" 
+    throttleHeavyScans="false" />
+  </Universal>
+
+  <Controls>
+    <Universal menuToggle="F4" />
+    <Police patrol="P" accept="Y" reject="N" investigate="I" secure="E"
+    transport="R" transportComplete="T" interaction="G" emergency="B" reset="F10" />
+  </Controls>
+
+  <Police>
+    <AuthoritySettings 
+    protectPlayerFromVanillaPoliceEscalation="true" 
+    suppressVanillaWantedEscalation="true" 
+    suppressAmbientPoliceHostility="true" 
+    suppressVanillaDispatch="true" 
+    suppressMilitaryHostility="true" 
+    authorityControlRefreshMilliseconds="750" 
+    enableGangReactionControl="false" 
+    enableCivilianReactionControl="false" 
+    enableWorldBehaviorChanges="true"
+    useVerifiedInteriorsOnly="true" />
+
+    <Patrol enabled="true" 
+     reuseCurrentPoliceVehicle="true" 
+     preventDuplicatePersonalVehicle="true" />
+
+    <Dispatch enabled="true" 
+     minimumQuietPatrolSeconds="180" 
+     maximumQuietPatrolSeconds="600" 
+     repeatProtectionMinutes="20"
+     maximumActiveIncidents="1" 
+     audioMinimumGapSeconds="5" 
+     contextClearQuietSeconds="30" />
+
+    <!-- Quiet, player-led criminal intelligence. This is intentionally separate
+         from Dispatch and uses LSPDCrimeActivityEvent.xml only as scene data. -->
+
+    <CrimeActivity enabled="true" 
+     autoDiscover="true" 
+     nearbyTipNotifications="true" 
+     discoveryScanSeconds="8"
+     maximumDeploymentDistance="300"
+     nearbyTipDistance="100" 
+     sceneActivationDistance="120"
+     participantCount="3" 
+     sameLocationCooldownSeconds="900" 
+     redeploymentCooldownSeconds="180" 
+     abandonDistance="360" 
+     assetPreparationTimeoutSeconds="20" />
+
+    <NpcResponse enabled="true" 
+     interactionsEnabled="true" 
+     interactionRadius="5" 
+     trafficAwarenessRadius="28"
+     collisionGuardCooldownMilliseconds="1200" 
+     maximumAffectedTrafficVehicles="3" 
+     interactionTimeoutSeconds="90"
+     documentPresentationSeconds="3" 
+     citizenFleeChancePercent="40"
+     citizenResistChancePercent="18"
+     suspiciousEncounterChancePercent="12"
+     compliantKneelChancePercent="35"
+     deadSubjectReleaseDistance="80"
+     trafficFleeChancePercent="45" 
+     pullOverTimeoutSeconds="12" 
+     trafficTaskRecoverySeconds="8"
+     scenePedReactionRadius="18" 
+     maximumAffectedPedestrians="3"
+    sceneReactionCooldownSeconds="15" />
+
+
+    <Traffic enabled="true" 
+    stopTrafficAtActiveScenes="true" 
+    sceneControlRadius="35" />
+
+    <Response enabled="true" 
+    allowBackup="true" 
+    automaticPursuitSupport="true" 
+    maximumUnitsPerIncident="1"
+    authoritySupportEnabled="true" 
+    authorityGreetingEnabled="true" 
+    authoritySupportRadius="60" 
+    authoritySupportScanMilliseconds="1250"
+    maximumAuthoritySupportPeds="3" />
+
+
+    <!-- Player-requested support force.  This is the LSPDBackUp owner, kept
+         separate from the lightweight nearby-officer Response owner above. -->
+
+    <Backup enabled="true" 
+     automaticGroupSupport="true" 
+     preferSavedFavoritePed="true" 
+    unitsPerRequest="1" 
+    officersPerUnit="2" 
+    minimumStagingDistance="70" 
+    arrivalRadius="22" 
+    interceptionLeadDistance="90" 
+    standDownSeconds="35" />
+
+    <Convoy enabled="true" 
+     terminalCompletionEnabled="true" 
+     requestedConvoyEnabled="true" 
+     requestedConvoyRouteThreatEnabled="true" 
+     stationArrivalRadius="24" prisonArrivalRadius="32" 
+     prisonerRecoveryTimeoutSeconds="45" 
+     minimumStagingDistance="70" 
+     requestedRouteThreatDistance="140" 
+     requestedRouteThreatCount="2" />
+
+    <Cleanup completedSceneGraceSeconds="90" 
+     hardCleanupSeconds="900" />
+
+
+  </Police>
+</LSImmersiveMainUI>

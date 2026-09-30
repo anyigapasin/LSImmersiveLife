@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Player-owned Police loadout. The menu adds entries from the main weapon
+  library; this file can also be extended with valid first-party weapon names.
+-->
+<LSPDImmersivePersonalWeapons version="2.0">
+  <WeaponSet id="personal-police-loadout" activeWeaponId="service_pistol">
+    <WeaponRef id="service_pistol" name="Service Pistol" weapon="WEAPON_PISTOL" weaponType="Sidearm" source="LSPD Standard Issue" ammo="72" />
+    <WeaponRef id="stun_gun" name="Police Taser" weapon="WEAPON_STUNGUN" weaponType="Less Lethal" source="LSPD Standard Issue" ammo="4" />
+    <WeaponRef id="nightstick" name="Police Baton" weapon="WEAPON_NIGHTSTICK" weaponType="Melee" source="LSPD Standard Issue" ammo="0" />
+    <WeaponRef id="flashlight" name="Police Flashlight" weapon="WEAPON_FLASHLIGHT" weaponType="Utility" source="LSPD Standard Issue" ammo="0" />
+  </WeaponSet>
+</LSPDImmersivePersonalWeapons>

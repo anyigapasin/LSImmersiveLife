@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Separate developer/diagnostics configuration.
+  This file never changes Police gameplay settings. The observer is read-only
+  unless a developer explicitly asks it to write an evidence marker or report.
+-->
+<LSDeveloper version="2.0"
+  enabled="true"
+  developerMenuEnabled="true"
+  automaticRuntimeWatch="false"
+  automaticAnomalyDetection="true"
+  liveBehavioralConfirmation="true"
+  traceMode="Test"
+  samplingIntervalMilliseconds="750"
+  behavioralStallSeconds="6"
+  traceBufferSeconds="30"
+  maximumTraceEvents="800"
+  maximumTraceFileKilobytes="2048"
+  preFailureCaptureSeconds="8"
+  postFailureCaptureSeconds="5"
+  showLiveNotifications="true"
+  showDetailedNotifications="false"
+  writeLifecycleMarkers="true"
+  writeTraceFile="true" />

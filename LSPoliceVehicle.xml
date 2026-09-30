@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  Available Police vehicle library. Personal addon vehicles such as polignus
+  or policeb2 are validated and saved only in the personal Police profile.
+-->
+<LSPoliceVehicle version="2.0">
+  <Vehicles>
+    <Vehicle id="police" name="LSPD Police Cruiser" model="police" vehicleType="Patrol Cruiser" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="police2" name="LSPD Buffalo Cruiser" model="police2" vehicleType="Patrol Cruiser" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="police3" name="LSPD Police Interceptor" model="police3" vehicleType="Patrol Interceptor" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="police4" name="LSPD Unmarked Cruiser" model="police4" vehicleType="Unmarked Cruiser" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="police5" name="LSPD Interceptor Utility" model="police5" vehicleType="Patrol Utility" agencyId="lspd" source="GTA V Enhanced" addon="false" />
+    <Vehicle id="policeold1" name="LSPD Stanier Classic" model="policeold1" vehicleType="Classic Patrol Cruiser" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="policeold2" name="LSPD Esperanto Classic" model="policeold2" vehicleType="Classic Patrol Cruiser" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="policet" name="LSPD Prisoner Transporter" model="policet" vehicleType="Prisoner Transport" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="policeb" name="LSPD Police Motorcycle" model="policeb" vehicleType="Motor Unit" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="sheriff" name="LSSD Sheriff Cruiser" model="sheriff" vehicleType="Sheriff Cruiser" agencyId="lssd" source="GTA V" addon="false" />
+    <Vehicle id="sheriff2" name="LSSD Sheriff SUV" model="sheriff2" vehicleType="Sheriff Utility" agencyId="lssd" source="GTA V" addon="false" />
+    <Vehicle id="pranger" name="San Andreas Park Ranger SUV" model="pranger" vehicleType="Ranger Utility" agencyId="sahp" source="GTA V" addon="false" />
+    <Vehicle id="fbi" name="FIB Unmarked Sedan" model="fbi" vehicleType="Federal Sedan" agencyId="fib" source="GTA V" addon="false" />
+    <Vehicle id="fbi2" name="FIB Unmarked SUV" model="fbi2" vehicleType="Federal Utility" agencyId="fib" source="GTA V" addon="false" />
+    <Vehicle id="riot" name="NOOSE Riot Control Vehicle" model="riot" vehicleType="Armoured Response" agencyId="noose" source="GTA V" addon="false" />
+    <Vehicle id="riot2" name="NOOSE Riot Control Van" model="riot2" vehicleType="Armoured Response" agencyId="noose" source="GTA V" addon="false" />
+    <Vehicle id="polmav" name="Police Maverick Helicopter" model="polmav" vehicleType="Police Aviation" agencyId="lspd" source="GTA V" addon="false" />
+  </Vehicles>
+</LSPoliceVehicle>

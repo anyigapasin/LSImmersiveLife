@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!--
+  First-party Police identity and station catalog for LS Immersive Life.
+  Agency and station are independent profile choices. All listed coordinates
+  are exterior access points; no interior is used until verified in-game.
+-->
+<LSPDImmersiveUtility version="2.0">
+  <Agencies>
+    <Agency id="lspd" name="Los Santos Police Department" callSign="LSPD" authorityType="Municipal Police" default="true" />
+    <Agency id="lssd" name="Los Santos County Sheriff's Department" callSign="LSSD" authorityType="County Sheriff" default="false" />
+    <Agency id="sahp" name="San Andreas Highway Patrol" callSign="SAHP" authorityType="State Highway Patrol" default="false" />
+    <Agency id="noose" name="National Office of Security Enforcement" callSign="NOOSE" authorityType="Federal Tactical Authority" default="false" />
+    <Agency id="fib" name="Federal Investigation Bureau" callSign="FIB" authorityType="Federal Investigation" default="false" />
+  </Agencies>
+  <Stations>
+    <Station id="mission_row" name="Mission Row Police Station" agencyId="lspd" locationId="mission_row" coordinateKey="los_santos.mission_row" x="434.7479" y="-983.2151" z="30.8393" heading="90.0" vehicleX="432.7781" vehicleY="-1020.3700" vehicleZ="28.3402" vehicleHeading="134.56" exteriorSafe="true" interiorVerified="false" default="true" />
+    <Station id="vespucci" name="Vespucci Police Station" agencyId="lspd" locationId="vespucci" coordinateKey="los_santos.vespucci" x="-1093.8900" y="-807.0800" z="18.2600" heading="130.0" vehicleX="-1087.0000" vehicleY="-810.0000" vehicleZ="17.3000" vehicleHeading="42.24" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="vinewood" name="Vinewood Police Station" agencyId="lspd" locationId="vinewood" coordinateKey="los_santos.vinewood" x="639.1800" y="1.7700" z="81.7900" heading="240.0" vehicleX="634.0000" vehicleY="-4.0000" vehicleZ="80.9000" vehicleHeading="238.04" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="rockford_hills" name="Rockford Hills Police Station" agencyId="lspd" locationId="rockford_hills" coordinateKey="los_santos.rockford_hills" x="-560.7600" y="-133.9800" z="37.0600" heading="210.0" vehicleX="-568.0000" vehicleY="-143.0000" vehicleZ="37.0000" vehicleHeading="210.61" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="la_mesa" name="La Mesa Police Station" agencyId="lspd" locationId="la_mesa" coordinateKey="los_santos.la_mesa" x="844.0000" y="-1311.0000" z="28.2400" heading="60.0" vehicleX="838.0000" vehicleY="-1315.0000" vehicleZ="27.2000" vehicleHeading="60.00" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="davis" name="Davis Sheriff's Station" agencyId="lssd" locationId="davis" coordinateKey="los_santos.davis" x="360.8800" y="-1581.6100" z="28.2900" heading="25.0" vehicleX="356.0000" vehicleY="-1587.0000" vehicleZ="27.3000" vehicleHeading="23.61" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="del_perro" name="Del Perro Police Station" agencyId="lspd" locationId="del_perro" coordinateKey="los_santos.del_perro" x="-1475.0000" y="-522.0000" z="31.8000" heading="95.0" vehicleX="-1470.0000" vehicleY="-516.0000" vehicleZ="31.0000" vehicleHeading="95.00" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="vespucci_beach" name="Vespucci Beach Police Station" agencyId="lspd" locationId="vespucci_beach" coordinateKey="los_santos.vespucci_beach" x="-1308.0000" y="-394.0000" z="36.7000" heading="42.0" vehicleX="-1300.0000" vehicleY="-391.0000" vehicleZ="35.7000" vehicleHeading="42.00" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="sandy_shores" name="Sandy Shores Sheriff's Station" agencyId="lssd" locationId="sandy_shores" coordinateKey="blaine.sandy_shores" x="1856.3500" y="3682.0600" z="33.2700" heading="210.0" vehicleX="1850.0000" vehicleY="3678.0000" vehicleZ="32.8000" vehicleHeading="210.20" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="paleto_bay" name="Paleto Bay Sheriff's Office" agencyId="lssd" locationId="paleto_bay" coordinateKey="blaine.paleto_bay" x="-440.7400" y="6019.8900" z="30.4900" heading="315.0" vehicleX="-446.0000" vehicleY="6013.0000" vehicleZ="30.0000" vehicleHeading="314.93" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="raton_canyon" name="Raton Canyon Ranger Station" agencyId="sahp" locationId="raton_canyon" coordinateKey="blaine.raton_canyon" x="-433.0000" y="6104.0000" z="31.0000" heading="35.0" vehicleX="-438.0000" vehicleY="6098.0000" vehicleZ="30.0000" vehicleHeading="35.00" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="fort_zancudo" name="Fort Zancudo Security Post" agencyId="noose" locationId="fort_zancudo" coordinateKey="blaine.fort_zancudo" x="-2344.4800" y="3267.3500" z="32.8100" heading="239.0" vehicleX="-2335.0000" vehicleY="3268.0000" vehicleZ="32.8000" vehicleHeading="239.00" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="noose_lsia" name="NOOSE Los Santos Facility" agencyId="noose" locationId="noose_lsia" coordinateKey="los_santos.noose_facility" x="2470.0000" y="-383.0000" z="94.0000" heading="330.0" vehicleX="2464.0000" vehicleY="-389.0000" vehicleZ="92.8000" vehicleHeading="330.00" exteriorSafe="true" interiorVerified="false" default="false" />
+    <Station id="bolingbroke" name="Bolingbroke Security Office" agencyId="sahp" locationId="bolingbroke" coordinateKey="blaine.bolingbroke" x="1845.0000" y="2597.5000" z="44.6000" heading="90.0" vehicleX="1826.0000" vehicleY="2604.0000" vehicleZ="44.6000" vehicleHeading="90.00" exteriorSafe="true" interiorVerified="false" default="false" />
+  </Stations>
+  <Locations>
+    <Location id="mission_row" name="Mission Row" district="Central Los Santos" coordinateKey="los_santos.mission_row" x="434.7479" y="-983.2151" z="30.8393" exteriorSafe="true" />
+    <Location id="vespucci" name="Vespucci" district="West Los Santos" coordinateKey="los_santos.vespucci" x="-1093.8900" y="-807.0800" z="18.2600" exteriorSafe="true" />
+    <Location id="vinewood" name="Vinewood" district="North Los Santos" coordinateKey="los_santos.vinewood" x="639.1800" y="1.7700" z="81.7900" exteriorSafe="true" />
+    <Location id="rockford_hills" name="Rockford Hills" district="West Los Santos" coordinateKey="los_santos.rockford_hills" x="-560.7600" y="-133.9800" z="37.0600" exteriorSafe="true" />
+    <Location id="la_mesa" name="La Mesa" district="East Los Santos" coordinateKey="los_santos.la_mesa" x="844.0000" y="-1311.0000" z="28.2400" exteriorSafe="true" />
+    <Location id="davis" name="Davis" district="South Los Santos" coordinateKey="los_santos.davis" x="360.8800" y="-1581.6100" z="28.2900" exteriorSafe="true" />
+    <Location id="del_perro" name="Del Perro" district="West Los Santos" coordinateKey="los_santos.del_perro" x="-1475.0000" y="-522.0000" z="31.8000" exteriorSafe="true" />
+    <Location id="vespucci_beach" name="Vespucci Beach" district="West Los Santos" coordinateKey="los_santos.vespucci_beach" x="-1308.0000" y="-394.0000" z="36.7000" exteriorSafe="true" />
+    <Location id="sandy_shores" name="Sandy Shores" district="Blaine County" coordinateKey="blaine.sandy_shores" x="1856.3500" y="3682.0600" z="33.2700" exteriorSafe="true" />
+    <Location id="paleto_bay" name="Paleto Bay" district="Blaine County" coordinateKey="blaine.paleto_bay" x="-440.7400" y="6019.8900" z="30.4900" exteriorSafe="true" />
+    <Location id="raton_canyon" name="Raton Canyon" district="Blaine County" coordinateKey="blaine.raton_canyon" x="-433.0000" y="6104.0000" z="31.0000" exteriorSafe="true" />
+    <Location id="fort_zancudo" name="Fort Zancudo" district="Blaine County" coordinateKey="blaine.fort_zancudo" x="-2344.4800" y="3267.3500" z="32.8100" exteriorSafe="true" />
+    <Location id="noose_lsia" name="NOOSE Los Santos Facility" district="East Los Santos" coordinateKey="los_santos.noose_facility" x="2470.0000" y="-383.0000" z="94.0000" exteriorSafe="true" />
+    <Location id="bolingbroke" name="Bolingbroke Penitentiary" district="Blaine County" coordinateKey="blaine.bolingbroke" x="1845.0000" y="2597.5000" z="44.6000" exteriorSafe="true" />
+  </Locations>
+  <Coordination>
+    <Route id="lspd_central" name="Central Los Santos Patrol Route" fromLocationId="mission_row" toLocationId="vinewood" routeKey="lspd.central" />
+    <Route id="lspd_west" name="West Los Santos Patrol Route" fromLocationId="vespucci" toLocationId="rockford_hills" routeKey="lspd.west" />
+    <Route id="lspd_south" name="South Los Santos Patrol Route" fromLocationId="mission_row" toLocationId="davis" routeKey="lspd.south" />
+    <Route id="lspd_east" name="East Los Santos Patrol Route" fromLocationId="mission_row" toLocationId="la_mesa" routeKey="lspd.east" />
+    <Route id="lssd_county" name="Blaine County Sheriff's Route" fromLocationId="sandy_shores" toLocationId="paleto_bay" routeKey="lssd.county" />
+    <Route id="sahp_north" name="Northern Highway Patrol Route" fromLocationId="raton_canyon" toLocationId="paleto_bay" routeKey="sahp.north" />
+    <Route id="noose_security" name="Federal Security Coordination Route" fromLocationId="noose_lsia" toLocationId="fort_zancudo" routeKey="noose.security" />
+    <Route id="prison_transfer" name="Bolingbroke Prison Transfer Route" fromLocationId="mission_row" toLocationId="bolingbroke" routeKey="police.prison_transfer" />
+  </Coordination>
+</LSPDImmersiveUtility>

@@ -1,0 +1,905 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- First-party LS Immersive Life Police speech. No external mod schema or assets. -->
+<!-- Each Event is a confirmed communication meaning. Gameplay owns when it is reported. -->
+<!-- file is relative to the single project Audio directory; never an absolute/remote path. -->
+<!-- ready = a validated local recording; planned/disabled = intentionally not playable. -->
+<LSImmersiveLifeAudio version="1" language="en-US" queueCapacity="12">
+  <!-- patrol: player speech. Variants must preserve this event's facts. -->
+  <Group id="patrol">
+    <Event id="lsimmersivelife.police.patrol.started" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_started_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_started_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this unit is starting patrol.</Clip>
+      <Clip id="LSImmersiveLife_Police_patrol_started_02" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_started_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Patrol is beginning. This unit is available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.patrol.ended" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_ended_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_ended_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this unit is ending patrol.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.patrol.available" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_available_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_available_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">This unit is available for calls.</Clip>
+      <Clip id="LSImmersiveLife_Police_patrol_available_02" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_available_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, available for assignment.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.patrol.unavailable" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_unavailable_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_unavailable_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this unit is temporarily unavailable.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.patrol.area_check" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_area_check_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_area_check_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, beginning a routine area check.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.patrol.status" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_status_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_status_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Patrol status is unchanged. This unit remains available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.patrol.returning" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="15000">
+      <Clip id="LSImmersiveLife_Police_patrol_returning_01" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_returning_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this unit is returning to patrol.</Clip>
+      <Clip id="LSImmersiveLife_Police_patrol_returning_02" file="Police/en-US/patrol/LSImmersiveLife_Police_patrol_returning_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Returning to patrol. Available for calls.</Clip>
+    </Event>
+  </Group>
+  <!-- dispatch: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="dispatch">
+    <Event id="lsimmersivelife.police.dispatch.received" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_received_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">An available unit is needed for a reported incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">We have a new incident report for an available unit.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_disturbance_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_disturbance_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="disturbance">Available units, we have a report of a disturbance.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_disturbance_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_disturbance_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="disturbance">Dispatch is requesting a response to a disturbance.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_armed_suspect_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_armed_suspect_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="armed_suspect">Available units, we have a report of an armed suspect.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_armed_suspect_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_armed_suspect_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="armed_suspect">Dispatch is requesting a response to an armed suspect.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_shots_fired_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_shots_fired_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="shots_fired">Available units, we have a report of shots fired.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_shots_fired_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_shots_fired_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="shots_fired">Dispatch is requesting a response to shots fired.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_robbery_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_robbery_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="robbery">Available units, we have a report of a robbery.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_robbery_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_robbery_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="robbery">Dispatch is requesting a response to a robbery.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_store_robbery_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_store_robbery_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="store_robbery">Available units, we have a report of a store robbery.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_store_robbery_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_store_robbery_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="store_robbery">Dispatch is requesting a response to a store robbery.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_bank_robbery_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_bank_robbery_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="bank_robbery">Available units, we have a report of a bank robbery.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_bank_robbery_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_bank_robbery_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="bank_robbery">Dispatch is requesting a response to a bank robbery.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_kidnapping_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_kidnapping_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="kidnapping">Available units, we have a report of a kidnapping.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_kidnapping_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_kidnapping_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="kidnapping">Dispatch is requesting a response to a kidnapping.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_vehicle_theft_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_vehicle_theft_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="vehicle_theft">Available units, we have a report of a vehicle theft.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_vehicle_theft_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_vehicle_theft_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="vehicle_theft">Dispatch is requesting a response to a vehicle theft.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_carjacking_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_carjacking_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="carjacking">Available units, we have a report of a carjacking.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_carjacking_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_carjacking_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="carjacking">Dispatch is requesting a response to a carjacking.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_reckless_driver_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_reckless_driver_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="reckless_driver">Available units, we have a report of a reckless driver.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_reckless_driver_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_reckless_driver_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="reckless_driver">Dispatch is requesting a response to a reckless driver.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_gang_incident_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_gang_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="gang_incident">Available units, we have a report of a gang-related incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_gang_incident_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_gang_incident_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="gang_incident">Dispatch is requesting a response to a gang-related incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_officer_in_trouble_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_officer_in_trouble_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="officer_in_trouble">Available units, we have a report of an officer in trouble.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_officer_in_trouble_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_officer_in_trouble_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="officer_in_trouble">Dispatch is requesting a response to an officer in trouble.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_emergency_assistance_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_emergency_assistance_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="emergency_assistance">Available units, we have a report of a request for emergency assistance.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_emergency_assistance_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_emergency_assistance_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="emergency_assistance">Dispatch is requesting a response to a request for emergency assistance.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_suspicious_person_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_suspicious_person_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="suspicious_person">Available units, we have a report of a suspicious person.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_suspicious_person_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_suspicious_person_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="suspicious_person">Dispatch is requesting a response to a suspicious person.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_suspicious_vehicle_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_suspicious_vehicle_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="suspicious_vehicle">Available units, we have a report of a suspicious vehicle.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_suspicious_vehicle_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_suspicious_vehicle_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="suspicious_vehicle">Dispatch is requesting a response to a suspicious vehicle.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_violent_disturbance_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_violent_disturbance_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="violent_disturbance">Available units, we have a report of a violent disturbance.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_violent_disturbance_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_violent_disturbance_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="violent_disturbance">Dispatch is requesting a response to a violent disturbance.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_hostage_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_hostage_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="hostage">Available units, we have a report of a possible hostage situation.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_hostage_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_hostage_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="hostage">Dispatch is requesting a response to a possible hostage situation.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_wanted_suspect_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_wanted_suspect_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="wanted_suspect">Available units, we have a report of a possible sighting of a wanted suspect.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_wanted_suspect_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_wanted_suspect_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="wanted_suspect">Dispatch is requesting a response to a possible sighting of a wanted suspect.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_drug_activity_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_drug_activity_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="drug_activity">Available units, we have a report of suspected drug activity.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_drug_activity_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_drug_activity_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="drug_activity">Dispatch is requesting a response to suspected drug activity.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_criminal_gathering_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_criminal_gathering_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="criminal_gathering">Available units, we have a report of a possible criminal gathering.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_criminal_gathering_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_criminal_gathering_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="criminal_gathering">Dispatch is requesting a response to a possible criminal gathering.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_ambush_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_ambush_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="ambush">Available units, we have a report of a possible ambush.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_ambush_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_ambush_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="ambush">Dispatch is requesting a response to a possible ambush.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_weapons_incident_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_weapons_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="weapons_incident">Available units, we have a report of a weapons incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_weapons_incident_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_weapons_incident_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="weapons_incident">Dispatch is requesting a response to a weapons incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_major_incident_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_major_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="major_incident">Available units, we have a report of a major incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_major_incident_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_major_incident_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="major_incident">Dispatch is requesting a response to a major incident.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_unknown_emergency_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_unknown_emergency_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="unknown_emergency">Available units, we have a report of an emergency with details not yet confirmed.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_unknown_emergency_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_unknown_emergency_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="unknown_emergency">Dispatch is requesting a response to an emergency with details not yet confirmed.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_special_incident_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_special_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="special_incident">Available units, we have a report of an incident requiring a special response.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_received_special_incident_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_received_special_incident_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="special_incident">Dispatch is requesting a response to an incident requiring a special response.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.acknowledged" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_acknowledged_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_acknowledged_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your dispatch acknowledgement has been received.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.accepted" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_accepted_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_accepted_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The call is accepted. Your assignment is confirmed.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_accepted_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_accepted_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Assignment confirmed. You are assigned to this call.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.declined" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_declined_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_declined_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Understood. You are not assigned to this call.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_declined_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_declined_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your response is noted. This call has been declined.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.assigned" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_assigned_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_assigned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A response unit has been assigned to the incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.reassigned" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_reassigned_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_reassigned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The call has been reassigned to another unit.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.cancelled" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_cancelled_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_cancelled_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The dispatch request has been cancelled.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.expired" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_expired_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_expired_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The offer for this call has expired.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.en_route" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_en_route_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_en_route_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your response to the assigned call is acknowledged.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.arrived" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_arrived_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_arrived_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your arrival at the reported location is acknowledged.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.dispatch.closed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_closed_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_closed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The dispatch assignment is now closed.</Clip>
+      <Clip id="LSImmersiveLife_Police_dispatch_closed_02" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_closed_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">This dispatch assignment has ended.</Clip>
+    </Event>
+  </Group>
+  <!-- detail: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="detail">
+    <Event id="lsimmersivelife.police.detail.location_updated" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_location_updated_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_location_updated_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">There is updated location information for this incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.suspect_description" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_suspect_description_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_suspect_description_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A description of the reported suspect is available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.vehicle_description" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_vehicle_description_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_vehicle_description_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Updated information includes a vehicle description.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.suspect_count" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_suspect_count_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_suspect_count_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported number of people involved has been updated.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.weapons_reported" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_weapons_reported_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_weapons_reported_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A weapon has been reported at this incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.direction_updated" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_direction_updated_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_direction_updated_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported direction of travel has changed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.last_known_position" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_last_known_position_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_last_known_position_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The last known position has been updated.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.on_foot" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_on_foot_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_on_foot_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported suspect was last seen on foot.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.in_vehicle" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_in_vehicle_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_in_vehicle_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported suspect was last seen in a vehicle.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.victim_information" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_victim_information_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_victim_information_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Additional information about the victim is available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.safety_warning" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_safety_warning_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_safety_warning_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Responding units, use caution at this incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.gang_involvement" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_gang_involvement_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_gang_involvement_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Possible gang involvement has been reported.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.detail.territory_context" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_detail_territory_context_01" file="Police/en-US/detail/LSImmersiveLife_Police_detail_territory_context_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Relevant territory information is available for responding units.</Clip>
+    </Event>
+  </Group>
+  <!-- player: player speech. Variants must preserve this event's facts. -->
+  <Group id="player">
+    <Event id="lsimmersivelife.police.player.acknowledge" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_acknowledge_01" file="Police/en-US/player/LSImmersiveLife_Police_player_acknowledge_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, information received.</Clip>
+      <Clip id="LSImmersiveLife_Police_player_acknowledge_02" file="Police/en-US/player/LSImmersiveLife_Police_player_acknowledge_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Understood, dispatch.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.accept_dispatch" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_accept_dispatch_01" file="Police/en-US/player/LSImmersiveLife_Police_player_accept_dispatch_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I accept the call.</Clip>
+      <Clip id="LSImmersiveLife_Police_player_accept_dispatch_02" file="Police/en-US/player/LSImmersiveLife_Police_player_accept_dispatch_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">I will take that assignment, dispatch.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.decline_dispatch" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_decline_dispatch_01" file="Police/en-US/player/LSImmersiveLife_Police_player_decline_dispatch_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I cannot take this assignment.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.request_information" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_request_information_01" file="Police/en-US/player/LSImmersiveLife_Police_player_request_information_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, do you have any further information?</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.report_position" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_report_position_01" file="Police/en-US/player/LSImmersiveLife_Police_player_report_position_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, reporting my current position.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.report_status" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_report_status_01" file="Police/en-US/player/LSImmersiveLife_Police_player_report_status_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have a status update.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.report_sighting" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_report_sighting_01" file="Police/en-US/player/LSImmersiveLife_Police_player_report_sighting_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have a possible sighting.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.player.report_secure_scene" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_player_report_secure_scene_01" file="Police/en-US/player/LSImmersiveLife_Police_player_report_secure_scene_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the scene is secure.</Clip>
+    </Event>
+  </Group>
+  <!-- backup: player speech. Variants must preserve this event's facts. -->
+  <Group id="backup">
+    <Event id="lsimmersivelife.police.backup.requested" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_requested_01" file="Police/en-US/backup/LSImmersiveLife_Police_backup_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, requesting backup at my location.</Clip>
+      <Clip id="LSImmersiveLife_Police_backup_requested_02" file="Police/en-US/backup/LSImmersiveLife_Police_backup_requested_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, send an additional unit to my location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup.additional_requested" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_additional_requested_01" file="Police/en-US/backup/LSImmersiveLife_Police_backup_additional_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I need another unit at this incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup.multiple_requested" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_multiple_requested_01" file="Police/en-US/backup/LSImmersiveLife_Police_backup_multiple_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, multiple units are needed at this location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup.supervisor_requested" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_supervisor_requested_01" file="Police/en-US/backup/LSImmersiveLife_Police_backup_supervisor_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, requesting a supervisor at the scene.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup.immediate_requested" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_immediate_requested_01" file="Police/en-US/backup/LSImmersiveLife_Police_backup_immediate_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I need assistance immediately.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup.cancelled" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_cancelled_01" file="Police/en-US/backup/LSImmersiveLife_Police_backup_cancelled_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, cancel my backup request.</Clip>
+    </Event>
+  </Group>
+  <!-- backup_reply: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="backup_reply">
+    <Event id="lsimmersivelife.police.backup_reply.acknowledged" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_reply_acknowledged_01" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_acknowledged_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your backup request has been received.</Clip>
+      <Clip id="LSImmersiveLife_Police_backup_reply_acknowledged_02" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_acknowledged_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Backup request acknowledged.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup_reply.assigned" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_reply_assigned_01" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_assigned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A backup unit has been assigned.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup_reply.unavailable" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_reply_unavailable_01" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_unavailable_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">No backup unit is available at this time.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup_reply.denied" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_reply_denied_01" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_denied_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The backup request cannot be approved.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup_reply.cancelled" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_reply_cancelled_01" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_cancelled_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The backup request has been cancelled.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.backup_reply.released" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_backup_reply_released_01" file="Police/en-US/backup_reply/LSImmersiveLife_Police_backup_reply_released_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Backup units are released from the incident.</Clip>
+    </Event>
+  </Group>
+  <!-- emergency: player speech. Variants must preserve this event's facts. -->
+  <Group id="emergency">
+    <Event id="lsimmersivelife.police.emergency.officer_under_attack" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_officer_under_attack_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_officer_under_attack_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Officer under attack. Send assistance immediately.</Clip>
+      <Clip id="LSImmersiveLife_Police_emergency_officer_under_attack_02" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_officer_under_attack_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am under attack. I need immediate assistance.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.officer_hit" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_officer_hit_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_officer_hit_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Officer hit. Emergency assistance required.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.officer_pinned" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_officer_pinned_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_officer_pinned_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am pinned down. Send help immediately.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.shots_fired" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_shots_fired_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_shots_fired_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Shots fired. Emergency assistance required.</Clip>
+      <Clip id="LSImmersiveLife_Police_emergency_shots_fired_02" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_shots_fired_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, shots have been fired at this location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.immediate_assistance" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_immediate_assistance_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_immediate_assistance_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Officer needs help. Immediate response required.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.armed_threat" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_armed_threat_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_armed_threat_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, there is an armed threat at my location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.multiple_threats" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_multiple_threats_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_multiple_threats_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, multiple active threats at this location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency.priority_channel" speaker="player" priority="Critical" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_priority_channel_01" file="Police/en-US/emergency/LSImmersiveLife_Police_emergency_priority_channel_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Emergency traffic. Please keep this channel clear.</Clip>
+    </Event>
+  </Group>
+  <!-- emergency_reply: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="emergency_reply">
+    <Event id="lsimmersivelife.police.emergency_reply.high_risk" speaker="dispatch" priority="Emergency" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_reply_high_risk_01" file="Police/en-US/emergency_reply/LSImmersiveLife_Police_emergency_reply_high_risk_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Responding units, this is a high risk incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency_reply.units_assigned" speaker="dispatch" priority="Emergency" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_reply_units_assigned_01" file="Police/en-US/emergency_reply/LSImmersiveLife_Police_emergency_reply_units_assigned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Emergency response units have been assigned.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency_reply.all_units" speaker="dispatch" priority="Emergency" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_reply_all_units_01" file="Police/en-US/emergency_reply/LSImmersiveLife_Police_emergency_reply_all_units_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Available units, emergency assistance is required.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.emergency_reply.resolved" speaker="dispatch" priority="Emergency" cooldownMs="0" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_emergency_reply_resolved_01" file="Police/en-US/emergency_reply/LSImmersiveLife_Police_emergency_reply_resolved_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The immediate emergency has ended.</Clip>
+    </Event>
+  </Group>
+  <!-- unit: unit speech. Variants must preserve this event's facts. -->
+  <Group id="unit">
+    <Event id="lsimmersivelife.police.unit.assigned" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_assigned_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_assigned_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">This unit acknowledges the assignment.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.responding" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_responding_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_responding_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">This unit is responding to the request.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.en_route" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_en_route_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_en_route_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Response unit is en route.</Clip>
+      <Clip id="LSImmersiveLife_Police_unit_en_route_02" file="Police/en-US/unit/LSImmersiveLife_Police_unit_en_route_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">We are on our way to the incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.approaching" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_approaching_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_approaching_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Response unit is approaching your location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.on_scene" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_on_scene_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_on_scene_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Response unit is on scene.</Clip>
+      <Clip id="LSImmersiveLife_Police_unit_on_scene_02" file="Police/en-US/unit/LSImmersiveLife_Police_unit_on_scene_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">We have arrived at the incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.position_confirmed" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_position_confirmed_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_position_confirmed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Our position is confirmed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.information_requested" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_information_requested_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_information_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Responding unit requesting updated information.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.available" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_available_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_available_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">This unit is available for reassignment.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.returning" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_returning_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_returning_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">This unit is returning to patrol.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.unit.released" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_unit_released_01" file="Police/en-US/unit/LSImmersiveLife_Police_unit_released_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">This unit is leaving the completed assignment.</Clip>
+    </Event>
+  </Group>
+  <!-- investigation: player speech. Variants must preserve this event's facts. -->
+  <Group id="investigation">
+    <Event id="lsimmersivelife.police.investigation.arrived" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_arrived_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_arrived_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have arrived to investigate.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.started" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_started_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_started_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, beginning the investigation.</Clip>
+      <Clip id="LSImmersiveLife_Police_investigation_started_02" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_started_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">I am on scene and beginning an inquiry.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.scene_information" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_scene_information_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_scene_information_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have additional scene information.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.evidence_information" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_evidence_information_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_evidence_information_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, relevant evidence information is available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.witness_contact" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_witness_contact_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_witness_contact_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am speaking with a witness.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.person_located" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_person_located_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_person_located_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have located the person being sought.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.person_not_located" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_person_not_located_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_person_not_located_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person has not been located.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.possible_sighting" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_possible_sighting_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_possible_sighting_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, checking a possible sighting.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.development" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_development_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_development_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, there is a new development in the investigation.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.support_requested" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_support_requested_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_support_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, requesting support for this investigation.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.continuing" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_continuing_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_continuing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the investigation is continuing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.investigation.completed" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_investigation_completed_01" file="Police/en-US/investigation/LSImmersiveLife_Police_investigation_completed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this investigation is complete.</Clip>
+    </Event>
+  </Group>
+  <!-- pursuit: player speech. Variants must preserve this event's facts. -->
+  <Group id="pursuit">
+    <Event id="lsimmersivelife.police.pursuit.on_foot" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_on_foot_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_on_foot_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is fleeing on foot.</Clip>
+      <Clip id="LSImmersiveLife_Police_pursuit_on_foot_02" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_on_foot_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Foot pursuit in progress. Requesting support.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.in_vehicle" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_in_vehicle_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_in_vehicle_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is fleeing in a vehicle.</Clip>
+      <Clip id="LSImmersiveLife_Police_pursuit_in_vehicle_02" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_in_vehicle_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Vehicle pursuit in progress.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.escape_attempt" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_escape_attempt_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_escape_attempt_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is attempting to escape.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.description_updated" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_description_updated_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_description_updated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have an updated suspect description.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.vehicle_updated" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_vehicle_updated_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_vehicle_updated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, updating the pursued vehicle description.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.direction_updated" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_direction_updated_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_direction_updated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the pursuit direction has changed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.continuing" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_continuing_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_continuing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, pursuit is continuing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.escalating" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_escalating_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_escalating_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the pursuit is becoming more dangerous.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.support_requested" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_support_requested_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_support_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, requesting assistance with this pursuit.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.vehicle_stopped" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_vehicle_stopped_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_vehicle_stopped_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the pursued vehicle has stopped.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.surrendered" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_surrendered_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_surrendered_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the pursued suspect is surrendering.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.apprehended" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_apprehended_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_apprehended_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the pursued suspect has been apprehended.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.lost" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_lost_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_lost_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I have lost sight of the suspect.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.pursuit.terminated" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_pursuit_terminated_01" file="Police/en-US/pursuit/LSImmersiveLife_Police_pursuit_terminated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this pursuit is terminated.</Clip>
+    </Event>
+  </Group>
+  <!-- compliance: player speech. Variants must preserve this event's facts. -->
+  <Group id="compliance">
+    <Event id="lsimmersivelife.police.compliance.cooperating" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_compliance_cooperating_01" file="Police/en-US/compliance/LSImmersiveLife_Police_compliance_cooperating_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person is cooperating.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.compliance.surrendering" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_compliance_surrendering_01" file="Police/en-US/compliance/LSImmersiveLife_Police_compliance_surrendering_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is surrendering.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.compliance.confirmed" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_compliance_confirmed_01" file="Police/en-US/compliance/LSImmersiveLife_Police_compliance_confirmed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The suspect has stopped and is complying.</Clip>
+      <Clip id="LSImmersiveLife_Police_compliance_confirmed_02" file="Police/en-US/compliance/LSImmersiveLife_Police_compliance_confirmed_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, compliance is confirmed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.compliance.secured" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_compliance_secured_01" file="Police/en-US/compliance/LSImmersiveLife_Police_compliance_secured_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is secured.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.compliance.released" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_compliance_released_01" file="Police/en-US/compliance/LSImmersiveLife_Police_compliance_released_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person has been released.</Clip>
+    </Event>
+  </Group>
+  <!-- resistance: player speech. Variants must preserve this event's facts. -->
+  <Group id="resistance">
+    <Event id="lsimmersivelife.police.resistance.refusal" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_refusal_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_refusal_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person is refusing to cooperate.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.resisting" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_resisting_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_resisting_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is resisting detention.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.hostile" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_hostile_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_hostile_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect has become hostile.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.fleeing" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_fleeing_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_fleeing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is fleeing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.escape_attempt" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_escape_attempt_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_escape_attempt_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the detained suspect is trying to escape.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.armed" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_armed_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_armed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is armed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.danger_increased" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_danger_increased_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_danger_increased_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the danger at this incident has increased.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.resistance.backup_required" speaker="player" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_resistance_backup_required_01" file="Police/en-US/resistance/LSImmersiveLife_Police_resistance_backup_required_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, resistance at the scene requires backup.</Clip>
+    </Event>
+  </Group>
+  <!-- arrest: player speech. Variants must preserve this event's facts. -->
+  <Group id="arrest">
+    <Event id="lsimmersivelife.police.arrest.detained" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_detained_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_detained_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, one person has been detained.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.successful" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_successful_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_successful_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is under arrest.</Clip>
+      <Clip id="LSImmersiveLife_Police_arrest_successful_02" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_successful_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the arrest is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.secured" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_secured_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_secured_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the arrested suspect is secured.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.custody_confirmed" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_custody_confirmed_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_custody_confirmed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the suspect is in custody.</Clip>
+      <Clip id="LSImmersiveLife_Police_arrest_custody_confirmed_02" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_custody_confirmed_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">One suspect is in custody, dispatch.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.additional_detainee" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_additional_detainee_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_additional_detainee_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, an additional person has been detained.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.unsuccessful" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_unsuccessful_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_unsuccessful_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the arrest attempt was unsuccessful.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.escaped" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_escaped_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_escaped_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the detained suspect has escaped.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.transport_required" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_transport_required_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_transport_required_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, prisoner transport is required.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.arrest.booking_pending" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_arrest_booking_pending_01" file="Police/en-US/arrest/LSImmersiveLife_Police_arrest_booking_pending_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the prisoner is awaiting booking.</Clip>
+    </Event>
+  </Group>
+  <!-- transport: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="transport">
+    <Event id="lsimmersivelife.police.transport.requested" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_requested_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_requested_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A prisoner transport request has been received.</Clip>
+      <Clip id="LSImmersiveLife_Police_transport_requested_02" file="Police/en-US/transport/LSImmersiveLife_Police_transport_requested_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Prisoner transport request acknowledged.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.approved" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_approved_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_approved_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Prisoner transport is approved.</Clip>
+      <Clip id="LSImmersiveLife_Police_transport_approved_02" file="Police/en-US/transport/LSImmersiveLife_Police_transport_approved_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport request has been authorized.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.declined" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_declined_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_declined_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport request has been declined.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.unit_assigned" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_unit_assigned_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_unit_assigned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A prisoner transport unit has been assigned.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.unavailable" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_unavailable_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_unavailable_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">No prisoner transport unit is currently available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.pickup_ready" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_pickup_ready_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_pickup_ready_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner is ready for transport pickup.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.loaded" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_loaded_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_loaded_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner is secured in the transport vehicle.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.departing" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_departing_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_departing_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport is departing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.en_route" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_en_route_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_en_route_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport is en route.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.delayed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_delayed_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_delayed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport has been delayed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.approaching" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_approaching_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_approaching_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport is approaching its destination.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.arrived" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_arrived_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_arrived_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport has arrived at its destination.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.handover" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_handover_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_handover_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Prisoner handover is in progress.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.completed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_completed_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_completed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport is complete.</Clip>
+      <Clip id="LSImmersiveLife_Police_transport_completed_02" file="Police/en-US/transport/LSImmersiveLife_Police_transport_completed_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Prisoner delivery is confirmed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.transport.cancelled" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_transport_cancelled_01" file="Police/en-US/transport/LSImmersiveLife_Police_transport_cancelled_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner transport request has been cancelled.</Clip>
+    </Event>
+  </Group>
+  <!-- convoy: unit speech. Variants must preserve this event's facts. -->
+  <Group id="convoy">
+    <Event id="lsimmersivelife.police.convoy.forming" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_forming_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_forming_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The transport convoy is forming.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.escort_requested" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_escort_requested_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_escort_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">An escort is requested for the transport convoy.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.escort_assigned" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_escort_assigned_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_escort_assigned_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">An escort unit is assigned to the convoy.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.escort_responding" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_escort_responding_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_escort_responding_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy escort is responding.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.escort_ready" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_escort_ready_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_escort_ready_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy escort is ready.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.transport_ready" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_transport_ready_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_transport_ready_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The transport vehicle is ready.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.departing" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_departing_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_departing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy is departing.</Clip>
+      <Clip id="LSImmersiveLife_Police_convoy_departing_02" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_departing_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Transport and escort are beginning the journey.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.en_route" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_en_route_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_en_route_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy is en route to its destination.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.hold" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_hold_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_hold_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy is holding position.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.separated" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_separated_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_separated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">A separation in the convoy has been reported.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.approaching" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_approaching_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_approaching_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy is approaching its destination.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.arrived" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_arrived_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_arrived_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy has arrived.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.transfer" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_transfer_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_transfer_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy has reached the prisoner transfer stage.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.escort_released" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_escort_released_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_escort_released_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy escort is released.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.completed" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_completed_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_completed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy assignment is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.convoy.cancelled" speaker="unit" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_convoy_cancelled_01" file="Police/en-US/convoy/LSImmersiveLife_Police_convoy_cancelled_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The convoy assignment has been cancelled.</Clip>
+    </Event>
+  </Group>
+  <!-- custody: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="custody">
+    <Event id="lsimmersivelife.police.custody.station_arrival" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_station_arrival_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_station_arrival_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner has arrived at the station.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.prisoner_delivered" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_prisoner_delivered_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_prisoner_delivered_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner has been delivered to station custody.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.accepted" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_accepted_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_accepted_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Station custody has accepted the prisoner.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.handover_confirmed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_handover_confirmed_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_handover_confirmed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Station handover is confirmed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.booking_pending" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_booking_pending_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_booking_pending_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Booking is pending for the prisoner.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.booking_completed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_booking_completed_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_booking_completed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner has been booked.</Clip>
+      <Clip id="LSImmersiveLife_Police_custody_booking_completed_02" file="Police/en-US/custody/LSImmersiveLife_Police_custody_booking_completed_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Station booking is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.decision_pending" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_decision_pending_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_decision_pending_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The custody disposition is awaiting a decision.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.transfer_approved" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_transfer_approved_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_transfer_approved_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The next prisoner transfer is approved.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.transfer_declined" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_transfer_declined_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_transfer_declined_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The next prisoner transfer is declined.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.custody.retained" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_custody_retained_01" file="Police/en-US/custody/LSImmersiveLife_Police_custody_retained_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner will remain in station custody.</Clip>
+    </Event>
+  </Group>
+  <!-- prison: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="prison">
+    <Event id="lsimmersivelife.police.prison.transfer_requested" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_transfer_requested_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_transfer_requested_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A prison transfer has been requested.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.authorized" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_authorized_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_authorized_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prison transfer is authorized.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.in_transit" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_in_transit_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_in_transit_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prisoner is in transit to the prison.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.approaching" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_approaching_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_approaching_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The transport is approaching the prison.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.arrived" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_arrived_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_arrived_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The transport has arrived at the prison.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.received" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_received_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_received_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Prison reception has received the prisoner.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.handover_confirmed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_handover_confirmed_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_handover_confirmed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prison handover is confirmed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.completed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_completed_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_completed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prison transfer is complete.</Clip>
+      <Clip id="LSImmersiveLife_Police_prison_completed_02" file="Police/en-US/prison/LSImmersiveLife_Police_prison_completed_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Prison reception confirms the transfer is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.prison.unit_released" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_prison_unit_released_01" file="Police/en-US/prison/LSImmersiveLife_Police_prison_unit_released_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The prison transport unit is released.</Clip>
+    </Event>
+  </Group>
+  <!-- traffic: player speech. Variants must preserve this event's facts. -->
+  <Group id="traffic">
+    <Event id="lsimmersivelife.police.traffic.initiated" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_initiated_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_initiated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am initiating a traffic stop.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.vehicle_stopped" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_vehicle_stopped_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_vehicle_stopped_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the vehicle has stopped.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.approaching" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_approaching_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_approaching_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am approaching the stopped vehicle.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.documents_requested" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_documents_requested_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_documents_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">May I see your driving documents, please?</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.cooperating" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_cooperating_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_cooperating_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the driver is cooperating.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.refusing" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_refusing_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_refusing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the driver is refusing to cooperate.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.fleeing" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_fleeing_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_fleeing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the driver is fleeing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.pursuit" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_pursuit_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_pursuit_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the traffic stop has become a pursuit.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.verification_started" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_verification_started_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_verification_started_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am checking the driver's documents.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.verification_completed" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_verification_completed_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_verification_completed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, document verification is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.detained" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_detained_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_detained_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the driver has been detained.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.completed" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_completed_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_completed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the traffic stop is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.traffic.clear" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_traffic_clear_01" file="Police/en-US/traffic/LSImmersiveLife_Police_traffic_clear_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am clear of the traffic stop.</Clip>
+    </Event>
+  </Group>
+  <!-- civilian: player speech. Variants must preserve this event's facts. -->
+  <Group id="civilian">
+    <Event id="lsimmersivelife.police.civilian.conversation" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_conversation_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_conversation_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Hello. May I speak with you for a moment?</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.identification_requested" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_identification_requested_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_identification_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">May I see your identification, please?</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.cooperating" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_cooperating_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_cooperating_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person is cooperating with the inquiry.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.refusing" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_refusing_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_refusing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person has declined to cooperate.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.nervous" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_nervous_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_nervous_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person appears nervous.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.help_requested" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_help_requested_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_help_requested_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, this person is requesting assistance.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.information_received" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_information_received_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_information_received_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Thank you for the information.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.verification_completed" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_verification_completed_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_verification_completed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The document check is complete.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.released" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_released_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_released_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Thank you for waiting. You are free to go.</Clip>
+      <Clip id="LSImmersiveLife_Police_civilian_released_02" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_released_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Everything is finished here. You may leave.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.fleeing" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_fleeing_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_fleeing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the person has left the interaction and is fleeing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.escalated" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_escalated_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_escalated_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the civilian interaction has escalated.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.civilian.completed" speaker="player" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_civilian_completed_01" file="Police/en-US/civilian/LSImmersiveLife_Police_civilian_completed_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the civilian inquiry is complete.</Clip>
+    </Event>
+  </Group>
+  <!-- activity: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="activity">
+    <Event id="lsimmersivelife.police.activity.discovered" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_discovered_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_discovered_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A possible crime activity has been discovered.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.reported" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_reported_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A crime activity report has been received.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_disturbance_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_disturbance_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="disturbance">An officer has reported a disturbance. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_armed_suspect_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_armed_suspect_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="armed_suspect">An officer has reported an armed suspect. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_shots_fired_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_shots_fired_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="shots_fired">An officer has reported shots fired. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_robbery_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_robbery_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="robbery">An officer has reported a robbery. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_store_robbery_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_store_robbery_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="store_robbery">An officer has reported a store robbery. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_bank_robbery_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_bank_robbery_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="bank_robbery">An officer has reported a bank robbery. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_kidnapping_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_kidnapping_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="kidnapping">An officer has reported a kidnapping. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_vehicle_theft_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_vehicle_theft_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="vehicle_theft">An officer has reported a vehicle theft. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_carjacking_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_carjacking_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="carjacking">An officer has reported a carjacking. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_reckless_driver_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_reckless_driver_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="reckless_driver">An officer has reported a reckless driver. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_gang_incident_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_gang_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="gang_incident">An officer has reported a gang-related incident. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_officer_in_trouble_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_officer_in_trouble_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="officer_in_trouble">An officer has reported an officer in trouble. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_emergency_assistance_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_emergency_assistance_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="emergency_assistance">An officer has reported a request for emergency assistance. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_suspicious_person_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_suspicious_person_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="suspicious_person">An officer has reported a suspicious person. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_suspicious_vehicle_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_suspicious_vehicle_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="suspicious_vehicle">An officer has reported a suspicious vehicle. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_violent_disturbance_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_violent_disturbance_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="violent_disturbance">An officer has reported a violent disturbance. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_hostage_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_hostage_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="hostage">An officer has reported a possible hostage situation. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_wanted_suspect_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_wanted_suspect_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="wanted_suspect">An officer has reported a possible sighting of a wanted suspect. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_drug_activity_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_drug_activity_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="drug_activity">An officer has reported suspected drug activity. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_criminal_gathering_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_criminal_gathering_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="criminal_gathering">An officer has reported a possible criminal gathering. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_ambush_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_ambush_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="ambush">An officer has reported a possible ambush. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_weapons_incident_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_weapons_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="weapons_incident">An officer has reported a weapons incident. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_major_incident_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_major_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="major_incident">An officer has reported a major incident. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_unknown_emergency_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_unknown_emergency_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="unknown_emergency">An officer has reported an emergency with details not yet confirmed. Responding units, review the available information.</Clip>
+      <Clip id="LSImmersiveLife_Police_activity_reported_special_incident_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_reported_special_incident_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1" incidentType="special_incident">An officer has reported an incident requiring a special response. Responding units, review the available information.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.observed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_observed_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_observed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">An officer has reported observing suspicious activity.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.description_updated" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_description_updated_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_description_updated_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The crime activity description has been updated.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.group_reported" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_group_reported_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_group_reported_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Multiple people are reportedly involved in this activity.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.support_requested" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_support_requested_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_support_requested_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Support has been requested for the crime activity.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.response_assigned" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_response_assigned_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_response_assigned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A response unit has been assigned to the reported activity.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.unit_arrived" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_unit_arrived_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_unit_arrived_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A responding unit has arrived at the activity location.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.escalating" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_escalating_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_escalating_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported activity is escalating.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.contained" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_contained_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_contained_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The activity has been contained.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.resolved" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_resolved_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_resolved_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported activity has been resolved.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.abandoned" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_abandoned_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_abandoned_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The activity investigation has been discontinued.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.activity.not_located" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_activity_not_located_01" file="Police/en-US/activity/LSImmersiveLife_Police_activity_not_located_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The reported activity has not been located.</Clip>
+    </Event>
+  </Group>
+  <!-- gang: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="gang">
+    <Event id="lsimmersivelife.police.gang.involvement_reported" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_involvement_reported_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_involvement_reported_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Gang involvement has been reported at this Police incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.confrontation" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_confrontation_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_confrontation_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A gang-related confrontation has been reported.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.ambush" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_ambush_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_ambush_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A possible ambush involving gang members has been reported.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.participants_identified" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_participants_identified_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_participants_identified_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Information identifying participants is available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.territory_warning" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_territory_warning_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_territory_warning_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Responding units, relevant territory information is available.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.attack_on_police" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_attack_on_police_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_attack_on_police_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">An attack on Police involving gang members has been reported.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.multiple_attackers" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_multiple_attackers_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_multiple_attackers_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Multiple attackers have been reported at the incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.fleeing" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_fleeing_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_fleeing_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">People involved in the gang-related incident are reportedly fleeing.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.support_requested" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_support_requested_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_support_requested_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Additional support has been requested for the gang-related incident.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.contained" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_contained_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_contained_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The gang-related Police incident has been contained.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.gang.resolved" speaker="dispatch" priority="Urgent" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_gang_resolved_01" file="Police/en-US/gang/LSImmersiveLife_Police_gang_resolved_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The gang-related Police incident has been resolved.</Clip>
+    </Event>
+  </Group>
+  <!-- scene: player speech. Variants must preserve this event's facts. -->
+  <Group id="scene">
+    <Event id="lsimmersivelife.police.scene.approaching" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_approaching_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_approaching_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am approaching the scene.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.on_scene" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_on_scene_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_on_scene_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am on scene.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.active" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_active_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_active_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the scene remains active.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.investigating" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_investigating_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_investigating_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the scene is under investigation.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.escalating" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_escalating_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_escalating_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the situation at the scene is escalating.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.contained" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_contained_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_contained_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the immediate threat is contained.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.threat_ended" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_threat_ended_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_threat_ended_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the immediate threat has ended.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.secure" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_secure_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_secure_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the scene is secure.</Clip>
+      <Clip id="LSImmersiveLife_Police_scene_secure_02" file="Police/en-US/scene/LSImmersiveLife_Police_scene_secure_02.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">The scene is secure, dispatch.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.stable" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_stable_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_stable_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the scene has stabilized.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.cleared" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_cleared_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_cleared_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, the scene is now clear.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.scene.departing" speaker="player" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_scene_departing_01" file="Police/en-US/scene/LSImmersiveLife_Police_scene_departing_01.wav" language="en-US" voice="Microsoft David Desktop" status="ready" weight="1">Dispatch, I am departing the scene.</Clip>
+    </Event>
+  </Group>
+  <!-- case: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="case">
+    <Event id="lsimmersivelife.police.case.incident_resolved" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_case_incident_resolved_01" file="Police/en-US/case/LSImmersiveLife_Police_case_incident_resolved_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The incident has been resolved.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.case.unit_released" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_case_unit_released_01" file="Police/en-US/case/LSImmersiveLife_Police_case_unit_released_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The assigned unit is released from this case.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.case.closed" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_case_closed_01" file="Police/en-US/case/LSImmersiveLife_Police_case_closed_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The case is now closed.</Clip>
+      <Clip id="LSImmersiveLife_Police_case_closed_02" file="Police/en-US/case/LSImmersiveLife_Police_case_closed_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Case closure is confirmed.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.case.custody_continues" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_case_custody_continues_01" file="Police/en-US/case/LSImmersiveLife_Police_case_custody_continues_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The dispatch assignment is closed. Custody processing is continuing.</Clip>
+    </Event>
+  </Group>
+  <!-- radio: dispatch speech. Variants must preserve this event's facts. -->
+  <Group id="radio">
+    <Event id="lsimmersivelife.police.radio.check" speaker="dispatch" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_radio_check_01" file="Police/en-US/radio/LSImmersiveLife_Police_radio_check_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">LS Immersive Life dispatch. Radio check received.</Clip>
+      <Clip id="LSImmersiveLife_Police_radio_check_02" file="Police/en-US/radio/LSImmersiveLife_Police_radio_check_02.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Radio check confirmed. LS Immersive Life dispatch is receiving you.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.radio.test" speaker="dispatch" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_radio_test_01" file="Police/en-US/radio/LSImmersiveLife_Police_radio_test_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">LS Immersive Life Police audio test. This is a test transmission.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.radio.repeat_requested" speaker="dispatch" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_radio_repeat_requested_01" file="Police/en-US/radio/LSImmersiveLife_Police_radio_repeat_requested_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">A repeat of the last transmission has been requested.</Clip>
+    </Event>
+    <Event id="lsimmersivelife.police.radio.channel_clear" speaker="dispatch" priority="Routine" cooldownMs="1000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_radio_channel_clear_01" file="Police/en-US/radio/LSImmersiveLife_Police_radio_channel_clear_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The radio channel is clear.</Clip>
+    </Event>
+  </Group>
+</LSImmersiveLifeAudio>
