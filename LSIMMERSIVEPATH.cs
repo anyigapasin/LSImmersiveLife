@@ -30,6 +30,7 @@ namespace LSImmersiveLife
         internal string CrimeActivityEventXmlPath { get; private set; }
         internal string CriminalProfileXmlPath { get; private set; }
         internal string NpcDatabaseXmlPath { get; private set; }
+        internal string LocationCatalogXmlPath { get; private set; }
 
         // These paths describe the Police data contracts requested for the
         // mapping foundation. They stay below the one LSImmersive directory so
@@ -85,6 +86,8 @@ namespace LSImmersiveLife
 
          Runtime XML assets:
          - LSImmersiveMainUI.xml: current universal control configuration.
+         - LSImmersiveLocation.xml: shared candidate-only world-location catalog
+           in Plugin; it does not replace Police stations/utility ownership.
          - LSPDImmersiveProfile.xml: Police profile data.
          - LSPDDispatchEvent.xml: dispatch event data.
          - LSPDCrimeActivityEvent.xml: crime activity event data.
@@ -161,6 +164,8 @@ namespace LSImmersiveLife
             LogDirectory = Path.Combine(LSImmersiveDirectory, "Log");
             PluginDirectory = Path.Combine(LSImmersiveDirectory, "Plugin");
             DeveloperXmlPath = Path.Combine(PluginDirectory, "LSDeveloper.xml");
+            LocationCatalogXmlPath = Path.Combine(
+                PluginDirectory, "LSImmersiveLocation.xml");
             RuntimeLogPath = Path.Combine(LogDirectory, "LSRuntime.log");
             DebugLogPath = Path.Combine(LogDirectory, "LSDebug.log");
             DeveloperTraceLogPath = Path.Combine(LogDirectory, "LSDeveloperTrace.log");
@@ -255,6 +260,8 @@ namespace LSImmersiveLife
             LogDirectory = Path.Combine(LSImmersiveDirectory, "Log");
             PluginDirectory = Path.Combine(LSImmersiveDirectory, "Plugin");
             DeveloperXmlPath = Path.Combine(PluginDirectory, "LSDeveloper.xml");
+            LocationCatalogXmlPath = Path.Combine(
+                PluginDirectory, "LSImmersiveLocation.xml");
             RuntimeLogPath = Path.Combine(LogDirectory, "LSRuntime.log");
             DebugLogPath = Path.Combine(LogDirectory, "LSDebug.log");
             DeveloperTraceLogPath = Path.Combine(LogDirectory, "LSDeveloperTrace.log");

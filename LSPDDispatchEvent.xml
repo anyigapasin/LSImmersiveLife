@@ -7,20 +7,20 @@
 -->
 <LSPDDispatchEventCatalog version="2" mode="universal-dispatch" crimeActivityBoundary="separate">
   <Rules patrolRequired="true" automaticAuthorityActivation="false" maxActiveIncidents="1" />
-  <Locations>
-    <Location id="mission_row" x="441.0" y="-981.0" z="30.7" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="pillbox" x="311.0" y="-563.0" z="43.3" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="downtown" x="266.0" y="-861.0" z="29.3" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="strawberry" x="32.0" y="-1373.0" z="29.3" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="vespucci" x="-1151.0" y="-1514.0" z="4.4" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="del_perro" x="-1239.0" y="-1001.0" z="7.0" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="la_mesa" x="820.0" y="-1042.0" z="26.8" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="cypress" x="880.0" y="-2160.0" z="30.5" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="vinewood" x="285.0" y="198.0" z="104.4" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="mirror_park" x="1246.0" y="-522.0" z="69.0" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
-    <Location id="sandy_shores" x="1717.0" y="3291.0" z="41.1" minimumPlayerDistance="65" maximumPlayerDistance="1500" />
-    <Location id="paleto_bay" x="-111.0" y="6334.0" z="31.5" minimumPlayerDistance="65" maximumPlayerDistance="1500" />
-  </Locations>
+  <LocationRefs>
+    <LocationRef id="mission_row" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="pillbox" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="downtown" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="strawberry" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="vespucci" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="del_perro" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="la_mesa" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="cypress" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="vinewood" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="mirror_park" minimumPlayerDistance="65" maximumPlayerDistance="1200" />
+    <LocationRef id="sandy_shores" minimumPlayerDistance="65" maximumPlayerDistance="1500" />
+    <LocationRef id="paleto_bay" minimumPlayerDistance="65" maximumPlayerDistance="1500" />
+  </LocationRefs>
   <Events>
     <Event id="reckless_driver" title="Reckless Driver Reported" type="reckless_driver" audioIncidentType="reckless_driver" briefing="A reckless driver is creating a hazard nearby." suspectModel="a_m_m_business_01" vehicleModel="buffalo" criminalProfileIds="reckless_commuter,street_driver" locationIds="downtown,strawberry,la_mesa,mirror_park,sandy_shores" requiresVehicle="true" mobile="true" armed="false" severity="2" minimumCooldownSeconds="90" spawnDistance="110" />
     <Event id="vehicle_theft" title="Vehicle Theft In Progress" type="vehicle_theft" audioIncidentType="vehicle_theft" briefing="A vehicle theft has just been reported in your patrol area." suspectModel="a_m_y_hipster_01" vehicleModel="granger" criminalProfileIds="street_driver,nervous_suspect" locationIds="mission_row,downtown,del_perro,la_mesa,cypress" requiresVehicle="true" mobile="true" armed="false" severity="3" minimumCooldownSeconds="120" spawnDistance="120" />

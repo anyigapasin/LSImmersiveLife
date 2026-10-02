@@ -45,6 +45,7 @@ namespace LSImmersiveLife
         private readonly LSPDAudioDispatch _audio;
         private readonly LSImmersiveLog _log;
         private readonly string _catalogPath;
+        private readonly string _locationCatalogPath;
         private readonly Random _random = new Random();
         private readonly LSPDControlBindings _controls;
         private readonly LSPoliceDispatchSettings _settings;
@@ -61,6 +62,7 @@ namespace LSImmersiveLife
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, LSPDDispatchLocationDefinition> _locations =
             new Dictionary<string, LSPDDispatchLocationDefinition>(StringComparer.OrdinalIgnoreCase);
+        private LSImmersiveLocationCatalog _locationCatalog;
         private readonly List<DeferredCleanup> _deferredCleanup =
             new List<DeferredCleanup>();
         private readonly Dictionary<string, DateTime> _definitionOfferedAt =
@@ -176,6 +178,7 @@ namespace LSImmersiveLife
             _cleanupSettings = cleanupSettings ?? LSPoliceCleanupSettings.Default();
             _uiSettings = uiSettings ?? LSUniversalUiSettings.Default();
             _catalogPath = paths == null ? null : paths.DispatchEventXmlPath;
+            _locationCatalogPath = paths == null ? null : paths.LocationCatalogXmlPath;
             _criminalProfilePath = paths == null ? null : paths.CriminalProfileXmlPath;
             ReloadDefinitions();
         }
@@ -2883,6 +2886,7 @@ namespace LSImmersiveLife
             _definitions.Clear();
             _criminalProfiles.Clear();
             _locations.Clear();
+            _locationCatalog = null;
             _recentCriminalAssetIds.Clear();
             _recentCriminalAssetIdSet.Clear();
             _criminalAssets.Clear();
@@ -2979,16 +2983,36 @@ namespace LSImmersiveLife
 
             if (string.IsNullOrWhiteSpace(_catalogPath) || !File.Exists(_catalogPath))
                 return;
+
+            LSImmersiveLocationCatalog locationCatalog;
+            try
+            {
+                locationCatalog = LSImmersiveLocationCatalog.Load(
+                    _locationCatalogPath);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_LOCATION_CATALOG_FAILED", ex);
+                return;
+            }
+
+            _locationCatalog = locationCatalog;
+            LogRuntime(
+                "DISPATCH_LOCATION_CATALOG_LOADED",
+                "LocationRecords=" + locationCatalog.LocationCount);
+
             try
             {
                 XDocument document = LoadXmlDocument(_catalogPath);
-                XElement locations = document.Root == null ? null : document.Root.Element("Locations");
-                if (locations != null)
+                XElement locationRefs = document.Root == null
+                    ? null : document.Root.Element("LocationRefs");
+                if (locationRefs != null)
                 {
-                    foreach (XElement node in locations.Elements("Location"))
+                    foreach (XElement node in locationRefs.Elements("LocationRef"))
                     {
                         LSPDDispatchLocationDefinition location =
-                            LSPDDispatchLocationDefinition.FromXml(node);
+                            LSPDDispatchLocationDefinition.FromXml(
+                                node, locationCatalog);
                         if (_locations.ContainsKey(location.Id))
                             throw new InvalidDataException("Duplicate Dispatch location id: " + location.Id);
                         _locations.Add(location.Id, location);

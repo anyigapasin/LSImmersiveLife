@@ -641,10 +641,9 @@ namespace LSImmersiveLife
     }
 
     /// <summary>
-    /// A fixed, authored Dispatch location. The Dispatch owner selects a
-    /// location only when it is a reasonable distance from the officer, then
-    /// keeps the dynamic street fallback for places not covered by a catalog
-    /// entry yet.
+    /// Dispatch selection rules for one shared location record. Coordinates
+    /// come only from LSImmersiveLocation.xml; this definition owns the
+    /// event-specific officer-distance window, not geographic data.
     /// </summary>
     internal sealed class LSPDDispatchLocationDefinition
     {
@@ -653,17 +652,26 @@ namespace LSImmersiveLife
         internal float MinimumPlayerDistance { get; private set; }
         internal float MaximumPlayerDistance { get; private set; }
 
-        internal static LSPDDispatchLocationDefinition FromXml(XElement node)
+        internal static LSPDDispatchLocationDefinition FromXml(
+            XElement node,
+            LSImmersiveLocationCatalog locationCatalog)
         {
+            string id = Required(node, "id", "Dispatch location reference");
+            LSImmersiveLocationCatalog.LSImmersiveLocationPoint point;
+            if (locationCatalog == null
+                || !locationCatalog.TryGetPoint(
+                    id, "AreaSearchAnchor", false, out point))
+            {
+                throw new InvalidOperationException(
+                    "Dispatch location reference has no shared area-search anchor: " + id);
+            }
+
             float minimum = Number(node, "minimumPlayerDistance", 65f, 0f, 10000f);
             float maximum = Number(node, "maximumPlayerDistance", 1200f, minimum, 20000f);
             return new LSPDDispatchLocationDefinition
             {
-                Id = Required(node, "id", "Dispatch location"),
-                Position = new Vector3(
-                    Number(node, "x", 0f, -10000f, 10000f),
-                    Number(node, "y", 0f, -10000f, 10000f),
-                    Number(node, "z", 0f, -1000f, 3000f)),
+                Id = id,
+                Position = point.Position,
                 MinimumPlayerDistance = minimum,
                 MaximumPlayerDistance = maximum
             };

@@ -13,6 +13,10 @@
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
+  <PropertyGroup>
+    <!-- Override GTAVEnhancedRoot when building against another local install. -->
+    <GTAVEnhancedRoot Condition=" '$(GTAVEnhancedRoot)' == '' ">C:\Users\Nataniel\STEAM\steamapps\common\Grand Theft Auto V Enhanced</GTAVEnhancedRoot>
+  </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
     <DebugType>full</DebugType>
@@ -77,8 +81,10 @@
     <Compile Include="LSImmersiveDeveloper.cs" />
     <Compile Include="LSImmersiveHotkeys.cs" />
     <Compile Include="LSIMMERSIVEPATH.cs" />
+    <Compile Include="LSImmersiveLocationCatalog.cs" />
     <Compile Include="LSIMMERSIVEUI.cs" />
     <Compile Include="LSNPCDatabase.cs" />
+    <Compile Include="LSPDStation.cs" />
     <Compile Include="LSRoleplay.cs" />
     <Compile Include="LSAuthorityRole.cs" />
     <Compile Include="LSMainSetting.cs" />
@@ -101,17 +107,22 @@
     <Compile Include="LSImmersivePoliceUI.cs" />
     <Compile Include="LSImmersivePoliceCore.cs" />
     <Compile Include="LSImmersiveMainConfig.cs" />
+    <Compile Include="LSWorldAmbientBehavior.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <!-- Build output is the deployment payload for the existing scripts folder.
-         Keep only the universal XML beside the DLL; all owned data/audio is
-         nested. Shared SHVDN/LemonUI/NAudio installations are not redistributed. -->
+         Keep the universal UI XML beside the DLL; project-owned Plugin/XML data
+         and audio are nested. Shared SHVDN/LemonUI/NAudio are not redistributed. -->
     <Content Include="LSImmersiveMainUI.xml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="LSDeveloper.xml">
       <TargetPath>LSImmersiveLife\Plugin\LSDeveloper.xml</TargetPath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="LSImmersiveLocation.xml">
+      <TargetPath>LSImmersiveLife\Plugin\LSImmersiveLocation.xml</TargetPath>
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="LSNPCDatabase.xml">
@@ -135,9 +146,17 @@
     <None Include="Tests\TestDispatchAudio.ps1" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
-  <!-- Create only project-owned directories in the normal build output. This
-       target never deploys to a running GTA installation or a personal project. -->
+  <!-- Create project-owned payload folders and deploy only the explicitly
+       requested location XML into the configured local GTA V Enhanced install. -->
   <Target Name="PrepareLSImmersiveResources" AfterTargets="Build">
     <MakeDir Directories="$(TargetDir)LSImmersiveLife\Log;$(TargetDir)LSImmersiveLife\Plugin;$(TargetDir)LSImmersiveLife\XML;$(TargetDir)LSImmersiveLife\Audio" />
+  </Target>
+  <Target Name="DeployLSImmersiveLocationCatalog" AfterTargets="Build" Condition="Exists('$(GTAVEnhancedRoot)\GTA5_Enhanced.exe') and Exists('$(MSBuildProjectDirectory)\LSImmersiveLocation.xml')">
+    <MakeDir Directories="$(GTAVEnhancedRoot)\scripts\LSImmersiveLife\Plugin" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\LSImmersiveLocation.xml" DestinationFiles="$(GTAVEnhancedRoot)\scripts\LSImmersiveLife\Plugin\LSImmersiveLocation.xml" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="Deployed LSImmersiveLocation.xml to $(GTAVEnhancedRoot)\scripts\LSImmersiveLife\Plugin\" />
+  </Target>
+  <Target Name="ReportMissingEnhancedInstallForLocationCatalog" AfterTargets="Build" Condition="!Exists('$(GTAVEnhancedRoot)\GTA5_Enhanced.exe')">
+    <Message Importance="high" Text="LSImmersiveLocation.xml was packaged in the build output, but direct deployment was skipped because GTA5_Enhanced.exe was not found under GTAVEnhancedRoot='$(GTAVEnhancedRoot)'." />
   </Target>
 </Project>

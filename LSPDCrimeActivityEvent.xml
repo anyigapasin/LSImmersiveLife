@@ -10,10 +10,11 @@
   deliberately begins a nearby investigation, LSPDCrimeActivity uses this
   data for its owned scene without creating a Dispatch incident.
 
-  Coordinate values remain named keys rather than hard-coded event logic. The
-  LSPDCrimeActivityEvent validates/selects this catalog, and the current Crime
-  Activity owner resolves the supported keys for this GTA build. The catalog
-  stays data-driven and easy to extend.
+  Geographic candidate coordinates are stored in LSImmersiveLocation.xml and
+  referenced here by coordinateKey. Current keys resolve broad area-search
+  anchors only; they are not Enhanced-verified positions or actor spawn points.
+  The observationPointKey, approachKey, and escapeRouteKey labels are legacy
+  planning labels without coordinate records and are not resolved by runtime.
 -->
 <LSImmersiveLifeCrimeActivityDatabase
   version="1"

@@ -30,6 +30,7 @@ namespace LSImmersiveLife
         private readonly LSPoliceCleanupSettings _cleanupSettings;
         private readonly LSPDCrimeActivityEvent _events;
         private readonly LSPDCriminalAssetCatalog _criminalAssets;
+        private LSImmersiveLocationCatalog _locationCatalog;
         private readonly Random _random = new Random();
         private Dictionary<string, LSPDGroupCrimeActivityDefinition> _activities =
             new Dictionary<string, LSPDGroupCrimeActivityDefinition>(
@@ -207,6 +208,8 @@ namespace LSImmersiveLife
         {
             try
             {
+                LSImmersiveLocationCatalog locationCatalog =
+                    LSImmersiveLocationCatalog.Load(_paths.LocationCatalogXmlPath);
                 LSPDCrimeActivityCatalog catalog;
                 string error;
                 if (!_events.TryLoadCatalog(_paths, out catalog, out error))
@@ -215,6 +218,26 @@ namespace LSImmersiveLife
                     return false;
                 }
 
+                foreach (LSPDCrimeActivityLocationDefinition location
+                    in catalog.Locations.Values)
+                {
+                    LSImmersiveLocationCatalog.LSImmersiveLocationPoint point;
+                    if (!locationCatalog.TryGetPoint(
+                        location.CoordinateKey,
+                        "AreaSearchAnchor",
+                        false,
+                        out point))
+                    {
+                        throw new InvalidDataException(
+                            "Crime Activity location has no shared area-search anchor: "
+                            + location.Id + "/" + location.CoordinateKey);
+                    }
+                }
+
+                _locationCatalog = locationCatalog;
+                LogRuntime(
+                    "CRIME_ACTIVITY_LOCATION_CATALOG_LOADED",
+                    "LocationRecords=" + locationCatalog.LocationCount);
                 _locations = catalog.Locations;
                 _groups = catalog.Groups;
                 _activities = catalog.Activities;
@@ -397,9 +420,19 @@ namespace LSImmersiveLife
             position = Vector3.Zero;
             if (location == null || string.IsNullOrWhiteSpace(location.CoordinateKey))
                 return false;
-            return KnownCoordinates.TryGetValue(
+            if (_locationCatalog == null)
+                return false;
+
+            LSImmersiveLocationCatalog.LSImmersiveLocationPoint point;
+            if (!_locationCatalog.TryGetPoint(
                 location.CoordinateKey,
-                out position);
+                "AreaSearchAnchor",
+                false,
+                out point))
+                return false;
+
+            position = point.Position;
+            return true;
         }
 
         internal void ClearObservations()
@@ -1664,26 +1697,6 @@ namespace LSImmersiveLife
         private void LogDebug(string category, string message) { if (_log != null) _log.Debug(category, message); }
         private void LogException(string category, Exception ex) { if (_log != null) _log.Exception(category, ex); }
 
-        private static readonly Dictionary<string, Vector3> KnownCoordinates =
-            new Dictionary<string, Vector3>(StringComparer.OrdinalIgnoreCase)
-            {
-                { "los_santos.downtown.financial", new Vector3(150f, -1040f, 29f) },
-                { "los_santos.vespucci.commercial", new Vector3(-1180f, -890f, 13f) },
-                { "los_santos.south.industrial", new Vector3(280f, -1800f, 28f) },
-                { "los_santos.strawberry.storage", new Vector3(300f, -1400f, 29f) },
-                { "los_santos.la_mesa.garages", new Vector3(950f, -1000f, 39f) },
-                { "los_santos.east_vinewood.hills", new Vector3(850f, 500f, 120f) },
-                { "los_santos.vinewood.nightlife", new Vector3(300f, 200f, 104f) },
-                { "los_santos.mirror_park.edge", new Vector3(1100f, -500f, 65f) },
-                { "blaine.paleto.logging", new Vector3(-100f, 6200f, 31f) },
-                { "blaine.sandy.trailer_yards", new Vector3(1800f, 3700f, 34f) },
-                { "blaine.grand_senora.airstrip", new Vector3(1700f, 3300f, 42f) },
-                { "blaine.chumash.coast", new Vector3(-3150f, 1100f, 20f) },
-                { "blaine.zancudo.supply_route", new Vector3(-2200f, 3000f, 32f) },
-                { "blaine.harmony.compound", new Vector3(600f, 2700f, 40f) },
-                { "los_santos.banham.canyon", new Vector3(-2500f, 1000f, 180f) },
-                { "los_santos.pacific_bluffs.estate", new Vector3(-3000f, 300f, 15f) }
-            };
         internal IEnumerable<LSPDGroupCrimeActivityDefinition> FindByLocation(
             string locationId)
         {
