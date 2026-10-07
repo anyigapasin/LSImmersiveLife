@@ -53,8 +53,9 @@ namespace LSImmersiveLife
             AddPoliceKey("Secure Suspect", LSPDControlAction.Secure);
             AddPoliceKey("Request Prisoner Transport", LSPDControlAction.Transport);
             AddPoliceKey("Complete Prisoner Transport", LSPDControlAction.TransportComplete);
-            AddPoliceKey("NPC Interaction", LSPDControlAction.Interaction);
-            AddPoliceKey("Request Backup", LSPDControlAction.Emergency);
+            AddPoliceKey("Citizen Ped Response", LSPDControlAction.Interaction);
+            AddPoliceKey("Back Up Menu", LSPDControlAction.Emergency);
+            AddPoliceKey("Dispatch Menu", LSPDControlAction.DispatchMenu);
             AddPoliceKey("Reset Police Runtime", LSPDControlAction.Reset);
 
             NativeItem save = new NativeItem("Save Control Changes", "Write all customized keys to LSImmersiveMainUI.xml.");

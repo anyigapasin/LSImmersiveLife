@@ -1,16 +1,26 @@
-﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
-<!--
-  Saved Police Authority profile. It is read passively at startup and applied
-  only after the player explicitly opens Police Authority.
--->
-<LSPDImmersiveProfile version="2.0">
-  <Profile agencyId="lspd" stationId="mission_row" pedId="personal-ped-venti" vehicleId="personal-vehicle-police" weaponId="service_pistol" weaponSetId="personal-police-loadout" favoritePedId="personal-ped-venti" favoriteVehicleId="personal-vehicle-police" backupPedId="personal-backup-ped-clorinde" />
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<LSPDImmersiveProfile version="3.0">
+  <LSIMMERSIVELIFE_PLAYER label="LSIMMERSIVELIFE PLAYER">
+    <SavedAuthorityProfile label="Saved Authority Profile" stationSetupComplete="false" weaponId="service_pistol" favoritePedId="personal-ped-venti" favoriteVehicleId="personal-vehicle-police" backupPedId="personal-backup-ped-clorinde" citizenBackupPedId="personal-backup-ped-clorinde" dispatchBackupPedId="personal-backup-ped-clorinde">
+      <Agency label="Agency" id="lspd">Los Santos Police Department</Agency>
+      <Station label="Station" id="mission_row">Downtown Police Station</Station>
+      <PersonalPedOfficer label="Personal Ped Officer" id="personal-ped-venti" model="venti">Venti</PersonalPedOfficer>
+      <PersonaPoliceUtility label="Persona Police Utility" id="personal-vehicle-police" model="police">LSPD Police Cruiser</PersonaPoliceUtility>
+      <PersonalArmoryXML label="Personal Armory XML" file="LSPolicePersonalWeapons.xml" setId="personal-police-loadout" activeWeaponId="service_pistol">True</PersonalArmoryXML>
+      <DefaultToLSImmersiveProvidedXMLWeapon label="Default to LSImmersive Provided XML Weapon" weaponId="service_pistol" weapon="WEAPON_PISTOL">False</DefaultToLSImmersiveProvidedXMLWeapon>
+      <PersonalLSImmersivePoliceXML label="Personal LSImmersivePolice XML">LSPDImmersiveProfile.xml</PersonalLSImmersivePoliceXML>
+    </SavedAuthorityProfile>
+  </LSIMMERSIVELIFE_PLAYER>
   <Favorites>
-    <PedFavorites><Ped id="personal-ped-venti" name="Venti" model="venti" modelType="Personal Police Officer" source="Player Addon" /></PedFavorites>
-    <VehicleFavorites><Vehicle id="personal-vehicle-police" name="LSPD Police Cruiser" model="police" modelType="Patrol Cruiser" source="GTA V" /></VehicleFavorites>
-    <!-- Personal support-officer choices.  The Backup owner reads this list;
-         it never changes the universal LSPoliceModelPed library. -->
-    <BackupPedFavorites><Ped id="personal-backup-ped-clorinde" name="Clorinde" model="clorinde" modelType="Personal Backup Officer" source="Player Addon" /></BackupPedFavorites>
-    <PersonalWeaponCollection file="LSPolicePersonalWeapons.xml" setId="personal-police-loadout" activeWeaponId="service_pistol" />
+    <PedFavorites label="Favourite Saved Ped Officer">
+      <Ped id="personal-ped-venti" name="Venti" model="venti" modelType="Personal Police Officer" source="Player Addon" />
+    </PedFavorites>
+    <VehicleFavorites label="Favourite Saved Police Utility">
+      <Vehicle id="personal-vehicle-police" name="LSPD Police Cruiser" model="police" modelType="Patrol Cruiser" source="GTA V" />
+    </VehicleFavorites>
+    <BackupPedFavorites label="Back Up Ped Support Officer">
+      <Ped id="personal-backup-ped-clorinde" name="Clorinde" model="clorinde" modelType="Personal Backup Officer" source="Player Addon" />
+    </BackupPedFavorites>
+    <PersonalWeaponCollection file="LSPolicePersonalWeapons.xml" setId="personal-police-loadout" activeWeaponId="service_pistol" label="Favourite Saved Police Armory" />
   </Favorites>
 </LSPDImmersiveProfile>

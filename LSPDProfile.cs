@@ -88,6 +88,12 @@ namespace LSImmersiveLife
         internal IEnumerable<LSPDPoliceFavoriteModel> FavoriteBackupPeds { get { return _favoriteBackupPeds; } }
         internal IEnumerable<LSPDPoliceFavoriteWeapon> PersonalWeapons { get { return _personalWeapons; } }
         internal LSPDPoliceProfileSelection Selection { get { return _selection; } }
+        internal bool StationSetupComplete { get { return _selection.StationSetupComplete; } }
+
+        internal void SetStationSetupComplete(bool complete)
+        {
+            _selection.StationSetupComplete = complete;
+        }
 
         internal bool Activate()
         {
@@ -221,6 +227,7 @@ namespace LSImmersiveLife
             if (value == null)
                 return false;
             _selection.WeaponId = value.Id;
+            _selection.UsePersonalLoadout = false;
             return true;
         }
 
@@ -274,9 +281,63 @@ namespace LSImmersiveLife
 
         internal bool SetFavouriteBackupPed(string idOrModel)
         {
+            LSPDPoliceFavoriteModel favorite = UpsertFavouriteBackupPed(idOrModel);
+            if (favorite == null)
+                return false;
+            _selection.BackupPedId = favorite.Id;
+            return true;
+        }
+
+        internal bool SetFavouriteCitizenBackupPed(string idOrModel)
+        {
+            LSPDPoliceFavoriteModel favorite = UpsertFavouriteBackupPed(idOrModel);
+            if (favorite == null)
+                return false;
+            _selection.CitizenBackupPedId = favorite.Id;
+            return true;
+        }
+
+        internal bool SetFavouriteDispatchBackupPed(string idOrModel)
+        {
+            LSPDPoliceFavoriteModel favorite = UpsertFavouriteBackupPed(idOrModel);
+            if (favorite == null)
+                return false;
+            _selection.DispatchBackupPedId = favorite.Id;
+            return true;
+        }
+
+        internal bool SelectFavouriteBackupPed(string idOrModel)
+        {
+            LSPDPoliceFavoriteModel favorite = FindFavoriteModel(_favoriteBackupPeds, idOrModel);
+            if (favorite == null)
+                return false;
+            _selection.BackupPedId = favorite.Id;
+            return true;
+        }
+
+        internal bool SelectFavouriteCitizenBackupPed(string idOrModel)
+        {
+            LSPDPoliceFavoriteModel favorite = FindFavoriteModel(_favoriteBackupPeds, idOrModel);
+            if (favorite == null)
+                return false;
+            _selection.CitizenBackupPedId = favorite.Id;
+            return true;
+        }
+
+        internal bool SelectFavouriteDispatchBackupPed(string idOrModel)
+        {
+            LSPDPoliceFavoriteModel favorite = FindFavoriteModel(_favoriteBackupPeds, idOrModel);
+            if (favorite == null)
+                return false;
+            _selection.DispatchBackupPedId = favorite.Id;
+            return true;
+        }
+
+        private LSPDPoliceFavoriteModel UpsertFavouriteBackupPed(string idOrModel)
+        {
             string normalized = NormalizeIdentifier(idOrModel);
             if (string.IsNullOrEmpty(normalized) || IsLegacyPromptValue(normalized))
-                return false;
+                return null;
 
             LSPDPoliceModelDefinition library = FindPed(normalized);
             string favoriteId = FavoriteModelId(_favoriteBackupPeds,
@@ -292,17 +353,7 @@ namespace LSImmersiveLife
                 : LSPDPoliceFavoriteModel.FromPed(library, favoriteId);
 
             UpsertSingleModel(_favoriteBackupPeds, favorite);
-            _selection.BackupPedId = favorite.Id;
-            return true;
-        }
-
-        internal bool SelectFavouriteBackupPed(string idOrModel)
-        {
-            LSPDPoliceFavoriteModel favorite = FindFavoriteModel(_favoriteBackupPeds, idOrModel);
-            if (favorite == null)
-                return false;
-            _selection.BackupPedId = favorite.Id;
-            return true;
+            return favorite;
         }
 
         internal bool AddPersonalWeapon(string idOrWeapon)
@@ -319,7 +370,8 @@ namespace LSImmersiveLife
             if (existing == null)
                 _personalWeapons.Add(favorite);
 
-            _selection.WeaponId = existing == null ? favorite.Id : existing.Id;
+            _selection.PersonalActiveWeaponId = existing == null ? favorite.Id : existing.Id;
+            _selection.UsePersonalLoadout = true;
             if (string.IsNullOrWhiteSpace(_selection.WeaponSetId))
                 _selection.WeaponSetId = DefaultWeaponSetId;
             return true;
@@ -330,7 +382,8 @@ namespace LSImmersiveLife
             LSPDPoliceFavoriteWeapon value = FindPersonalWeapon(idOrWeapon);
             if (value == null)
                 return false;
-            _selection.WeaponId = value.Id;
+            _selection.PersonalActiveWeaponId = value.Id;
+            _selection.UsePersonalLoadout = true;
             if (string.IsNullOrWhiteSpace(_selection.WeaponSetId))
                 _selection.WeaponSetId = DefaultWeaponSetId;
             return true;
@@ -343,12 +396,14 @@ namespace LSImmersiveLife
                 return false;
 
             _personalWeapons.Remove(value);
-            if (Matches(_selection.WeaponId, value.Id)
-                || Matches(_selection.WeaponId, value.WeaponName))
+            if (Matches(_selection.PersonalActiveWeaponId, value.Id)
+                || Matches(_selection.PersonalActiveWeaponId, value.WeaponName))
             {
-                _selection.WeaponId = _personalWeapons.Count > 0
+                _selection.PersonalActiveWeaponId = _personalWeapons.Count > 0
                     ? _personalWeapons[0].Id
-                    : (_weapons.Count > 0 ? _weapons[0].Id : string.Empty);
+                    : string.Empty;
+                if (_personalWeapons.Count == 0)
+                    _selection.UsePersonalLoadout = false;
             }
             return true;
         }
@@ -386,7 +441,7 @@ namespace LSImmersiveLife
             {
                 // Merge only owned values. Authored comments, future sections,
                 // unknown attributes and other weapon sets survive a profile save.
-                XDocument profile = MergeDocument(ProfileXmlPath, BuildProfileXml());
+                XDocument profile = MergeProfileDocument(ProfileXmlPath, BuildProfileXml());
                 // Authority behavior moved to the one universal
                 // LSImmersiveMainUI.xml configuration. Remove a legacy copied
                 // settings node if an older saved profile still contains one.
@@ -422,16 +477,29 @@ namespace LSImmersiveLife
                 return false;
             ValidateUniqueIds(captured.Select(value => value.Id), "personal weapon");
             var previous = _personalWeapons.ToList();
-            string previousActive = _selection.WeaponId;
+            string previousActive = _selection.PersonalActiveWeaponId;
+            bool previousSource = _selection.UsePersonalLoadout;
             _personalWeapons.Clear();
             _personalWeapons.AddRange(captured);
-            _selection.WeaponId = activeId ?? captured[0].Id;
+            _selection.PersonalActiveWeaponId = activeId ?? captured[0].Id;
+            _selection.UsePersonalLoadout = true;
             if (Save())
                 return true;
             _personalWeapons.Clear();
             _personalWeapons.AddRange(previous);
-            _selection.WeaponId = previousActive;
+            _selection.PersonalActiveWeaponId = previousActive;
+            _selection.UsePersonalLoadout = previousSource;
             return false;
+        }
+
+        internal bool SelectPersonalLoadout()
+        {
+            if (_personalWeapons.Count == 0)
+                return false;
+            if (FindPersonalWeapon(_selection.PersonalActiveWeaponId) == null)
+                _selection.PersonalActiveWeaponId = _personalWeapons[0].Id;
+            _selection.UsePersonalLoadout = true;
+            return true;
         }
 
         private XElement FindSelectedWeaponSet(XElement root)
@@ -458,6 +526,39 @@ namespace LSImmersiveLife
                 throw new InvalidDataException("XML root does not match; existing file was not replaced: " + path);
             else
                 MergeOwnedXml(document.Root, authored);
+            return document;
+        }
+
+        private static XDocument MergeProfileDocument(string path, XElement authored)
+        {
+            XDocument document = LoadDocument(path);
+            if (document == null)
+                return new XDocument(new XDeclaration("1.0", "utf-8", "yes"), authored);
+            if (document.Root == null || document.Root.Name != authored.Name)
+                throw new InvalidDataException("Police Profile XML root does not match; existing file was not replaced: " + path);
+
+            XElement root = document.Root;
+            root.SetAttributeValue("version", (string)authored.Attribute("version"));
+            root.Elements("Profile").Remove();
+            root.Elements("Selected").Remove();
+            root.Elements("LSIMMERSIVELIFE_PLAYER").Remove();
+
+            XElement savedProfile = new XElement(authored.Element("LSIMMERSIVELIFE_PLAYER"));
+            XElement existingFavorites = root.Element("Favorites") ?? root.Element("FavouriteSet");
+            XElement authoredFavorites = authored.Element("Favorites");
+            if (existingFavorites == null)
+            {
+                existingFavorites = new XElement(authoredFavorites);
+                root.Add(existingFavorites);
+            }
+            else
+            {
+                existingFavorites.Name = "Favorites";
+                MergeOwnedXml(existingFavorites, authoredFavorites);
+            }
+            root.Elements("FavouriteSet").Remove();
+
+            root.AddFirst(savedProfile);
             return document;
         }
 
@@ -496,6 +597,11 @@ namespace LSImmersiveLife
         {
             return _stations.FirstOrDefault(value =>
                 Matches(value.Id, id) || Matches(value.DisplayName, id));
+        }
+
+        internal LSPDPoliceLocationDefinition FindLocation(string id)
+        {
+            return _locations.FirstOrDefault(value => Matches(value.Id, id));
         }
 
         internal LSPDPoliceModelDefinition FindPed(string idOrModel)
@@ -545,9 +651,17 @@ namespace LSImmersiveLife
         {
             get { return FindFavoriteModel(_favoriteBackupPeds, _selection.BackupPedId); }
         }
+        internal LSPDPoliceFavoriteModel ActiveFavoriteCitizenBackupPed
+        {
+            get { return FindFavoriteModel(_favoriteBackupPeds, _selection.CitizenBackupPedId); }
+        }
+        internal LSPDPoliceFavoriteModel ActiveFavoriteDispatchBackupPed
+        {
+            get { return FindFavoriteModel(_favoriteBackupPeds, _selection.DispatchBackupPedId); }
+        }
         internal LSPDPoliceFavoriteWeapon SelectedPersonalWeapon
         {
-            get { return FindPersonalWeapon(_selection.WeaponId); }
+            get { return FindPersonalWeapon(_selection.PersonalActiveWeaponId); }
         }
 
         /// <summary>
@@ -564,6 +678,24 @@ namespace LSImmersiveLife
                     ?? _favoriteBackupPeds.FirstOrDefault();
                 return favorite == null ? string.Empty : favorite.ModelName;
             }
+        }
+
+        internal string PreferredCitizenBackupPedModelName
+        {
+            get { return PreferredBackupPedModelNameFor(_selection.CitizenBackupPedId); }
+        }
+
+        internal string PreferredDispatchBackupPedModelName
+        {
+            get { return PreferredBackupPedModelNameFor(_selection.DispatchBackupPedId); }
+        }
+
+        private string PreferredBackupPedModelNameFor(string preferenceId)
+        {
+            LSPDPoliceFavoriteModel favorite = FindFavoriteModel(_favoriteBackupPeds, preferenceId)
+                ?? ActiveFavoriteBackupPed
+                ?? _favoriteBackupPeds.FirstOrDefault();
+            return favorite == null ? string.Empty : favorite.ModelName;
         }
 
         internal string SelectedPedModelName
@@ -618,9 +750,11 @@ namespace LSImmersiveLife
         {
             get
             {
-                LSPDPoliceFavoriteWeapon personal = SelectedPersonalWeapon;
-                if (personal != null)
-                    return personal.WeaponName;
+                if (_selection.UsePersonalLoadout)
+                {
+                    LSPDPoliceFavoriteWeapon personal = SelectedPersonalWeapon;
+                    return personal == null ? string.Empty : personal.WeaponName;
+                }
                 LSPDPoliceWeaponDefinition library = SelectedWeapon;
                 return library == null ? string.Empty : library.WeaponName;
             }
@@ -630,9 +764,11 @@ namespace LSImmersiveLife
         {
             get
             {
-                LSPDPoliceFavoriteWeapon personal = SelectedPersonalWeapon;
-                if (personal != null)
-                    return personal.DisplayName;
+                if (_selection.UsePersonalLoadout)
+                {
+                    LSPDPoliceFavoriteWeapon personal = SelectedPersonalWeapon;
+                    return personal == null ? "Not Selected" : personal.DisplayName;
+                }
                 LSPDPoliceWeaponDefinition library = SelectedWeapon;
                 return library == null ? "Not Selected" : library.DisplayName;
             }
@@ -642,9 +778,11 @@ namespace LSImmersiveLife
         {
             get
             {
-                LSPDPoliceFavoriteWeapon personal = SelectedPersonalWeapon;
-                if (personal != null)
-                    return personal.Ammo;
+                if (_selection.UsePersonalLoadout)
+                {
+                    LSPDPoliceFavoriteWeapon personal = SelectedPersonalWeapon;
+                    return personal == null ? 0 : personal.Ammo;
+                }
                 LSPDPoliceWeaponDefinition library = SelectedWeapon;
                 return library == null ? 0 : library.DefaultAmmo;
             }
@@ -658,6 +796,7 @@ namespace LSImmersiveLife
             _favoriteBackupPeds.Clear();
             _personalWeapons.Clear();
             bool loadedSavedProfile = false;
+            bool hasSavedArmorySource = false;
 
             try
             {
@@ -669,18 +808,79 @@ namespace LSImmersiveLife
                         throw new InvalidDataException("Police profile XML root is invalid.");
 
                     loadedSavedProfile = true;
-                    XElement selected = root.Element("Profile") ?? root.Element("Selected");
-                    if (selected != null)
+                    XElement playerSection = root.Element("LSIMMERSIVELIFE_PLAYER");
+                    XElement savedAuthorityProfile = playerSection == null
+                        ? null
+                        : playerSection.Element("SavedAuthorityProfile");
+                    if (savedAuthorityProfile != null)
                     {
-                        _selection.AgencyId = FirstAttribute(selected, "agencyId", "agency");
-                        _selection.StationId = FirstAttribute(selected, "stationId", "station");
-                        _selection.PedId = FirstAttribute(selected, "pedId", "characterModel");
-                        _selection.VehicleId = FirstAttribute(selected, "vehicleId", "vehicleModel");
-                        _selection.WeaponId = FirstAttribute(selected, "weaponId", "weaponData");
-                        _selection.WeaponSetId = AttributeOrDefault(selected, "weaponSetId", DefaultWeaponSetId);
-                        _selection.FavoritePedId = FirstAttribute(selected, "favoritePedId", "favouritePedId");
-                        _selection.FavoriteVehicleId = FirstAttribute(selected, "favoriteVehicleId", "favouriteVehicleId");
-                        _selection.BackupPedId = FirstAttribute(selected, "backupPedId", "backupFavouritePedId");
+                        _selection.AgencyId = ProfileElementId(savedAuthorityProfile, "Agency");
+                        _selection.StationId = ProfileElementId(savedAuthorityProfile, "Station");
+                        _selection.StationSetupComplete = XmlValue.Bool(savedAuthorityProfile, "stationSetupComplete");
+                        _selection.PedId = ProfileElementId(savedAuthorityProfile, "PersonalPedOfficer");
+                        _selection.VehicleId = ProfileElementId(savedAuthorityProfile, "PersonaPoliceUtility");
+                        _selection.WeaponId = ProfileElementAttribute(
+                            savedAuthorityProfile,
+                            "DefaultToLSImmersiveProvidedXMLWeapon",
+                            "weaponId",
+                            AttributeOrDefault(savedAuthorityProfile, "weaponId", string.Empty));
+                        _selection.PersonalActiveWeaponId = ProfileElementAttribute(
+                            savedAuthorityProfile,
+                            "PersonalArmoryXML",
+                            "activeWeaponId",
+                            string.Empty);
+                        _selection.WeaponSetId = ProfileElementAttribute(
+                            savedAuthorityProfile,
+                            "PersonalArmoryXML",
+                            "setId",
+                            DefaultWeaponSetId);
+                        _selection.FavoritePedId = AttributeOrDefault(savedAuthorityProfile, "favoritePedId", string.Empty);
+                        _selection.FavoriteVehicleId = AttributeOrDefault(savedAuthorityProfile, "favoriteVehicleId", string.Empty);
+                        _selection.BackupPedId = AttributeOrDefault(savedAuthorityProfile, "backupPedId", string.Empty);
+                        _selection.CitizenBackupPedId = AttributeOrDefault(savedAuthorityProfile, "citizenBackupPedId", string.Empty);
+                        _selection.DispatchBackupPedId = AttributeOrDefault(savedAuthorityProfile, "dispatchBackupPedId", string.Empty);
+
+                        bool usePersonalLoadout;
+                        XElement personalArmory = savedAuthorityProfile.Element("PersonalArmoryXML");
+                        if (personalArmory != null && bool.TryParse(personalArmory.Value.Trim(), out usePersonalLoadout))
+                        {
+                            _selection.UsePersonalLoadout = usePersonalLoadout;
+                            hasSavedArmorySource = true;
+                        }
+                    }
+                    else
+                    {
+                        XElement selected = root.Element("Profile") ?? root.Element("Selected");
+                        if (selected != null)
+                        {
+                            _selection.AgencyId = FirstAttribute(selected, "agencyId", "agency");
+                            _selection.StationId = FirstAttribute(selected, "stationId", "station");
+                            _selection.StationSetupComplete = XmlValue.Bool(selected, "stationSetupComplete");
+                            _selection.PedId = FirstAttribute(selected, "pedId", "characterModel");
+                            _selection.VehicleId = FirstAttribute(selected, "vehicleId", "vehicleModel");
+                            _selection.WeaponId = FirstAttribute(selected, "weaponId", "weaponData");
+                            _selection.PersonalActiveWeaponId = AttributeOrDefault(
+                                selected,
+                                "personalWeaponId",
+                                string.Empty);
+                            string armorySource = AttributeOrDefault(selected, "armorySource", string.Empty);
+                            if (string.Equals(armorySource, "personal", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _selection.UsePersonalLoadout = true;
+                                hasSavedArmorySource = true;
+                            }
+                            else if (string.Equals(armorySource, "system", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _selection.UsePersonalLoadout = false;
+                                hasSavedArmorySource = true;
+                            }
+                            _selection.WeaponSetId = AttributeOrDefault(selected, "weaponSetId", DefaultWeaponSetId);
+                            _selection.FavoritePedId = FirstAttribute(selected, "favoritePedId", "favouritePedId");
+                            _selection.FavoriteVehicleId = FirstAttribute(selected, "favoriteVehicleId", "favouriteVehicleId");
+                            _selection.BackupPedId = FirstAttribute(selected, "backupPedId", "backupFavouritePedId");
+                            _selection.CitizenBackupPedId = FirstAttribute(selected, "citizenBackupPedId");
+                            _selection.DispatchBackupPedId = FirstAttribute(selected, "dispatchBackupPedId");
+                        }
                     }
 
                     XElement favorites = root.Element("Favorites") ?? root.Element("FavouriteSet");
@@ -705,7 +905,7 @@ namespace LSImmersiveLife
                             _selection.WeaponSetId = AttributeOrDefault(reference, "setId", _selection.WeaponSetId);
                             string active = AttributeOrDefault(reference, "activeWeaponId", string.Empty);
                             if (!string.IsNullOrWhiteSpace(active))
-                                _selection.WeaponId = active;
+                                _selection.PersonalActiveWeaponId = active;
                         }
                     }
                 }
@@ -721,6 +921,12 @@ namespace LSImmersiveLife
                         ReadWeaponSetSelection(set);
                     }
                 }
+
+                // Older Profiles did not record which weapon source was active.
+                // They always restored the personal collection at Authority
+                // startup, so keep that behavior for existing saved Profiles.
+                if (!hasSavedArmorySource)
+                    _selection.UsePersonalLoadout = _personalWeapons.Count > 0;
             }
             catch (Exception ex)
             {
@@ -739,13 +945,18 @@ namespace LSImmersiveLife
             {
                 AgencyId = DefaultAgencyId(),
                 StationId = DefaultStationId(),
+                StationSetupComplete = false,
                 PedId = _pedModels.Count > 0 ? _pedModels[0].Id : string.Empty,
                 VehicleId = _vehicles.Count > 0 ? _vehicles[0].Id : string.Empty,
                 WeaponId = _weapons.Count > 0 ? _weapons[0].Id : string.Empty,
+                PersonalActiveWeaponId = string.Empty,
+                UsePersonalLoadout = false,
                 WeaponSetId = DefaultWeaponSetId,
                 FavoritePedId = string.Empty,
                 FavoriteVehicleId = string.Empty,
-                BackupPedId = string.Empty
+                BackupPedId = string.Empty,
+                CitizenBackupPedId = string.Empty,
+                DispatchBackupPedId = string.Empty
             };
         }
 
@@ -772,13 +983,14 @@ namespace LSImmersiveLife
                     : (_vehicles.Count > 0 ? _vehicles[0].Id : string.Empty);
             }
 
-            if (FindWeapon(_selection.WeaponId) == null
-                && FindPersonalWeapon(_selection.WeaponId) == null)
-            {
-                _selection.WeaponId = _personalWeapons.Count > 0
+            if (FindWeapon(_selection.WeaponId) == null)
+                _selection.WeaponId = _weapons.Count > 0 ? _weapons[0].Id : string.Empty;
+            if (FindPersonalWeapon(_selection.PersonalActiveWeaponId) == null)
+                _selection.PersonalActiveWeaponId = _personalWeapons.Count > 0
                     ? _personalWeapons[0].Id
-                    : (_weapons.Count > 0 ? _weapons[0].Id : string.Empty);
-            }
+                    : string.Empty;
+            if (_personalWeapons.Count == 0)
+                _selection.UsePersonalLoadout = false;
 
             if (string.IsNullOrWhiteSpace(_selection.WeaponSetId))
                 _selection.WeaponSetId = DefaultWeaponSetId;
@@ -794,6 +1006,10 @@ namespace LSImmersiveLife
                 _selection.BackupPedId = _favoriteBackupPeds.Count > 0
                     ? _favoriteBackupPeds[0].Id
                     : string.Empty;
+            if (FindFavoriteModel(_favoriteBackupPeds, _selection.CitizenBackupPedId) == null)
+                _selection.CitizenBackupPedId = _selection.BackupPedId;
+            if (FindFavoriteModel(_favoriteBackupPeds, _selection.DispatchBackupPedId) == null)
+                _selection.DispatchBackupPedId = _selection.BackupPedId;
         }
 
         private string DefaultAgencyId()
@@ -817,7 +1033,7 @@ namespace LSImmersiveLife
             _selection.WeaponSetId = AttributeOrDefault(set, "id", DefaultWeaponSetId);
             string active = AttributeOrDefault(set, "activeWeaponId", string.Empty);
             if (!string.IsNullOrWhiteSpace(active))
-                _selection.WeaponId = active;
+                _selection.PersonalActiveWeaponId = active;
         }
 
         private void RemoveLegacyPromptValues()
@@ -832,36 +1048,85 @@ namespace LSImmersiveLife
                 _selection.VehicleId = string.Empty;
             if (IsLegacyPromptValue(_selection.WeaponId))
                 _selection.WeaponId = string.Empty;
+            if (IsLegacyPromptValue(_selection.PersonalActiveWeaponId))
+                _selection.PersonalActiveWeaponId = string.Empty;
             if (IsLegacyPromptValue(_selection.BackupPedId))
                 _selection.BackupPedId = string.Empty;
+            if (IsLegacyPromptValue(_selection.CitizenBackupPedId))
+                _selection.CitizenBackupPedId = string.Empty;
+            if (IsLegacyPromptValue(_selection.DispatchBackupPedId))
+                _selection.DispatchBackupPedId = string.Empty;
         }
 
         private XElement BuildProfileXml()
         {
+            LSPDPoliceAgencyDefinition agency = FindAgency(_selection.AgencyId);
+            LSPDPoliceStationDefinition station = FindStation(_selection.StationId);
+            LSPDPoliceFavoriteModel personalPed = FindFavoriteModel(_favoritePeds, _selection.PedId);
+            LSPDPoliceFavoriteModel personalVehicle = FindFavoriteModel(_favoriteVehicles, _selection.VehicleId);
+            string pedDisplayName = SelectedPedDisplayName;
+            string vehicleDisplayName = SelectedVehicleDisplayName;
+            string pedModel = SelectedPedModelName;
+            string vehicleModel = SelectedVehicleModelName;
+            string systemWeaponName = SelectedWeapon == null ? string.Empty : SelectedWeapon.WeaponName;
             return new XElement(
                 "LSPDImmersiveProfile",
-                new XAttribute("version", "2.0"),
+                new XAttribute("version", "3.0"),
                 new XElement(
-                    "Profile",
-                    new XAttribute("agencyId", _selection.AgencyId ?? string.Empty),
-                    new XAttribute("stationId", _selection.StationId ?? string.Empty),
-                    new XAttribute("pedId", _selection.PedId ?? string.Empty),
-                    new XAttribute("vehicleId", _selection.VehicleId ?? string.Empty),
-                    new XAttribute("weaponId", _selection.WeaponId ?? string.Empty),
-                    new XAttribute("weaponSetId", _selection.WeaponSetId ?? DefaultWeaponSetId),
-                    new XAttribute("favoritePedId", _selection.FavoritePedId ?? string.Empty),
-                    new XAttribute("favoriteVehicleId", _selection.FavoriteVehicleId ?? string.Empty),
-                    new XAttribute("backupPedId", _selection.BackupPedId ?? string.Empty)),
+                    "LSIMMERSIVELIFE_PLAYER",
+                    new XAttribute("label", "LSIMMERSIVELIFE PLAYER"),
+                    new XElement(
+                        "SavedAuthorityProfile",
+                        new XAttribute("label", "Saved Authority Profile"),
+                        new XAttribute("stationSetupComplete", _selection.StationSetupComplete),
+                        new XAttribute("weaponId", _selection.WeaponId ?? string.Empty),
+                        new XAttribute("favoritePedId", _selection.FavoritePedId ?? string.Empty),
+                        new XAttribute("favoriteVehicleId", _selection.FavoriteVehicleId ?? string.Empty),
+                        new XAttribute("backupPedId", _selection.BackupPedId ?? string.Empty),
+                        new XAttribute("citizenBackupPedId", _selection.CitizenBackupPedId ?? string.Empty),
+                        new XAttribute("dispatchBackupPedId", _selection.DispatchBackupPedId ?? string.Empty),
+                        new XElement("Agency", new XAttribute("label", "Agency"), new XAttribute("id", _selection.AgencyId ?? string.Empty), agency == null ? string.Empty : agency.DisplayName),
+                        new XElement("Station", new XAttribute("label", "Station"), new XAttribute("id", _selection.StationId ?? string.Empty), station == null ? string.Empty : station.DisplayName),
+                        new XElement(
+                            "PersonalPedOfficer",
+                            new XAttribute("label", "Personal Ped Officer"),
+                            new XAttribute("id", _selection.PedId ?? string.Empty),
+                            new XAttribute("model", pedModel ?? string.Empty),
+                            personalPed == null ? pedDisplayName : personalPed.DisplayName),
+                        new XElement(
+                            "PersonaPoliceUtility",
+                            new XAttribute("label", "Persona Police Utility"),
+                            new XAttribute("id", _selection.VehicleId ?? string.Empty),
+                            new XAttribute("model", vehicleModel ?? string.Empty),
+                            personalVehicle == null ? vehicleDisplayName : personalVehicle.DisplayName),
+                        new XElement(
+                            "PersonalArmoryXML",
+                            new XAttribute("label", "Personal Armory XML"),
+                            new XAttribute("file", Path.GetFileName(PersonalWeaponXmlPath)),
+                            new XAttribute("setId", _selection.WeaponSetId ?? DefaultWeaponSetId),
+                            new XAttribute("activeWeaponId", _selection.PersonalActiveWeaponId ?? string.Empty),
+                            _selection.UsePersonalLoadout ? bool.TrueString : bool.FalseString),
+                        new XElement(
+                            "DefaultToLSImmersiveProvidedXMLWeapon",
+                            new XAttribute("label", "Default to LSImmersive Provided XML Weapon"),
+                            new XAttribute("weaponId", _selection.WeaponId ?? string.Empty),
+                            new XAttribute("weapon", systemWeaponName ?? string.Empty),
+                            _selection.UsePersonalLoadout ? bool.FalseString : bool.TrueString),
+                        new XElement(
+                            "PersonalLSImmersivePoliceXML",
+                            new XAttribute("label", "Personal LSImmersivePolice XML"),
+                            Path.GetFileName(ProfileXmlPath)))),
                 new XElement(
                     "Favorites",
-                    new XElement("PedFavorites", _favoritePeds.Select(item => item.ToXml("Ped"))),
-                    new XElement("VehicleFavorites", _favoriteVehicles.Select(item => item.ToXml("Vehicle"))),
-                    new XElement("BackupPedFavorites", _favoriteBackupPeds.Select(item => item.ToXml("Ped"))),
+                    new XElement("PedFavorites", new XAttribute("label", "Favourite Saved Ped Officer"), _favoritePeds.Select(item => item.ToXml("Ped"))),
+                    new XElement("VehicleFavorites", new XAttribute("label", "Favourite Saved Police Utility"), _favoriteVehicles.Select(item => item.ToXml("Vehicle"))),
+                    new XElement("BackupPedFavorites", new XAttribute("label", "Back Up Ped Support Officer"), _favoriteBackupPeds.Select(item => item.ToXml("Ped"))),
                     new XElement(
                         "PersonalWeaponCollection",
+                        new XAttribute("label", "Favourite Saved Police Armory"),
                         new XAttribute("file", Path.GetFileName(PersonalWeaponXmlPath)),
                         new XAttribute("setId", _selection.WeaponSetId ?? DefaultWeaponSetId),
-                        new XAttribute("activeWeaponId", _selection.WeaponId ?? string.Empty))));
+                        new XAttribute("activeWeaponId", _selection.PersonalActiveWeaponId ?? string.Empty))));
         }
 
         private XElement BuildPersonalWeaponsXml()
@@ -872,7 +1137,7 @@ namespace LSImmersiveLife
                 new XElement(
                     "WeaponSet",
                     new XAttribute("id", _selection.WeaponSetId ?? DefaultWeaponSetId),
-                    new XAttribute("activeWeaponId", _selection.WeaponId ?? string.Empty),
+                    new XAttribute("activeWeaponId", _selection.PersonalActiveWeaponId ?? string.Empty),
                     _personalWeapons.Select(item => item.ToXml())));
         }
 
@@ -1051,6 +1316,26 @@ namespace LSImmersiveLife
             return string.Empty;
         }
 
+        private static string ProfileElementId(XElement parent, string name)
+        {
+            return ProfileElementAttribute(parent, name, "id", ProfileElementValue(parent, name));
+        }
+
+        private static string ProfileElementAttribute(XElement parent, string elementName, string attributeName, string fallback)
+        {
+            XElement element = parent == null ? null : parent.Element(elementName);
+            string value = element == null ? null : (string)element.Attribute(attributeName);
+            return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+        }
+
+        private static string ProfileElementValue(XElement parent, string name)
+        {
+            XElement element = parent == null ? null : parent.Element(name);
+            return element == null || string.IsNullOrWhiteSpace(element.Value)
+                ? string.Empty
+                : element.Value.Trim();
+        }
+
         private static string AttributeOrDefault(XElement node, string name, string fallback)
         {
             string value = (string)node.Attribute(name);
@@ -1098,13 +1383,18 @@ namespace LSImmersiveLife
     {
         internal string AgencyId { get; set; }
         internal string StationId { get; set; }
+        internal bool StationSetupComplete { get; set; }
         internal string PedId { get; set; }
         internal string VehicleId { get; set; }
         internal string WeaponId { get; set; }
+        internal string PersonalActiveWeaponId { get; set; }
+        internal bool UsePersonalLoadout { get; set; }
         internal string WeaponSetId { get; set; }
         internal string FavoritePedId { get; set; }
         internal string FavoriteVehicleId { get; set; }
         internal string BackupPedId { get; set; }
+        internal string CitizenBackupPedId { get; set; }
+        internal string DispatchBackupPedId { get; set; }
     }
 
     internal sealed class LSPDPoliceAgencyDefinition

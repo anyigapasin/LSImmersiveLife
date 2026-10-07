@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using GTA;
 using GTA.UI;
 using LemonUI.Menus;
 
@@ -12,6 +15,7 @@ namespace LSImmersiveLife
     internal sealed class LSMainSetting
     {
         private readonly LSImmersiveLog _log;
+        private readonly List<Action> _numericSettingRefreshers = new List<Action>();
         private bool _hasUnsavedChanges;
 
         internal NativeMenu Menu { get; private set; }
@@ -29,6 +33,7 @@ namespace LSImmersiveLife
             _log = log;
             Menu = LSImmersiveMenuFactory.Create("Settings", string.Empty);
             Menu.NoItemsText = string.Empty;
+            Menu.Opening += delegate { RefreshNumericSettingItems(); };
             BuildMenu();
         }
 
@@ -50,7 +55,7 @@ namespace LSImmersiveLife
 
             AddHeader("Universal Audio");
             AddCheck("Enable Audio", "Enable Dispatch and Police status audio.", Configuration.Audio.Enabled, delegate(bool value) { Configuration.SetAudio(value, Configuration.Audio.Volume); });
-            AddSlider("Audio Volume", "0 to 100 percent.", 100, Configuration.Audio.Volume, delegate(int value) { Configuration.SetAudio(Configuration.Audio.Enabled, value); });
+            AddNumber("Audio Volume", "0 to 100 percent.", 0, 100, delegate { return Configuration.Audio.Volume; }, delegate(int value) { Configuration.SetAudio(Configuration.Audio.Enabled, value); });
 
             AddHeader("Environment");
             AddCheck("Ambient Traffic", "Allow the environment owner to manage ambient traffic.", Configuration.Environment.AmbientTrafficEnabled, delegate(bool value) { Configuration.Environment.AmbientTrafficEnabled = value; });
@@ -94,7 +99,7 @@ namespace LSImmersiveLife
             AddCheck("Suppress Ambient Police Hostility", "Clear only nearby Police hostility directed at the active officer.", Configuration.PoliceAuthoritySettings.SuppressAmbientPoliceHostility, delegate(bool value) { Configuration.PoliceAuthoritySettings.SuppressAmbientPoliceHostility = value; });
             AddCheck("Disable Vanilla Police Dispatch", "Stop GTA from dispatching Police against the active officer.", Configuration.PoliceAuthoritySettings.SuppressVanillaDispatch, delegate(bool value) { Configuration.PoliceAuthoritySettings.SuppressVanillaDispatch = value; });
             AddCheck("Prevent Military Base Hostility", "Let nearby Army/base personnel de-escalate only when targeting the officer.", Configuration.PoliceAuthoritySettings.SuppressMilitaryHostility, delegate(bool value) { Configuration.PoliceAuthoritySettings.SuppressMilitaryHostility = value; });
-            AddSlider("Authority Refresh", "250 to 5000 milliseconds.", 4750, Configuration.PoliceAuthoritySettings.AuthorityControlRefreshMilliseconds - 250, delegate(int value) { Configuration.PoliceAuthoritySettings.AuthorityControlRefreshMilliseconds = value + 250; });
+            AddNumber("Authority Refresh", "Authority control refresh interval in milliseconds.", 250, 5000, delegate { return Configuration.PoliceAuthoritySettings.AuthorityControlRefreshMilliseconds; }, delegate(int value) { Configuration.PoliceAuthoritySettings.AuthorityControlRefreshMilliseconds = value; });
             AddCheck("Gang Reaction Control", "Allow supported gang reaction control.", Configuration.PoliceAuthoritySettings.EnableGangReactionControl, delegate(bool value) { Configuration.PoliceAuthoritySettings.EnableGangReactionControl = value; });
             AddCheck("Civilian Reaction Control", "Allow supported civilian reaction control.", Configuration.PoliceAuthoritySettings.EnableCivilianReactionControl, delegate(bool value) { Configuration.PoliceAuthoritySettings.EnableCivilianReactionControl = value; });
             AddCheck("World Behaviour Changes", "Allow the Authority owner to apply approved player-scoped world behavior changes.", Configuration.PoliceAuthoritySettings.EnableWorldBehaviorChanges, delegate(bool value) { Configuration.PoliceAuthoritySettings.EnableWorldBehaviorChanges = value; });
@@ -113,12 +118,12 @@ namespace LSImmersiveLife
         {
             AddHeader("Police Dispatch");
             AddCheck("Dispatch Enabled", "Allow Dispatch offers during patrol.", Configuration.Police.Dispatch.Enabled, delegate(bool value) { Configuration.Police.Dispatch.Enabled = value; });
-            AddSlider("Minimum Quiet Patrol", "30 to 1800 seconds.", 1770, Configuration.Police.Dispatch.MinimumQuietPatrolSeconds - 30, delegate(int value) { Configuration.Police.Dispatch.MinimumQuietPatrolSeconds = value + 30; });
-            AddSlider("Maximum Quiet Patrol", "30 to 3600 seconds.", 3570, Configuration.Police.Dispatch.MaximumQuietPatrolSeconds - 30, delegate(int value) { Configuration.Police.Dispatch.MaximumQuietPatrolSeconds = value + 30; });
-            AddSlider("Repeat Protection", "0 to 240 minutes.", 240, Configuration.Police.Dispatch.RepeatProtectionMinutes, delegate(int value) { Configuration.Police.Dispatch.RepeatProtectionMinutes = value; });
+            AddNumber("Minimum Quiet Patrol", "Minimum delay between eligible automatic Dispatch offers, in seconds.", 30, 1800, delegate { return Configuration.Police.Dispatch.MinimumQuietPatrolSeconds; }, delegate(int value) { Configuration.Police.Dispatch.MinimumQuietPatrolSeconds = value; });
+            AddNumber("Maximum Quiet Patrol", "Maximum delay between eligible automatic Dispatch offers, in seconds.", 30, 3600, delegate { return Configuration.Police.Dispatch.MaximumQuietPatrolSeconds; }, delegate(int value) { Configuration.Police.Dispatch.MaximumQuietPatrolSeconds = value; });
+            AddNumber("Repeat Protection", "Minutes before the same authored Dispatch definition may repeat.", 0, 240, delegate { return Configuration.Police.Dispatch.RepeatProtectionMinutes; }, delegate(int value) { Configuration.Police.Dispatch.RepeatProtectionMinutes = value; });
             AddReadOnly("Active Incident Limit", "One active Dispatch incident by design.");
-            AddSlider("Audio Minimum Gap", "0 to 60 seconds.", 60, Configuration.Police.Dispatch.AudioMinimumGapSeconds, delegate(int value) { Configuration.Police.Dispatch.AudioMinimumGapSeconds = value; });
-            AddSlider("Context Clear Quiet", "0 to 300 seconds after a Gang or NPC contact ends.", 300, Configuration.Police.Dispatch.ContextClearQuietSeconds, delegate(int value) { Configuration.Police.Dispatch.ContextClearQuietSeconds = value; });
+            AddNumber("Audio Minimum Gap", "Minimum spacing between Dispatch audio responses, in seconds.", 0, 60, delegate { return Configuration.Police.Dispatch.AudioMinimumGapSeconds; }, delegate(int value) { Configuration.Police.Dispatch.AudioMinimumGapSeconds = value; });
+            AddNumber("Context Clear Quiet", "Quiet interval after a Gang or NPC contact ends, in seconds.", 0, 300, delegate { return Configuration.Police.Dispatch.ContextClearQuietSeconds; }, delegate(int value) { Configuration.Police.Dispatch.ContextClearQuietSeconds = value; });
         }
 
         private void BuildPoliceCrimeActivity()
@@ -143,23 +148,23 @@ namespace LSImmersiveLife
             AddHeader("Police NPC Response");
             AddCheck("NPC Response Enabled", "Allow the NPC Response owner to operate.", Configuration.Police.NpcResponse.Enabled, delegate(bool value) { Configuration.Police.NpcResponse.Enabled = value; });
             AddCheck("NPC Interactions", "Allow player-led NPC interactions.", Configuration.Police.NpcResponse.InteractionsEnabled, delegate(bool value) { Configuration.Police.NpcResponse.InteractionsEnabled = value; });
-            AddSlider("Interaction Radius", "1 to 25 metres.", 24, Configuration.Police.NpcResponse.InteractionRadius - 1, delegate(int value) { Configuration.Police.NpcResponse.InteractionRadius = value + 1; });
-            AddSlider("Traffic Awareness Radius", "1 to 120 metres.", 119, Configuration.Police.NpcResponse.TrafficAwarenessRadius - 1, delegate(int value) { Configuration.Police.NpcResponse.TrafficAwarenessRadius = value + 1; });
-            AddSlider("Collision Guard Cooldown", "0 to 10000 milliseconds.", 10000, Configuration.Police.NpcResponse.CollisionGuardCooldownMilliseconds, delegate(int value) { Configuration.Police.NpcResponse.CollisionGuardCooldownMilliseconds = value; });
-            AddSlider("Affected Traffic Vehicles", "0 to 20 vehicles.", 20, Configuration.Police.NpcResponse.MaximumAffectedTrafficVehicles, delegate(int value) { Configuration.Police.NpcResponse.MaximumAffectedTrafficVehicles = value; });
-            AddSlider("Interaction Timeout", "20 to 300 seconds before an abandoned contact closes.", 280, Configuration.Police.NpcResponse.InteractionTimeoutSeconds - 20, delegate(int value) { Configuration.Police.NpcResponse.InteractionTimeoutSeconds = value + 20; });
-            AddSlider("Document Gesture Time", "1 to 8 seconds for the visible identification gesture.", 7, Configuration.Police.NpcResponse.DocumentPresentationSeconds - 1, delegate(int value) { Configuration.Police.NpcResponse.DocumentPresentationSeconds = value + 1; });
-            AddSlider("Citizen Flee Chance", "0 to 100 percent after a negative officer decision.", 100, Configuration.Police.NpcResponse.CitizenFleeChancePercent, delegate(int value) { Configuration.Police.NpcResponse.CitizenFleeChancePercent = value; });
-            AddSlider("Citizen Resistance Chance", "0 to 100 percent after a negative foot-citizen decision.", 100, Configuration.Police.NpcResponse.CitizenResistChancePercent, delegate(int value) { Configuration.Police.NpcResponse.CitizenResistChancePercent = value; });
-            AddSlider("Suspicious Citizen Chance", "0 to 100 percent for a nearby foot citizen to show suspicious approach behavior.", 100, Configuration.Police.NpcResponse.SuspiciousEncounterChancePercent, delegate(int value) { Configuration.Police.NpcResponse.SuspiciousEncounterChancePercent = value; });
-            AddSlider("Compliant Kneeling Chance", "0 to 100 percent for a compliant citizen to use the kneeling surrender pose.", 100, Configuration.Police.NpcResponse.CompliantKneelChancePercent, delegate(int value) { Configuration.Police.NpcResponse.CompliantKneelChancePercent = value; });
-            AddSlider("Dead Citizen Release Distance", "40 to 250 metres before a resolved dead citizen is released to natural world cleanup.", 210, Configuration.Police.NpcResponse.DeadSubjectReleaseDistance - 40, delegate(int value) { Configuration.Police.NpcResponse.DeadSubjectReleaseDistance = value + 40; });
-            AddSlider("Driver Flee Chance", "0 to 100 percent after a negative traffic-stop decision.", 100, Configuration.Police.NpcResponse.TrafficFleeChancePercent, delegate(int value) { Configuration.Police.NpcResponse.TrafficFleeChancePercent = value; });
-            AddSlider("Pull Over Timeout", "5 to 45 seconds for the selected driver to reach the roadside.", 40, Configuration.Police.NpcResponse.PullOverTimeoutSeconds - 5, delegate(int value) { Configuration.Police.NpcResponse.PullOverTimeoutSeconds = value + 5; });
-            AddSlider("Traffic Task Recovery", "4 to 30 seconds before one truly stalled driver task is retried.", 26, Configuration.Police.NpcResponse.TrafficTaskRecoverySeconds - 4, delegate(int value) { Configuration.Police.NpcResponse.TrafficTaskRecoverySeconds = value + 4; });
-            AddSlider("Scene Ped Reaction Radius", "5 to 60 metres around a real active Police scene.", 55, Configuration.Police.NpcResponse.ScenePedReactionRadius - 5, delegate(int value) { Configuration.Police.NpcResponse.ScenePedReactionRadius = value + 5; });
-            AddSlider("Affected Scene Pedestrians", "0 to 12 nearby civilians per reaction scan.", 12, Configuration.Police.NpcResponse.MaximumAffectedPedestrians, delegate(int value) { Configuration.Police.NpcResponse.MaximumAffectedPedestrians = value; });
-            AddSlider("Scene Reaction Cooldown", "5 to 120 seconds before the same civilian can be retasked.", 115, Configuration.Police.NpcResponse.SceneReactionCooldownSeconds - 5, delegate(int value) { Configuration.Police.NpcResponse.SceneReactionCooldownSeconds = value + 5; });
+            AddNumber("Interaction Radius", "Distance for a nearby pedestrian interaction, in metres.", 1, 25, delegate { return Configuration.Police.NpcResponse.InteractionRadius; }, delegate(int value) { Configuration.Police.NpcResponse.InteractionRadius = value; });
+            AddNumber("Traffic Awareness Radius", "Distance for nearby traffic awareness, in metres.", 1, 120, delegate { return Configuration.Police.NpcResponse.TrafficAwarenessRadius; }, delegate(int value) { Configuration.Police.NpcResponse.TrafficAwarenessRadius = value; });
+            AddNumber("Collision Guard Cooldown", "Time between collision guard responses, in milliseconds.", 0, 10000, delegate { return Configuration.Police.NpcResponse.CollisionGuardCooldownMilliseconds; }, delegate(int value) { Configuration.Police.NpcResponse.CollisionGuardCooldownMilliseconds = value; });
+            AddNumber("Affected Traffic Vehicles", "Maximum traffic vehicles managed by a contact.", 0, 20, delegate { return Configuration.Police.NpcResponse.MaximumAffectedTrafficVehicles; }, delegate(int value) { Configuration.Police.NpcResponse.MaximumAffectedTrafficVehicles = value; });
+            AddNumber("Interaction Timeout", "Time before an abandoned contact closes, in seconds.", 20, 300, delegate { return Configuration.Police.NpcResponse.InteractionTimeoutSeconds; }, delegate(int value) { Configuration.Police.NpcResponse.InteractionTimeoutSeconds = value; });
+            AddNumber("Document Gesture Time", "Time for the visible identification gesture, in seconds.", 1, 8, delegate { return Configuration.Police.NpcResponse.DocumentPresentationSeconds; }, delegate(int value) { Configuration.Police.NpcResponse.DocumentPresentationSeconds = value; });
+            AddNumber("Citizen Flee Chance", "Chance after a negative officer decision, in percent.", 0, 100, delegate { return Configuration.Police.NpcResponse.CitizenFleeChancePercent; }, delegate(int value) { Configuration.Police.NpcResponse.CitizenFleeChancePercent = value; });
+            AddNumber("Citizen Resistance Chance", "Chance of resistance after a negative foot-citizen decision, in percent.", 0, 100, delegate { return Configuration.Police.NpcResponse.CitizenResistChancePercent; }, delegate(int value) { Configuration.Police.NpcResponse.CitizenResistChancePercent = value; });
+            AddNumber("Suspicious Citizen Chance", "Chance for a nearby foot citizen to show suspicious approach behaviour, in percent.", 0, 100, delegate { return Configuration.Police.NpcResponse.SuspiciousEncounterChancePercent; }, delegate(int value) { Configuration.Police.NpcResponse.SuspiciousEncounterChancePercent = value; });
+            AddNumber("Compliant Kneeling Chance", "Chance for a compliant citizen to use the kneeling surrender pose, in percent.", 0, 100, delegate { return Configuration.Police.NpcResponse.CompliantKneelChancePercent; }, delegate(int value) { Configuration.Police.NpcResponse.CompliantKneelChancePercent = value; });
+            AddNumber("Dead Citizen Release Distance", "Distance before a resolved dead citizen is released to natural world cleanup, in metres.", 40, 250, delegate { return Configuration.Police.NpcResponse.DeadSubjectReleaseDistance; }, delegate(int value) { Configuration.Police.NpcResponse.DeadSubjectReleaseDistance = value; });
+            AddNumber("Driver Flee Chance", "Chance after a negative traffic-stop decision, in percent.", 0, 100, delegate { return Configuration.Police.NpcResponse.TrafficFleeChancePercent; }, delegate(int value) { Configuration.Police.NpcResponse.TrafficFleeChancePercent = value; });
+            AddNumber("Pull Over Timeout", "Time for the selected driver to reach the roadside, in seconds.", 5, 45, delegate { return Configuration.Police.NpcResponse.PullOverTimeoutSeconds; }, delegate(int value) { Configuration.Police.NpcResponse.PullOverTimeoutSeconds = value; });
+            AddNumber("Traffic Task Recovery", "Time before a stalled driver task is retried, in seconds.", 4, 30, delegate { return Configuration.Police.NpcResponse.TrafficTaskRecoverySeconds; }, delegate(int value) { Configuration.Police.NpcResponse.TrafficTaskRecoverySeconds = value; });
+            AddNumber("Scene Ped Reaction Radius", "Radius around an active Police scene, in metres.", 5, 60, delegate { return Configuration.Police.NpcResponse.ScenePedReactionRadius; }, delegate(int value) { Configuration.Police.NpcResponse.ScenePedReactionRadius = value; });
+            AddNumber("Affected Scene Pedestrians", "Maximum nearby civilians managed per reaction scan.", 0, 12, delegate { return Configuration.Police.NpcResponse.MaximumAffectedPedestrians; }, delegate(int value) { Configuration.Police.NpcResponse.MaximumAffectedPedestrians = value; });
+            AddNumber("Scene Reaction Cooldown", "Time before the same civilian can be retasked, in seconds.", 5, 120, delegate { return Configuration.Police.NpcResponse.SceneReactionCooldownSeconds; }, delegate(int value) { Configuration.Police.NpcResponse.SceneReactionCooldownSeconds = value; });
         }
 
         private void BuildPoliceTraffic()
@@ -167,7 +172,7 @@ namespace LSImmersiveLife
             AddHeader("Police Traffic");
             AddCheck("Traffic Control Enabled", "Allow supported scene traffic control.", Configuration.Police.Traffic.Enabled, delegate(bool value) { Configuration.Police.Traffic.Enabled = value; });
             AddCheck("Stop Traffic at Active Scenes", "Hold nearby traffic at active scenes when supported.", Configuration.Police.Traffic.StopTrafficAtActiveScenes, delegate(bool value) { Configuration.Police.Traffic.StopTrafficAtActiveScenes = value; });
-            AddSlider("Scene Control Radius", "5 to 150 metres.", 145, Configuration.Police.Traffic.SceneControlRadius - 5, delegate(int value) { Configuration.Police.Traffic.SceneControlRadius = value + 5; });
+            AddNumber("Scene Control Radius", "Traffic control radius, in metres.", 5, 150, delegate { return Configuration.Police.Traffic.SceneControlRadius; }, delegate(int value) { Configuration.Police.Traffic.SceneControlRadius = value; });
         }
 
         private void BuildPoliceResponse()
@@ -176,12 +181,12 @@ namespace LSImmersiveLife
             AddCheck("Response Units Enabled", "Allow supported response units.", Configuration.Police.Response.Enabled, delegate(bool value) { Configuration.Police.Response.Enabled = value; });
             AddCheck("Allow Backup", "Allow player-requested backup.", Configuration.Police.Response.AllowBackup, delegate(bool value) { Configuration.Police.Response.AllowBackup = value; });
             AddCheck("Automatic Pursuit Support", "Allow automatic support when a supported pursuit is active.", Configuration.Police.Response.AutomaticPursuitSupport, delegate(bool value) { Configuration.Police.Response.AutomaticPursuitSupport = value; });
-            AddSlider("Maximum Units Per Incident", "0 to 5 units.", 5, Configuration.Police.Response.MaximumUnitsPerIncident, delegate(int value) { Configuration.Police.Response.MaximumUnitsPerIncident = value; });
+            AddNumber("Maximum Units Per Incident", "Maximum ordinary Police response units.", 0, 5, delegate { return Configuration.Police.Response.MaximumUnitsPerIncident; }, delegate(int value) { Configuration.Police.Response.MaximumUnitsPerIncident = value; });
             AddCheck("Nearby Officer Support", "Let nearby Police or military personnel acknowledge and de-escalate toward Police Anyi.", Configuration.Police.Response.AuthoritySupportEnabled, delegate(bool value) { Configuration.Police.Response.AuthoritySupportEnabled = value; });
             AddCheck("Officer Acknowledgement", "Allow idle nearby allied officers to briefly recognize the player.", Configuration.Police.Response.AuthorityGreetingEnabled, delegate(bool value) { Configuration.Police.Response.AuthorityGreetingEnabled = value; });
-            AddSlider("Officer Support Radius", "10 to 120 metres.", 110, Configuration.Police.Response.AuthoritySupportRadius - 10, delegate(int value) { Configuration.Police.Response.AuthoritySupportRadius = value + 10; });
-            AddSlider("Officer Support Scan", "250 to 10000 milliseconds.", 9750, Configuration.Police.Response.AuthoritySupportScanMilliseconds - 250, delegate(int value) { Configuration.Police.Response.AuthoritySupportScanMilliseconds = value + 250; });
-            AddSlider("Nearby Officer Limit", "0 to 12 peds per scan.", 12, Configuration.Police.Response.MaximumAuthoritySupportPeds, delegate(int value) { Configuration.Police.Response.MaximumAuthoritySupportPeds = value; });
+            AddNumber("Officer Support Radius", "Nearby officer support radius, in metres.", 10, 120, delegate { return Configuration.Police.Response.AuthoritySupportRadius; }, delegate(int value) { Configuration.Police.Response.AuthoritySupportRadius = value; });
+            AddNumber("Officer Support Scan", "Time between nearby officer scans, in milliseconds.", 250, 10000, delegate { return Configuration.Police.Response.AuthoritySupportScanMilliseconds; }, delegate(int value) { Configuration.Police.Response.AuthoritySupportScanMilliseconds = value; });
+            AddNumber("Nearby Officer Limit", "Maximum nearby officers managed per scan.", 0, 12, delegate { return Configuration.Police.Response.MaximumAuthoritySupportPeds; }, delegate(int value) { Configuration.Police.Response.MaximumAuthoritySupportPeds = value; });
         }
 
         private void BuildPoliceConvoy()
@@ -191,12 +196,12 @@ namespace LSImmersiveLife
             AddCheck("Terminal Completion", "Allow a confirmed terminal custody completion.", Configuration.Police.Convoy.TerminalCompletionEnabled, delegate(bool value) { Configuration.Police.Convoy.TerminalCompletionEnabled = value; });
             AddCheck("Player Convoy Request", "Allow a separate player-requested prisoner Convoy activity.", Configuration.Police.Convoy.RequestedConvoyEnabled, delegate(bool value) { Configuration.Police.Convoy.RequestedConvoyEnabled = value; });
             AddCheck("Requested Convoy Route Threat", "Allow a staged hostile road threat during the separate Convoy activity.", Configuration.Police.Convoy.RequestedConvoyRouteThreatEnabled, delegate(bool value) { Configuration.Police.Convoy.RequestedConvoyRouteThreatEnabled = value; });
-            AddSlider("Station Arrival Radius", "4 to 100 metres.", 96, Configuration.Police.Convoy.StationArrivalRadius - 4, delegate(int value) { Configuration.Police.Convoy.StationArrivalRadius = value + 4; });
-            AddSlider("Prison Arrival Radius", "4 to 100 metres.", 96, Configuration.Police.Convoy.PrisonArrivalRadius - 4, delegate(int value) { Configuration.Police.Convoy.PrisonArrivalRadius = value + 4; });
-            AddSlider("Prisoner Recovery Timeout", "5 to 600 seconds.", 595, Configuration.Police.Convoy.PrisonerRecoveryTimeoutSeconds - 5, delegate(int value) { Configuration.Police.Convoy.PrisonerRecoveryTimeoutSeconds = value + 5; });
-            AddSlider("Convoy Staging Distance", "35 to 250 metres from the officer.", 215, Configuration.Police.Convoy.MinimumStagingDistance - 35, delegate(int value) { Configuration.Police.Convoy.MinimumStagingDistance = value + 35; });
-            AddSlider("Route Threat Staging Distance", "75 to 400 metres ahead of the transport.", 325, Configuration.Police.Convoy.RequestedRouteThreatDistance - 75, delegate(int value) { Configuration.Police.Convoy.RequestedRouteThreatDistance = value + 75; });
-            AddSlider("Route Threat Members", "1 to 3 hostile road members.", 2, Configuration.Police.Convoy.RequestedRouteThreatCount - 1, delegate(int value) { Configuration.Police.Convoy.RequestedRouteThreatCount = value + 1; });
+            AddNumber("Station Arrival Radius", "Custody station arrival radius, in metres.", 4, 100, delegate { return Configuration.Police.Convoy.StationArrivalRadius; }, delegate(int value) { Configuration.Police.Convoy.StationArrivalRadius = value; });
+            AddNumber("Prison Arrival Radius", "Prison transfer arrival radius, in metres.", 4, 100, delegate { return Configuration.Police.Convoy.PrisonArrivalRadius; }, delegate(int value) { Configuration.Police.Convoy.PrisonArrivalRadius = value; });
+            AddNumber("Prisoner Recovery Timeout", "Timeout for recovering a custody actor, in seconds.", 5, 600, delegate { return Configuration.Police.Convoy.PrisonerRecoveryTimeoutSeconds; }, delegate(int value) { Configuration.Police.Convoy.PrisonerRecoveryTimeoutSeconds = value; });
+            AddNumber("Convoy Staging Distance", "Transport staging distance from the officer, in metres.", 35, 250, delegate { return Configuration.Police.Convoy.MinimumStagingDistance; }, delegate(int value) { Configuration.Police.Convoy.MinimumStagingDistance = value; });
+            AddNumber("Route Threat Staging Distance", "Distance ahead of transport for a requested Convoy road threat, in metres.", 75, 400, delegate { return Configuration.Police.Convoy.RequestedRouteThreatDistance; }, delegate(int value) { Configuration.Police.Convoy.RequestedRouteThreatDistance = value; });
+            AddNumber("Route Threat Members", "Number of hostile members in a requested Convoy road threat.", 1, 3, delegate { return Configuration.Police.Convoy.RequestedRouteThreatCount; }, delegate(int value) { Configuration.Police.Convoy.RequestedRouteThreatCount = value; });
         }
 
         private void BuildPoliceBackup()
@@ -205,19 +210,19 @@ namespace LSImmersiveLife
             AddCheck("Backup Force Enabled", "Allow player-requested support units to stage and travel to an active Police scene.", Configuration.Police.Backup.Enabled, delegate(bool value) { Configuration.Police.Backup.Enabled = value; });
             AddCheck("Automatic Group Support", "Automatically request backup for a group Dispatch and let arriving officers help contain it.", Configuration.Police.Backup.AutomaticGroupSupport, delegate(bool value) { Configuration.Police.Backup.AutomaticGroupSupport = value; });
             AddCheck("Use Saved Backup Favorite", "Use the selected saved backup officer favorite when one is available.", Configuration.Police.Backup.PreferSavedFavoritePed, delegate(bool value) { Configuration.Police.Backup.PreferSavedFavoritePed = value; });
-            AddSlider("Backup Units Per Request", "1 to 4 Police vehicles.", 3, Configuration.Police.Backup.UnitsPerRequest - 1, delegate(int value) { Configuration.Police.Backup.UnitsPerRequest = value + 1; });
-            AddSlider("Officers Per Backup Unit", "1 or 2 officers per vehicle.", 1, Configuration.Police.Backup.OfficersPerUnit - 1, delegate(int value) { Configuration.Police.Backup.OfficersPerUnit = value + 1; });
-            AddSlider("Backup Staging Distance", "35 to 250 metres from the player when the station is too close.", 215, Configuration.Police.Backup.MinimumStagingDistance - 35, delegate(int value) { Configuration.Police.Backup.MinimumStagingDistance = value + 35; });
-            AddSlider("Backup Arrival Radius", "8 to 60 metres from the active situation.", 52, Configuration.Police.Backup.ArrivalRadius - 8, delegate(int value) { Configuration.Police.Backup.ArrivalRadius = value + 8; });
-            AddSlider("Fleeing Suspect Intercept Lead", "25 to 300 metres ahead of a fleeing suspect.", 275, Configuration.Police.Backup.InterceptionLeadDistance - 25, delegate(int value) { Configuration.Police.Backup.InterceptionLeadDistance = value + 25; });
-            AddSlider("Backup Stand Down", "5 to 300 seconds before a finished support force is cleaned up.", 295, Configuration.Police.Backup.StandDownSeconds - 5, delegate(int value) { Configuration.Police.Backup.StandDownSeconds = value + 5; });
+            AddNumber("Backup Units Per Request", "Number of Police vehicles in a support request.", 1, 4, delegate { return Configuration.Police.Backup.UnitsPerRequest; }, delegate(int value) { Configuration.Police.Backup.UnitsPerRequest = value; });
+            AddNumber("Officers Per Backup Unit", "Number of officers assigned to each support vehicle.", 1, 2, delegate { return Configuration.Police.Backup.OfficersPerUnit; }, delegate(int value) { Configuration.Police.Backup.OfficersPerUnit = value; });
+            AddNumber("Backup Staging Distance", "Distance from the player when the station is too close, in metres.", 35, 250, delegate { return Configuration.Police.Backup.MinimumStagingDistance; }, delegate(int value) { Configuration.Police.Backup.MinimumStagingDistance = value; });
+            AddNumber("Backup Arrival Radius", "Distance from the active situation for unit arrival, in metres.", 8, 60, delegate { return Configuration.Police.Backup.ArrivalRadius; }, delegate(int value) { Configuration.Police.Backup.ArrivalRadius = value; });
+            AddNumber("Fleeing Suspect Intercept Lead", "Distance ahead of a fleeing suspect, in metres.", 25, 300, delegate { return Configuration.Police.Backup.InterceptionLeadDistance; }, delegate(int value) { Configuration.Police.Backup.InterceptionLeadDistance = value; });
+            AddNumber("Backup Stand Down", "Delay before a finished support force is cleaned up, in seconds.", 5, 300, delegate { return Configuration.Police.Backup.StandDownSeconds; }, delegate(int value) { Configuration.Police.Backup.StandDownSeconds = value; });
         }
 
         private void BuildPoliceCleanup()
         {
             AddHeader("Police Cleanup");
-            AddSlider("Completed Scene Grace", "0 to 3600 seconds.", 3600, Configuration.Police.Cleanup.CompletedSceneGraceSeconds, delegate(int value) { Configuration.Police.Cleanup.CompletedSceneGraceSeconds = value; });
-            AddSlider("Hard Cleanup", "30 to 7200 seconds.", 7170, Configuration.Police.Cleanup.HardCleanupSeconds - 30, delegate(int value) { Configuration.Police.Cleanup.HardCleanupSeconds = value + 30; });
+            AddNumber("Completed Scene Grace", "Grace period before a completed scene is eligible for cleanup, in seconds.", 0, 3600, delegate { return Configuration.Police.Cleanup.CompletedSceneGraceSeconds; }, delegate(int value) { Configuration.Police.Cleanup.CompletedSceneGraceSeconds = value; });
+            AddNumber("Hard Cleanup", "Maximum time before an owned Police scene is eligible for cleanup, in seconds.", 30, 7200, delegate { return Configuration.Police.Cleanup.HardCleanupSeconds; }, delegate(int value) { Configuration.Police.Cleanup.HardCleanupSeconds = value; });
         }
 
         private void AddHeader(string title)
@@ -243,6 +248,84 @@ namespace LSImmersiveLife
                 Changed(title, item.Checked ? "Enabled" : "Disabled");
             };
             Menu.Add(item);
+        }
+
+        private void AddNumber(
+            string title,
+            string description,
+            int minimum,
+            int maximum,
+            Func<int> current,
+            Action<int> changed)
+        {
+            NativeItem item = new NativeItem(title, description + " Select to type a value from "
+                + minimum.ToString(CultureInfo.InvariantCulture) + " to "
+                + maximum.ToString(CultureInfo.InvariantCulture) + ".");
+            Action refresh = delegate
+            {
+                item.Title = title + " (" + current().ToString(CultureInfo.InvariantCulture) + ")";
+            };
+            _numericSettingRefreshers.Add(refresh);
+            refresh();
+
+            item.Activated += delegate
+            {
+                string input;
+                try
+                {
+                    input = Game.GetUserInput(
+                        WindowTitle.EnterMessage60,
+                        current().ToString(CultureInfo.InvariantCulture),
+                        10);
+                }
+                catch (Exception ex)
+                {
+                    if (_log != null)
+                        _log.Exception("SETTINGS_NUMERIC_INPUT_FAILED", ex);
+                    Notification.PostTicker(title + " could not be edited.", false, false);
+                    return;
+                }
+
+                int value;
+                if (string.IsNullOrWhiteSpace(input))
+                    return;
+                if (!int.TryParse(
+                    input.Trim(),
+                    NumberStyles.Integer,
+                    CultureInfo.InvariantCulture,
+                    out value)
+                    || value < minimum
+                    || value > maximum)
+                {
+                    Notification.PostTicker(
+                        title + " must be a whole number from "
+                        + minimum.ToString(CultureInfo.InvariantCulture) + " to "
+                        + maximum.ToString(CultureInfo.InvariantCulture) + ".",
+                        false,
+                        false);
+                    if (_log != null)
+                        _log.Debug("SETTINGS_NUMERIC_INPUT_REJECTED",
+                            title + " = " + (input ?? string.Empty));
+                    return;
+                }
+
+                changed(value);
+                Configuration.NormalizeSettings();
+                int effectiveValue = current();
+                Changed(title, effectiveValue.ToString(CultureInfo.InvariantCulture));
+                RefreshNumericSettingItems();
+                Notification.PostTicker(
+                    title + " set to " + effectiveValue.ToString(CultureInfo.InvariantCulture) + ". Save Settings to keep it.",
+                    false,
+                    false);
+            };
+            Menu.Add(item);
+        }
+
+        private void RefreshNumericSettingItems()
+        {
+            foreach (Action refresh in _numericSettingRefreshers)
+                refresh();
         }
 
         private void AddSlider(string title, string description, int maximum, int value, Action<int> changed)

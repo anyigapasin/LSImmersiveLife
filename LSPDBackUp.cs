@@ -47,6 +47,8 @@ namespace LSImmersiveLife
         private const float DispatchVehicleStoppedSpeed = 1.25f;
         private const float DispatchOfficerContainmentDistance = 5.5f;
         private const float DispatchOfficerContainmentStartDistance = 14f;
+        private const int DispatchInteriorAccessTimeoutSeconds = 75;
+        private const int DispatchInteriorAccessMaximumDoorRetries = 3;
         private const float NpcVehicleBlockMinimumForward = 8f;
         private const float NpcVehicleBlockMaximumForward = 65f;
         private const float NpcVehicleBlockLateralTolerance = 20f;
@@ -64,6 +66,7 @@ namespace LSImmersiveLife
         private readonly LSPoliceBackupSettings _settings;
         private readonly LSPoliceCleanupSettings _cleanupSettings;
         private readonly List<BackupUnit> _units = new List<BackupUnit>();
+        private LSWorldAmbientBehavior _ambientWorld;
 
         private LSPDDispatchEvent _incident;
         // A Convoy support assignment is intentionally separate from a
@@ -129,6 +132,13 @@ namespace LSImmersiveLife
         private DateTime _nextDispatchInterceptionApproachTaskAt = DateTime.MinValue;
         private int _dispatchVehiclePursuitHandle;
         private Vehicle _dispatchVehiclePursuitTarget;
+        private AmbientInteriorAccessRoute _dispatchInteriorRoute;
+        private int _dispatchInteriorOfficerHandle;
+        private int _dispatchInteriorTargetHandle;
+        private int _dispatchInteriorPhase;
+        private int _dispatchInteriorRecoveryCount;
+        private DateTime _dispatchInteriorStartedAt = DateTime.MinValue;
+        private DateTime _dispatchInteriorNextTaskAt = DateTime.MinValue;
         private bool _dispatchVehicleExitRequested;
         private bool _dispatchContainmentStartedLogged;
         private bool _dispatchComplianceRequestedLogged;
@@ -205,6 +215,11 @@ namespace LSImmersiveLife
         }
 
         internal LSPDBackupAssignmentState State { get { return _state; } }
+
+        internal void AttachAmbientWorld(LSWorldAmbientBehavior ambientWorld)
+        {
+            _ambientWorld = ambientWorld;
+        }
         internal bool Active
         {
             get
@@ -288,7 +303,9 @@ namespace LSImmersiveLife
             _crimeActivity = null;
             _npcResponse = null;
             _vehicleModelName = ResolveVehicleModel();
-            _officerModelName = ResolveOfficerModel(preferSavedFavorite);
+            _officerModelName = ResolveOfficerModel(
+                preferSavedFavorite,
+                _profile == null ? string.Empty : _profile.PreferredDispatchBackupPedModelName);
             _operationId = Guid.NewGuid().ToString("N");
             _assetPreparationDeadline = DateTime.UtcNow.AddSeconds(AssetPreparationTimeoutSeconds);
             _nextAssetRequestAt = DateTime.MinValue;
@@ -449,7 +466,9 @@ namespace LSImmersiveLife
             _crimeActivity = null;
             _npcResponse = npcResponse;
             _vehicleModelName = ResolveVehicleModel();
-            _officerModelName = ResolveOfficerModel(preferSavedFavorite);
+            _officerModelName = ResolveOfficerModel(
+                preferSavedFavorite,
+                _profile == null ? string.Empty : _profile.PreferredCitizenBackupPedModelName);
             _operationId = Guid.NewGuid().ToString("N");
             _assetPreparationDeadline = DateTime.UtcNow.AddSeconds(AssetPreparationTimeoutSeconds);
             _nextAssetRequestAt = DateTime.MinValue;
@@ -3464,6 +3483,7 @@ namespace LSImmersiveLife
 
         private void ResetDispatchInterceptionTracking()
         {
+            ResetDispatchInteriorAccess("DispatchInterceptionTrackingReset");
             _lastDispatchInterceptionTrackingAt = DateTime.MinValue;
             _dispatchVehicleStoppedAt = DateTime.MinValue;
             _nextDispatchVehicleExitTaskAt = DateTime.MinValue;
@@ -3486,6 +3506,13 @@ namespace LSImmersiveLife
                 BeginStandDown("The fleeing Dispatch suspect no longer exists.");
                 return;
             }
+
+            int targetInteriorId = 0;
+            bool targetInteriorKnown = _ambientWorld != null
+                && _ambientWorld.TryGetActorInteriorId(target, out targetInteriorId);
+            if (_dispatchInteriorTargetHandle == target.Handle
+                && (!targetInteriorKnown || targetInteriorId == 0))
+                ResetDispatchInteriorAccess("DispatchSuspectPhysicallyOutside");
 
             Vehicle targetVehicle = ResolvePursuitVehicle(_incident, target);
             if (targetVehicle != null && target.IsInVehicle())
@@ -3512,6 +3539,26 @@ namespace LSImmersiveLife
             Ped interceptor = officers
                 .OrderBy(officer => officer.Position.DistanceTo(target.Position))
                 .FirstOrDefault();
+            if (targetInteriorKnown && targetInteriorId != 0
+                && MaintainInteriorDispatchInterception(
+                    interceptor,
+                    target,
+                    targetInteriorId,
+                    DateTime.UtcNow))
+            {
+                foreach (Ped officer in officers)
+                {
+                    if (officer == null || !officer.Exists() || officer.IsDead)
+                        continue;
+                    int officerInteriorId;
+                    if (_ambientWorld.TryGetActorInteriorId(officer, out officerInteriorId)
+                        && officerInteriorId == targetInteriorId
+                        && officer.Position.DistanceTo(target.Position) <= 75f)
+                        AimAt(officer, target);
+                }
+                SetState(LSPDBackupAssignmentState.Intercepting);
+                return;
+            }
             float officerDistance = interceptor == null
                 ? float.MaxValue : interceptor.Position.DistanceTo(target.Position);
             if (!_dispatchContainmentStartedLogged
@@ -3576,6 +3623,255 @@ namespace LSImmersiveLife
                 _nextDispatchInterceptionApproachTaskAt = DateTime.UtcNow.AddSeconds(2);
                 SetState(LSPDBackupAssignmentState.Supporting);
             }
+        }
+
+        private bool MaintainInteriorDispatchInterception(
+            Ped interceptor,
+            Ped target,
+            int targetInteriorId,
+            DateTime now)
+        {
+            if (_ambientWorld == null || target == null || !target.Exists()
+                || interceptor == null || !interceptor.Exists() || interceptor.IsDead)
+                return true;
+
+            if (_dispatchInteriorTargetHandle != target.Handle
+                || _dispatchInteriorOfficerHandle != interceptor.Handle)
+            {
+                ResetDispatchInteriorAccess("DispatchInteriorTargetChanged");
+                _dispatchInteriorTargetHandle = target.Handle;
+                _dispatchInteriorOfficerHandle = interceptor.Handle;
+            }
+
+            int officerInteriorId;
+            if (!_ambientWorld.TryGetActorInteriorId(interceptor, out officerInteriorId))
+                return true;
+            if (officerInteriorId == targetInteriorId)
+            {
+                ResetDispatchInteriorAccess("BackupOfficerReachedSuspectInterior");
+                return false;
+            }
+            if (_dispatchInteriorPhase == 4)
+                return true;
+            if (officerInteriorId != 0)
+            {
+                FailDispatchInteriorAccess(interceptor, target,
+                    "The Backup officer is in a different interior context.");
+                return true;
+            }
+            if (_dispatchInteriorStartedAt != DateTime.MinValue
+                && now >= _dispatchInteriorStartedAt.AddSeconds(DispatchInteriorAccessTimeoutSeconds))
+            {
+                FailDispatchInteriorAccess(interceptor, target,
+                    "Backup could not physically reach the mapped door within the bounded route time.");
+                return true;
+            }
+
+            if (_dispatchInteriorPhase == 0)
+            {
+                AmbientInteriorAccessRoute route;
+                string routeFailure;
+                if (!_ambientWorld.TryResolveInteriorAccessRouteForInterior(
+                    interceptor,
+                    targetInteriorId,
+                    true,
+                    out route,
+                    out routeFailure))
+                {
+                    FailDispatchInteriorAccess(interceptor, target, routeFailure);
+                    return true;
+                }
+                _dispatchInteriorRoute = route;
+                _dispatchInteriorPhase = 1;
+                _dispatchInteriorStartedAt = now;
+                _dispatchInteriorNextTaskAt = DateTime.MinValue;
+                LogRuntime(
+                    "POLICE_BACKUP_INTERIOR_ROUTE_RESOLVED",
+                    "Officer=" + interceptor.Handle
+                    + "; Suspect=" + target.Handle
+                    + "; InteriorId=" + targetInteriorId
+                    + "; DoorPair=" + route.Pair.InsidePoint.SourceRecord
+                    + "; Entry=" + route.EntryPosition
+                    + "; Destination=" + route.DestinationPosition);
+            }
+
+            AmbientInteriorAccessRoute activeRoute = _dispatchInteriorRoute;
+            if (activeRoute == null)
+            {
+                FailDispatchInteriorAccess(interceptor, target,
+                    "The resolved Backup doorway route was lost.");
+                return true;
+            }
+
+            if (_dispatchInteriorPhase == 1)
+            {
+                if (interceptor.Position.DistanceTo(activeRoute.EntryPosition) > 1.35f)
+                {
+                    if (now >= _dispatchInteriorNextTaskAt)
+                    {
+                        try
+                        {
+                            Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                                interceptor,
+                                activeRoute.EntryPosition.X,
+                                activeRoute.EntryPosition.Y,
+                                activeRoute.EntryPosition.Z,
+                                1.7f,
+                                -1,
+                                0.8f,
+                                1,
+                                activeRoute.Pair.OutsidePoint.HasHeading
+                                    ? activeRoute.Pair.OutsidePoint.Heading : 0f);
+                            Function.Call(Hash.SET_PED_KEEP_TASK, interceptor, true);
+                            _dispatchInteriorNextTaskAt = now.AddSeconds(4);
+                            LogRuntime(
+                                "POLICE_BACKUP_INTERIOR_THRESHOLD_APPROACH_STARTED",
+                                "Officer=" + interceptor.Handle
+                                + "; Suspect=" + target.Handle
+                                + "; Entry=" + activeRoute.EntryPosition);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_BACKUP_INTERIOR_THRESHOLD_APPROACH_FAILED", ex);
+                            FailDispatchInteriorAccess(interceptor, target, ex.Message);
+                        }
+                    }
+                    return true;
+                }
+
+                if (_dispatchInteriorNextTaskAt != DateTime.MinValue
+                    && now < _dispatchInteriorNextTaskAt)
+                    return true;
+
+                string doorFailure;
+                if (!_ambientWorld.TryBeginInteriorAccess(
+                    interceptor,
+                    activeRoute,
+                    out doorFailure))
+                {
+                    _dispatchInteriorRecoveryCount++;
+                    LogDebug(
+                        _dispatchInteriorRecoveryCount >= DispatchInteriorAccessMaximumDoorRetries
+                            ? "POLICE_BACKUP_INTERIOR_DOOR_ACCESS_FAILED"
+                            : "POLICE_BACKUP_INTERIOR_DOOR_ACCESS_RETRY",
+                        "Officer=" + interceptor.Handle
+                        + "; Suspect=" + target.Handle
+                        + "; Recovery=" + _dispatchInteriorRecoveryCount
+                        + "; Reason=" + doorFailure);
+                    if (_dispatchInteriorRecoveryCount >= DispatchInteriorAccessMaximumDoorRetries)
+                        FailDispatchInteriorAccess(interceptor, target, doorFailure);
+                    else
+                        _dispatchInteriorNextTaskAt = now.AddSeconds(1.5);
+                    return true;
+                }
+                _dispatchInteriorPhase = 2;
+                _dispatchInteriorNextTaskAt = DateTime.MinValue;
+                LogRuntime(
+                    "POLICE_BACKUP_INTERIOR_DOOR_OPENING_REQUESTED",
+                    "Officer=" + interceptor.Handle
+                    + "; Suspect=" + target.Handle
+                    + "; DoorPair=" + activeRoute.Pair.InsidePoint.SourceRecord);
+            }
+
+            if (_dispatchInteriorPhase == 2 || _dispatchInteriorPhase == 3)
+            {
+                string accessMessage;
+                AmbientInteriorAccessStatus accessStatus = _ambientWorld.MaintainInteriorAccess(
+                    interceptor,
+                    out accessMessage);
+                if (accessStatus == AmbientInteriorAccessStatus.Failed)
+                {
+                    FailDispatchInteriorAccess(interceptor, target, accessMessage);
+                    return true;
+                }
+                if (accessStatus == AmbientInteriorAccessStatus.DoorOpening)
+                    return true;
+                if (accessStatus == AmbientInteriorAccessStatus.ReadyToCross)
+                {
+                    if (now >= _dispatchInteriorNextTaskAt)
+                    {
+                        try
+                        {
+                            Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                                interceptor,
+                                activeRoute.DestinationPosition.X,
+                                activeRoute.DestinationPosition.Y,
+                                activeRoute.DestinationPosition.Z,
+                                1.6f,
+                                -1,
+                                0.35f,
+                                1,
+                                activeRoute.Pair.InsidePoint.HasHeading
+                                    ? activeRoute.Pair.InsidePoint.Heading : 0f);
+                            Function.Call(Hash.SET_PED_KEEP_TASK, interceptor, true);
+                            _dispatchInteriorPhase = 3;
+                            _dispatchInteriorNextTaskAt = now.AddSeconds(3);
+                            LogRuntime(
+                                "POLICE_BACKUP_INTERIOR_DOOR_CROSSING_TASK_STARTED",
+                                "Officer=" + interceptor.Handle
+                                + "; Suspect=" + target.Handle
+                                + "; Destination=" + activeRoute.DestinationPosition);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_BACKUP_INTERIOR_DOOR_CROSSING_TASK_FAILED", ex);
+                            FailDispatchInteriorAccess(interceptor, target, ex.Message);
+                        }
+                    }
+                    return true;
+                }
+                if (accessStatus == AmbientInteriorAccessStatus.Completed)
+                {
+                    LogRuntime(
+                        "POLICE_BACKUP_INTERIOR_CROSSING_CONFIRMED",
+                        "Officer=" + interceptor.Handle
+                        + "; Suspect=" + target.Handle
+                        + "; InteriorId=" + targetInteriorId
+                        + "; DoorPair=" + activeRoute.Pair.InsidePoint.SourceRecord);
+                    ResetDispatchInteriorAccess("BackupOfficerCrossedDoor");
+                    return false;
+                }
+                if (accessStatus == AmbientInteriorAccessStatus.None)
+                {
+                    FailDispatchInteriorAccess(interceptor, target,
+                        "The mapped Backup door session ended before the officer's crossing was confirmed.");
+                    return true;
+                }
+            }
+
+            return true;
+        }
+
+        private void FailDispatchInteriorAccess(Ped interceptor, Ped target, string reason)
+        {
+            if (_ambientWorld != null && interceptor != null)
+                _ambientWorld.CancelInteriorAccess(interceptor, "BackupInteriorAccessFailed");
+            _dispatchInteriorPhase = 4;
+            LogDebug(
+                "POLICE_BACKUP_INTERIOR_ACCESS_FAILED",
+                "Officer=" + (interceptor == null || !interceptor.Exists() ? 0 : interceptor.Handle)
+                + "; Suspect=" + (target == null || !target.Exists() ? 0 : target.Handle)
+                + "; Reason=" + (reason ?? string.Empty));
+        }
+
+        private void ResetDispatchInteriorAccess(string reason)
+        {
+            if (_ambientWorld != null && _dispatchInteriorOfficerHandle != 0)
+            {
+                Ped officer = _units.SelectMany(SupportOfficers)
+                    .FirstOrDefault(value => value != null
+                        && value.Exists()
+                        && value.Handle == _dispatchInteriorOfficerHandle);
+                if (officer != null)
+                    _ambientWorld.CancelInteriorAccess(officer, reason);
+            }
+            _dispatchInteriorRoute = null;
+            _dispatchInteriorOfficerHandle = 0;
+            _dispatchInteriorTargetHandle = 0;
+            _dispatchInteriorPhase = 0;
+            _dispatchInteriorRecoveryCount = 0;
+            _dispatchInteriorStartedAt = DateTime.MinValue;
+            _dispatchInteriorNextTaskAt = DateTime.MinValue;
         }
 
         private bool ReleaseInterceptionOfficers(DateTime now)
@@ -4833,12 +5129,10 @@ namespace LSImmersiveLife
 
             try
             {
-                // Once the subject is physically attached, the officer is no
-                // longer approaching the subject. Reissuing TASK_GO_TO_ENTITY
-                // against an attached ped can produce a zero-distance task
-                // and leave the pair standing. Recover toward the assigned
-                // rear door instead; the NPC owner continues to maintain the
-                // measured escort relationship.
+                // During Citizen Backup escort, the NPC owner gives the
+                // Officer and subject separate natural navigation tasks.
+                // Recover the Officer toward the assigned rear door without
+                // replacing the subject's follow task or attaching either Ped.
                 if (_npcResponse != null
                     && _npcResponse.IsBackupPhysicalEscortActive
                     && IsUsable(_npcTransportUnit)
@@ -4997,6 +5291,10 @@ namespace LSImmersiveLife
                 Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY,
                     officer, true, true);
                 Function.Call(Hash.SET_PED_AS_COP, officer, true);
+                int copGroup = unchecked((int)StringHash.AtStringHash("COP", 0));
+                if (copGroup != 0)
+                    Function.Call(Hash.SET_PED_RELATIONSHIP_GROUP_HASH,
+                        officer, copGroup);
                 Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
                 Function.Call(Hash.SET_PED_COMBAT_ABILITY, officer, 2);
                 Function.Call(Hash.SET_PED_ACCURACY, officer, 60);
@@ -5401,9 +5699,16 @@ namespace LSImmersiveLife
 
         private string ResolveOfficerModel(bool preferFavorite)
         {
+            return ResolveOfficerModel(
+                preferFavorite,
+                _profile == null ? string.Empty : _profile.PreferredBackupPedModelName);
+        }
+
+        private string ResolveOfficerModel(bool preferFavorite, string preferredModelName)
+        {
             if (_profile != null && preferFavorite && _settings.PreferSavedFavoritePed
-                && !string.IsNullOrWhiteSpace(_profile.PreferredBackupPedModelName))
-                return _profile.PreferredBackupPedModelName;
+                && !string.IsNullOrWhiteSpace(preferredModelName))
+                return preferredModelName;
             LSPDPoliceModelDefinition patrol = _profile == null ? null : _profile.FindPed("lspd_male_patrol");
             if (patrol != null && !string.IsNullOrWhiteSpace(patrol.ModelName)) return patrol.ModelName;
             LSPDPoliceModelDefinition first = _profile == null ? null : _profile.PedModels.FirstOrDefault();

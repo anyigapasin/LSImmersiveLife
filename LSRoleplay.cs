@@ -33,20 +33,22 @@ namespace LSImmersiveLife
 
         internal LSRoleplay(Action<LSRoleplayMode> selectRoleplayMode)
         {
-            // Build the separate Roleplay screen rather than adding role rows
-            // to the Main UI. An empty subtitle avoids duplicate descriptive
-            // text when LemonUI renders this menu in the root navigation.
-            Menu = LSImmersiveMenuFactory.Create("Roleplay", string.Empty);
+            // Keep role choices on their own screen with the documented title
+            // and instruction. The selection returns to Main UI so Authority
+            // can open the selected role directly.
+            Menu = LSImmersiveMenuFactory.Create(
+                "Roleplay",
+                "Select your Immersive Life Roleplay");
 
             _selectRoleplayMode = selectRoleplayMode;
 
             // These rows choose a roleplay direction. The actual authority UI
             // and core for the selected role remain outside this selection UI.
-            AddRoleplayMode("Citizen", LSRoleplayMode.Citizen);
+            AddRoleplayMode("Los Santos Citizen", LSRoleplayMode.Citizen);
+            AddRoleplayMode("Gang Turf Leader", LSRoleplayMode.GangLeader);
             AddRoleplayMode(
-                "Police Authority",
+                "Los Santos Police Authority",
                 LSRoleplayMode.PoliceAuthority);
-            AddRoleplayMode("Gang Leader", LSRoleplayMode.GangLeader);
         }
 
         private void AddRoleplayMode(string label, LSRoleplayMode mode)

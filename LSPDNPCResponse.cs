@@ -51,6 +51,7 @@ namespace LSImmersiveLife
         private const float FleeMovementSpeed = 3.0f;
         private const float FleeMovementDistance = 2.5f;
         private const int ContactPreparationMilliseconds = 700;
+        private const int SubjectOrientationMilliseconds = 1800;
         private const int FootGreetingMilliseconds = 1150;
         private const int StationFollowTimeoutMilliseconds = 180000;
         private const int SubjectHoldMilliseconds = 3000;
@@ -62,7 +63,11 @@ namespace LSImmersiveLife
         private const int ApproachCandidateMilliseconds = 4500;
         private const int DefaultCollisionGuardMilliseconds = 900;
         private const int TrafficDrivingStyle = 786603;
-        private const int FootPlayerArrestMilliseconds = 2600;
+        // Let GTA's physical arrest task finish, then confirm the actual cuff
+        // state before Citizen transfers the subject to Backup custody.
+        private const int FootPlayerArrestMilliseconds = 6500;
+        private const int FootPlayerArrestMaximumAttempts = 2;
+        private const int BackupArrestMaximumAttempts = 3;
         private const float FootPlayerArrestInteractionRadius = 3.5f;
         private const int FootResistanceTaskRecoveryMilliseconds = 1800;
         private const int SuspiciousApproachTaskRecoveryMilliseconds = 1400;
@@ -72,10 +77,6 @@ namespace LSImmersiveLife
         // 45-second shared window expired while the subject was still being
         // navigated to the rear door.
         private const int BackupPhysicalEscortTimeoutSeconds = 90;
-        private const int BackupPhysicalEscortAttachRetryMilliseconds = 900;
-        private const int BackupPhysicalEscortMaximumAttachAttempts = 3;
-        private const int BackupCuffPoseRefreshMilliseconds = 2500;
-        private const float BackupPhysicalEscortAttachRadius = 1.9f;
         private const float BackupEscortDoorRadius = 2.8f;
 
         private enum InteractionStage
@@ -122,6 +123,37 @@ namespace LSImmersiveLife
             internal DateTime ExpiresAt;
         }
 
+        private enum SuspectHitZone
+        {
+            Unknown,
+            Limb,
+            Head,
+            Chest,
+            Stomach
+        }
+
+        private sealed class SubjectInjuryState
+        {
+            internal int OriginalHealth;
+            internal int OriginalMaximumHealth;
+            internal int LastHealth;
+            internal int DamageTaken;
+            internal int HeadHits;
+            internal int ChestHits;
+            internal int StomachHits;
+            internal bool OriginalNoCriticalHits;
+            internal bool Wounded;
+            internal bool Fatal;
+            internal bool WritheTaskStarted;
+            internal DateTime NextRagdollRefreshAt = DateTime.MinValue;
+            internal int NonfatalRecoveryAttempts;
+            internal DateTime NextNonfatalRecoveryAt = DateTime.MinValue;
+            internal bool NonfatalRecoveryExhaustionLogged;
+            internal bool NonfatalResurrectionAttempted;
+        }
+
+        private const int NonfatalInjuryRecoveryMaximumAttempts = 8;
+
         private readonly LSImmersiveLog _log;
         private readonly LSPDGangDataIntegration _gangData;
         private readonly LSPDProfile _profile;
@@ -146,6 +178,8 @@ namespace LSImmersiveLife
             new Dictionary<int, Ped>();
         private readonly Dictionary<int, Vehicle> _protectedSceneVehicles =
             new Dictionary<int, Vehicle>();
+        private readonly Dictionary<int, SubjectInjuryState> _subjectInjuries =
+            new Dictionary<int, SubjectInjuryState>();
         private readonly Random _random = new Random();
         private readonly LSPDControlBindings _controls;
         private readonly LSPoliceNpcResponseSettings _settings;
@@ -210,10 +244,10 @@ namespace LSImmersiveLife
         private DateTime _pullOverDeadline = DateTime.MinValue;
         private DateTime _nextAnimationRequest = DateTime.MinValue;
         private DateTime _animationLoadDeadline = DateTime.MinValue;
+        private DateTime _animationVerificationAt = DateTime.MinValue;
+        private DateTime _animationVerificationDeadline = DateTime.MinValue;
         private DateTime _backupPhaseDeadline = DateTime.MinValue;
         private DateTime _nextBackupSubjectTask = DateTime.MinValue;
-        private DateTime _lastBackupPhysicalEscortAttachAt = DateTime.MinValue;
-        private DateTime _lastBackupEscortAnimationAt = DateTime.MinValue;
         private DateTime _deferredDeadSubjectCreatedAt = DateTime.MinValue;
         private DateTime _nextDeferredDeadSubjectScanAt = DateTime.MinValue;
         private Vector3 _fleeLastPosition = Vector3.Zero;
@@ -221,11 +255,17 @@ namespace LSImmersiveLife
         private Vector3 _interactionAnchor = Vector3.Zero;
         private Vector3 _footStationDestination = Vector3.Zero;
         private Vector3 _trafficStationDestination = Vector3.Zero;
-        private Vector3 _backupEscortRootOffset = Vector3.Zero;
         private string _footStationName = string.Empty;
         private string _trafficStationName = string.Empty;
-        private string _backupEscortAnimationClip = string.Empty;
+        private PendingAnimation _animationVerificationAction = PendingAnimation.None;
+        private bool _animationVerificationPassed;
+        private int _animationVerificationSceneId = -1;
+        private string _animationVerificationDictionary = string.Empty;
+        private string _animationVerificationSubjectClip = string.Empty;
+        private string _animationVerificationPlayerClip = string.Empty;
         private Ped _deferredDeadSubject;
+        private Ped _animationVerificationSubject;
+        private Ped _animationVerificationPlayer;
         private bool _fleeMovementConfirmed;
         private bool _footContactFled;
         private bool _trafficContactFled;
@@ -239,20 +279,23 @@ namespace LSImmersiveLife
         private bool _pullOverRecoveryIssued;
         private bool _approachCandidateStopped;
         private bool _backupRequested;
+        private bool _documentsProvided;
         private bool _backupBackgroundTransport;
         private bool _backupEscortTaskIssued;
         private bool _backupEntryTaskIssued;
         private bool _backupVehicleDoorOpened;
-        private bool _backupPhysicalEscortAttached;
-        private int _backupPhysicalEscortAttachAttempts;
+        private bool _backupVehicleDoorTaskIssued;
+        private bool _backupArrestTaskIssued;
+        private int _backupArrestAttempts;
         private bool _deferredDeadSubjectWasPersistent;
         private bool _backupCustodyOfferPresented;
         private bool _footPlayerArrested;
+        private int _footPlayerArrestAttempts;
+        private DateTime _footPlayerArrestDeadline = DateTime.MinValue;
         private bool _secureKeyDown;
         private PendingAnimation _pendingAnimation;
         private int _pendingAnimationDuration;
         private LSPDNPCRecord _currentRecord;
-        private bool _interactionKeyDown;
         private bool _acceptKeyDown;
         private bool _rejectKeyDown;
 
@@ -394,6 +437,7 @@ namespace LSImmersiveLife
                 return HasActiveInteraction && !_backupRequested
                     && (_stage == InteractionStage.FootAwaitingBackup
                         || _stage == InteractionStage.TrafficAwaitingBackup
+                        || _stage == InteractionStage.FootResisting
                         || _stage == InteractionStage.FootFleeing
                         || _stage == InteractionStage.TrafficFleeing
                         || _stage == InteractionStage.TrafficResisting
@@ -450,7 +494,103 @@ namespace LSImmersiveLife
         }
 
         internal Ped ActiveSubject { get { return IsUsable(_subject) ? _subject : null; } }
+        internal Ped CurrentSubject { get { return IsUsable(_subject) ? _subject : null; } }
         internal Vehicle ActiveSubjectVehicle { get { return IsUsable(_subjectVehicle) ? _subjectVehicle : null; } }
+
+        internal bool CanRequestCitizenDocuments
+        {
+            get
+            {
+                if (!HasActiveInteraction || _backupRequested || !IsUsable(_subject)
+                    || _pendingAnimation != PendingAnimation.None)
+                    return false;
+
+                DateTime now = DateTime.UtcNow;
+                bool greetingReady = _subjectVehicle == null
+                    && _stage == InteractionStage.FootGreeting
+                    && now >= _animationHoldUntil;
+                bool trafficWindowReady = IsUsable(_subjectVehicle)
+                    && _stage == InteractionStage.TrafficPreparing
+                    && now >= _readyAt
+                    && !Game.Player.Character.IsInVehicle()
+                    && IsAtTrafficDriverWindow(Game.Player.Character);
+                bool canRetryFootHandoff = _subjectVehicle == null
+                    && _stage == InteractionStage.FootDocuments
+                    && !_documentsProvided
+                    && now >= _animationHoldUntil;
+                bool canRetryTrafficHandoff = IsUsable(_subjectVehicle)
+                    && _stage == InteractionStage.TrafficDocuments
+                    && !_documentsProvided
+                    && now >= _animationHoldUntil
+                    && !Game.Player.Character.IsInVehicle()
+                    && IsAtTrafficDriverWindow(Game.Player.Character);
+                return greetingReady || trafficWindowReady
+                    || canRetryFootHandoff || canRetryTrafficHandoff;
+            }
+        }
+
+        internal bool CanRequestCitizenValidation
+        {
+            get
+            {
+                return HasActiveInteraction
+                    && !_backupRequested
+                    && !CitizenRecordVisible
+                    && (_documentsProvided || _currentRecord != null);
+            }
+        }
+
+        internal bool CanDecideCitizenRecord
+        {
+            get
+            {
+                return HasActiveInteraction
+                    && (_backupCustodyOfferPresented
+                        || (_currentRecord != null && CitizenRecordVisible));
+            }
+        }
+
+        internal bool CanArrestCitizen
+        {
+            get
+            {
+                return HasActiveInteraction
+                    && !_backupRequested
+                    && (_stage == InteractionStage.FootAwaitingPlayerArrest
+                        || IsLivingDowned(_subject)
+                        || IsLivingInjuredSubject(_subject))
+                    && IsUsable(_subject);
+            }
+        }
+
+        internal bool CanReleaseCitizen
+        {
+            get
+            {
+                return HasActiveInteraction
+                    && !_backupRequested
+                    && _currentRecord != null
+                    && CitizenRecordVisible
+                    && _stage != InteractionStage.FootFleeing
+                    && _stage != InteractionStage.FootStationFollow
+                    && _stage != InteractionStage.FootResisting
+                    && _stage != InteractionStage.TrafficFleeing
+                    && _stage != InteractionStage.TrafficStationFollow
+                    && _stage != InteractionStage.TrafficResisting
+                    && _stage != InteractionStage.FootBackupContained
+                    && _stage != InteractionStage.TrafficBackupContained;
+            }
+        }
+
+        internal bool CanReviewBackupCustodyOffer
+        {
+            get
+            {
+                return (_stage == InteractionStage.FootBackupContained
+                        || _stage == InteractionStage.TrafficBackupContained)
+                    && HasBackupAssignment;
+            }
+        }
 
         internal bool CanBeginPlayerVehicleCustody
         {
@@ -483,17 +623,16 @@ namespace LSImmersiveLife
             get
             {
                 return _stage == InteractionStage.BackupEscort
-                    && _backupPhysicalEscortAttached
+                    && !_backupVehicleDoorOpened
                     && IsUsable(_subject)
                     && IsUsable(_backupOfficer)
-                && IsBackupSubjectAttachedToOfficer(_subject, _backupOfficer);
+                    && IsUsable(_backupVehicle);
             }
         }
 
         /// <summary>
-        /// True for the whole pre-door escort phase, including the short
-        /// interval before the measured attachment is established. Backup
-        /// must not replace the escort officer's navigation task with a
+        /// True while the Citizen and Backup officer use their paired natural
+        /// navigation tasks. Backup must not replace either task with a
         /// secondary LookAt/AimAt task during this window.
         /// </summary>
         internal bool IsBackupEscortMovementActive
@@ -608,17 +747,14 @@ namespace LSImmersiveLife
                     ? InteractionStage.FootBackupContained
                     : InteractionStage.TrafficBackupContained)
                 : InteractionStage.BackupSecuring;
-            _backupPhaseDeadline = now.AddSeconds(45);
+            _backupPhaseDeadline = now.AddSeconds(BackupPhysicalEscortTimeoutSeconds);
             _nextBackupSubjectTask = now;
+            _backupArrestTaskIssued = false;
+            _backupArrestAttempts = 0;
             _backupEscortTaskIssued = false;
             _backupEntryTaskIssued = false;
             _backupVehicleDoorOpened = false;
-            _backupPhysicalEscortAttached = false;
-            _lastBackupPhysicalEscortAttachAt = DateTime.MinValue;
-            _lastBackupEscortAnimationAt = DateTime.MinValue;
-            _backupPhysicalEscortAttachAttempts = 0;
-            _backupEscortRootOffset = Vector3.Zero;
-            _backupEscortAnimationClip = string.Empty;
+            _backupVehicleDoorTaskIssued = false;
             SetSubjectPoliceAware(_subject);
             try
             {
@@ -630,7 +766,9 @@ namespace LSImmersiveLife
                     occupiedVehicle.Speed = 0.0f;
                     Function.Call(Hash.TASK_LEAVE_VEHICLE, _subject, occupiedVehicle, 0);
                 }
-                else if (!_subject.IsInVehicle() && !_footPlayerArrested)
+                else if (!_subject.IsInVehicle() && !_footPlayerArrested
+                    && !IsLivingDowned(_subject)
+                    && !IsLivingInjuredSubject(_subject))
                 {
                     // A fleeing citizen remains mobile only while Backup is
                     // travelling. This method is called after the owned unit
@@ -759,10 +897,10 @@ namespace LSImmersiveLife
             {
                 if (_subject.Position.DistanceTo(officer.Position) > 3.2f)
                     return false;
-                bool playerAlreadySecured = _subjectVehicle == null && _footPlayerArrested;
+                bool playerAlreadySecured = _subjectVehicle == null
+                    && _footPlayerArrested && IsPedPhysicallyCuffed(_subject);
                 try
                 {
-                    Function.Call(Hash.SET_ENABLE_HANDCUFFS, _subject, true);
                     _subject.CanSwitchWeapons = false;
                     CaptureBackupTransportProtection(_subject);
                     if (playerAlreadySecured)
@@ -776,21 +914,49 @@ namespace LSImmersiveLife
                             + "; PlayerArrestAlreadyCompleted=true"
                             + "; Officer=" + officer.Handle);
                     }
-                    else
+                    else if (!IsPedPhysicallyCuffed(_subject))
                     {
-                        Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                            officer, _subject, 1200);
-                        Function.Call(Hash.TASK_ARREST_PED, officer, _subject);
-                        ObserveDeveloperTask(
-                            "TASK_ARREST_PED",
-                            officer.Handle,
-                            _subject.Handle,
-                            _subjectVehicle == null ? 0 : _subjectVehicle.Handle,
-                            "BackupSecuring");
+                        if (_backupArrestAttempts < BackupArrestMaximumAttempts
+                            && (!_backupArrestTaskIssued || now >= _nextBackupSubjectTask))
+                        {
+                            if (!IsLivingDowned(_subject)
+                                && !IsLivingInjuredSubject(_subject))
+                                Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                                    officer, _subject, 1200);
+                            Function.Call(Hash.TASK_ARREST_PED, officer, _subject);
+                            ObserveDeveloperTask(
+                                "TASK_ARREST_PED",
+                                officer.Handle,
+                                _subject.Handle,
+                                _subjectVehicle == null ? 0 : _subjectVehicle.Handle,
+                                "BackupSecuring");
+                            _backupArrestTaskIssued = true;
+                            _backupArrestAttempts++;
+                            _nextBackupSubjectTask = now.AddMilliseconds(
+                                FootPlayerArrestMilliseconds);
+                            _log.Runtime("NPC_BACKUP_PHYSICAL_ARREST_ATTEMPT",
+                                "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
+                                + "; Attempt=" + _backupArrestAttempts
+                                + "; MaximumAttempts=" + BackupArrestMaximumAttempts
+                                + "; DownedOrInjured="
+                                + (IsLivingDowned(_subject)
+                                    || IsLivingInjuredSubject(_subject)));
+                        }
+                        return false;
                     }
+
+                    // The game now reports cuffs after TASK_ARREST_PED; only
+                    // now may Backup take escort and transport custody.
+                    Function.Call(Hash.SET_ENABLE_HANDCUFFS, _subject, true);
+                    RestoreSubjectInjuryState(_subject);
                 }
-                catch (Exception ex) { _log.Exception("NPC_BACKUP_HANDCUFF_FLAG_FAILED", ex); }
-                BeginPendingAnimation(PendingAnimation.HandcuffedIdle, 1800, now);
+                catch (Exception ex)
+                {
+                    _log.Exception("NPC_BACKUP_HANDCUFF_FLAG_FAILED", ex);
+                    return false;
+                }
+                _pendingAnimation = PendingAnimation.None;
+                ClearAnimationVerification();
                 _animationHoldUntil = now.AddMilliseconds(1800);
                 _readyAt = _animationHoldUntil;
                 _stage = InteractionStage.BackupEscort;
@@ -801,13 +967,10 @@ namespace LSImmersiveLife
                 _nextBackupSubjectTask = _readyAt;
                 _backupEscortTaskIssued = false;
                 _backupEntryTaskIssued = false;
+                _backupArrestTaskIssued = false;
+                _backupArrestAttempts = 0;
                 _backupVehicleDoorOpened = false;
-                _backupPhysicalEscortAttached = false;
-                _lastBackupPhysicalEscortAttachAt = DateTime.MinValue;
-                _lastBackupEscortAnimationAt = DateTime.MinValue;
-                _backupPhysicalEscortAttachAttempts = 0;
-                _backupEscortRootOffset = Vector3.Zero;
-                _backupEscortAnimationClip = string.Empty;
+                _backupVehicleDoorTaskIssued = false;
                 _log.Runtime("NPC_BACKUP_SUBJECT_SECURED",
                     "Ped=" + _subject.Handle + "; Officer=" + officer.Handle);
                 Notify("Citizen secured. Backup is escorting the subject to the Police vehicle.");
@@ -853,57 +1016,34 @@ namespace LSImmersiveLife
                     return false;
                 }
 
-                // The officer, not the prisoner, owns movement during the
-                // escort.  Keeping the prisoner attached at the measured
-                // world offset prevents an independent FollowNavMesh task
-                // from making the subject wander, open the door, or lose the
-                // officer around the vehicle.
-                if (!_backupVehicleDoorOpened
-                    && (!_backupPhysicalEscortAttached
-                    || !IsBackupSubjectAttachedToOfficer(_subject, officer))
-                    )
-                {
-                    if (_subject.Position.DistanceTo(officer.Position)
-                        > BackupPhysicalEscortAttachRadius)
-                    {
-                        return false;
-                    }
-
-                    if (!TryAttachBackupSubjectToOfficer(officer, now))
-                        return false;
-
-                    _backupPhysicalEscortAttached = true;
-                    _backupEscortTaskIssued = false;
-                    _nextBackupSubjectTask = now;
-                    MaintainBackupEscortAnimation(officer, now, true);
-                    _log.Runtime("NPC_BACKUP_ESCORT_MOVEMENT_STARTED",
-                        "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                        + "; Vehicle=" + vehicle.Handle
-                        + "; Attachment=MeasuredEscortRoot");
-                }
-
-                MaintainBackupEscortAnimation(officer, now, true);
                 Vector3 entry = vehicle.GetOffsetPosition(new Vector3(2.0f, -1.0f, 0.0f));
-                Vector3 escortTarget = BackupEscortOfficerDoorTarget(entry, officer);
+                Vector3 escortTarget = entry;
                 bool escortAtDoor = officer.Position.DistanceTo(escortTarget)
                     <= BackupEscortDoorRadius;
+                bool subjectAtDoor = _subject.Position.DistanceTo(entry)
+                    <= BackupEscortDoorRadius + 0.75f;
 
-                if (!escortAtDoor)
+                if (!escortAtDoor || !subjectAtDoor)
                 {
                     if (!_backupEscortTaskIssued || now >= _nextBackupSubjectTask)
                     {
                         try
                         {
+                            Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
+                                _subject, officer, 0.0f, -0.45f, 0.0f,
+                                1.0f, -1, 0.45f, false);
                             Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
                                 officer, escortTarget.X, escortTarget.Y, escortTarget.Z,
                                 1.15f, -1, 1.0f, 1, 0f);
                             bool firstEscortTask = !_backupEscortTaskIssued;
                             _backupEscortTaskIssued = true;
-                            _nextBackupSubjectTask = now.AddSeconds(6);
+                            _nextBackupSubjectTask = now.AddSeconds(3);
                             if (firstEscortTask)
                                 _log.Runtime("NPC_BACKUP_ESCORT_TO_VEHICLE_STARTED",
                                     "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                                    + "; Vehicle=" + vehicle.Handle + "; Door=2");
+                                    + "; Vehicle=" + vehicle.Handle + "; Door=2"
+                                    + "; Movement=GroundedCloseFollow; Offset=0,-0.45,0"
+                                    + "; StopRange=0.45; SubjectAttached=false");
                         }
                         catch (Exception ex) { _log.Exception("NPC_BACKUP_ESCORT_TO_VEHICLE_FAILED", ex); }
                     }
@@ -914,24 +1054,42 @@ namespace LSImmersiveLife
                 {
                     try
                     {
-                        MaintainBackupEscortAnimation(officer, now, false);
-                        Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                            officer, _subject, 1000);
-                        Function.Call(Hash.TASK_OPEN_VEHICLE_DOOR,
-                            officer, vehicle, 4000, 2, 1.0f);
-                        Function.Call(Hash.SET_VEHICLE_DOOR_OPEN,
-                            vehicle, 2, false, false);
+                        float doorAngle = Function.Call<float>(
+                            Hash.GET_VEHICLE_DOOR_ANGLE_RATIO, vehicle, 2);
+                        if (doorAngle < 0.75f)
+                        {
+                            if (!_backupVehicleDoorTaskIssued
+                                || now >= _nextBackupSubjectTask)
+                            {
+                                Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                                    officer, vehicle, 1000);
+                                Function.Call(Hash.TASK_OPEN_VEHICLE_DOOR,
+                                    officer, vehicle, 4000, 2, 1.0f);
+                                _backupVehicleDoorTaskIssued = true;
+                                _nextBackupSubjectTask = now.AddSeconds(2);
+                                _log.Runtime("NPC_BACKUP_PRISONER_DOOR_OPEN_TASK",
+                                    "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
+                                    + "; Vehicle=" + vehicle.Handle + "; Door=2"
+                                    + "; AngleRatio=" + doorAngle.ToString("0.00"));
+                            }
+                            return false;
+                        }
+
                         _backupVehicleDoorOpened = true;
-                        _nextBackupSubjectTask = now.AddMilliseconds(1200);
+                        _backupVehicleDoorTaskIssued = false;
+                        _nextBackupSubjectTask = now.AddMilliseconds(500);
                         _log.Runtime("NPC_BACKUP_ESCORT_REACHED_VEHICLE",
                             "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                            + "; Vehicle=" + vehicle.Handle + "; Door=2");
+                            + "; Vehicle=" + vehicle.Handle + "; Door=2"
+                            + "; SubjectAtDoor=true");
                         _log.Runtime("NPC_BACKUP_PRISONER_DOOR_OPENED",
                             "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                            + "; Vehicle=" + vehicle.Handle + "; Door=2");
+                            + "; Vehicle=" + vehicle.Handle + "; Door=2"
+                            + "; PhysicalAngleRatio=" + doorAngle.ToString("0.00"));
                     }
                     catch (Exception ex)
                     {
+                        _nextBackupSubjectTask = now.AddSeconds(2);
                         _log.Exception("NPC_BACKUP_PRISONER_DOOR_OPEN_FAILED", ex);
                     }
                     DetachBackupSubjectFromOfficer("BothActorsAtRearDoor");
@@ -947,79 +1105,6 @@ namespace LSImmersiveLife
                     + ". The subject remains available for another Backup request.");
             }
             return false;
-        }
-
-        private bool TryAttachBackupSubjectToOfficer(Ped officer, DateTime now)
-        {
-            if (!IsUsable(_subject) || _subject.IsDead
-                || !IsUsable(officer) || officer.IsDead)
-                return false;
-            if (IsBackupSubjectAttachedToOfficer(_subject, officer))
-                return true;
-
-            if (_lastBackupPhysicalEscortAttachAt != DateTime.MinValue
-                && now < _lastBackupPhysicalEscortAttachAt.AddMilliseconds(
-                    BackupPhysicalEscortAttachRetryMilliseconds))
-                return false;
-            if (_backupPhysicalEscortAttachAttempts
-                >= BackupPhysicalEscortMaximumAttachAttempts)
-                return false;
-
-            _backupPhysicalEscortAttachAttempts++;
-            _lastBackupPhysicalEscortAttachAt = now;
-            try
-            {
-                // Keep the existing world spacing instead of inventing a
-                // wrist offset. The officer becomes the sole movement owner;
-                // the cuffed citizen travels with that officer until the rear
-                // door is reached.
-                Vector3 relativeOffset = Function.Call<Vector3>(
-                    Hash.GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS,
-                    officer,
-                    _subject.Position.X,
-                    _subject.Position.Y,
-                    _subject.Position.Z);
-                _backupEscortRootOffset = relativeOffset;
-                int rootBone = Function.Call<int>(Hash.GET_PED_BONE_INDEX, officer, 0);
-                Function.Call(Hash.ATTACH_ENTITY_TO_ENTITY,
-                    _subject,
-                    officer,
-                    rootBone,
-                    relativeOffset.X,
-                    relativeOffset.Y,
-                    relativeOffset.Z,
-                    0f,
-                    0f,
-                    0f,
-                    false,
-                    false,
-                    false,
-                    true,
-                    0,
-                    false,
-                    false);
-
-                if (!IsBackupSubjectAttachedToOfficer(_subject, officer))
-                {
-                    _log.Runtime("NPC_BACKUP_PHYSICAL_ESCORT_ATTACH_REJECTED",
-                        "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                        + "; Attempt=" + _backupPhysicalEscortAttachAttempts
-                        + "; Bone=SKEL_ROOT; Offset=" + relativeOffset);
-                    return false;
-                }
-
-                _log.Runtime("NPC_BACKUP_PHYSICAL_ESCORT_ATTACHED",
-                    "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                    + "; Attempt=" + _backupPhysicalEscortAttachAttempts
-                    + "; Bone=SKEL_ROOT; Offset=" + relativeOffset
-                    + "; CollisionWithEscort=false");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _log.Exception("NPC_BACKUP_PHYSICAL_ESCORT_ATTACH_FAILED", ex);
-                return false;
-            }
         }
 
         private bool IsBackupSubjectAttachedToOfficer(Ped subject, Ped officer)
@@ -1060,79 +1145,16 @@ namespace LSImmersiveLife
                 }
             }
 
-            _backupPhysicalEscortAttached = false;
-            _backupEscortRootOffset = Vector3.Zero;
-            _lastBackupPhysicalEscortAttachAt = DateTime.MinValue;
-            _lastBackupEscortAnimationAt = DateTime.MinValue;
-            _backupPhysicalEscortAttachAttempts = 0;
-            _backupEscortAnimationClip = string.Empty;
-        }
-
-        private void MaintainBackupEscortAnimation(Ped officer, DateTime now, bool walking)
-        {
-            if (!IsUsable(_subject) || _subject.IsDead
-                || !IsUsable(officer)
-                || !IsBackupSubjectAttachedToOfficer(_subject, officer))
-                return;
-
-            const string dictionary = "anim@move_m@prisoner_cuffed";
-            string clip = walking ? "walk" : "idle";
-            bool clipChanged = !string.Equals(
-                _backupEscortAnimationClip, clip, StringComparison.Ordinal);
-            if (!clipChanged
-                && _lastBackupEscortAnimationAt != DateTime.MinValue
-                && now < _lastBackupEscortAnimationAt.AddMilliseconds(
-                    BackupCuffPoseRefreshMilliseconds))
-                return;
-
-            try
-            {
-                Function.Call(Hash.REQUEST_ANIM_DICT, dictionary);
-                if (!Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dictionary))
-                {
-                    _lastBackupEscortAnimationAt = now;
-                    return;
-                }
-                if (!clipChanged && Function.Call<bool>(Hash.IS_ENTITY_PLAYING_ANIM,
-                    _subject, dictionary, clip, 3))
-                {
-                    _lastBackupEscortAnimationAt = now;
-                    return;
-                }
-
-                Function.Call(Hash.TASK_PLAY_ANIM,
-                    _subject,
-                    dictionary,
-                    clip,
-                    3.0f,
-                    -2.0f,
-                    -1,
-                    walking ? 1 : 49,
-                    1.0f,
-                    false,
-                    false,
-                    false);
-                _backupEscortAnimationClip = clip;
-                _lastBackupEscortAnimationAt = now;
-                _log.Runtime("NPC_BACKUP_ESCORT_ANIMATION",
-                    "Ped=" + _subject.Handle + "; Officer=" + officer.Handle
-                    + "; Dictionary=" + dictionary + "; Clip=" + clip);
-            }
-            catch (Exception ex)
-            {
-                _lastBackupEscortAnimationAt = now;
-                _log.Exception("NPC_BACKUP_ESCORT_ANIMATION_FAILED", ex);
-            }
         }
 
         private void MaintainBackupLoadingState()
         {
-            if (!IsUsable(_subject) || _subject.IsDead)
+            if (!IsUsable(_subject) || _subject.IsDead || _subject.Health <= 0)
                 return;
             try
             {
-                // Loading owns the subject after the measured escort is
-                // released. Keep custody active while GTA performs the real
+                // Loading owns the subject after the Officer and subject
+                // reach the rear door. Keep custody active while GTA performs the real
                 // rear-seat entry task, without issuing a competing movement
                 // or ambient task that could interrupt vehicle entry.
                 SetSubjectPoliceAware(_subject);
@@ -1143,32 +1165,6 @@ namespace LSImmersiveLife
             catch (Exception ex)
             {
                 _log.Exception("NPC_BACKUP_LOADING_STATE_MAINTENANCE_FAILED", ex);
-            }
-        }
-
-        private Vector3 BackupEscortOfficerDoorTarget(Vector3 doorPosition, Ped officer)
-        {
-            if (!IsUsable(_subject) || !IsUsable(officer))
-                return doorPosition;
-
-            try
-            {
-                Vector3 doorOffset = Function.Call<Vector3>(
-                    Hash.GET_OFFSET_FROM_ENTITY_GIVEN_WORLD_COORDS,
-                    officer,
-                    doorPosition.X,
-                    doorPosition.Y,
-                    doorPosition.Z);
-                Vector3 officerOffset = new Vector3(
-                    doorOffset.X - _backupEscortRootOffset.X,
-                    doorOffset.Y - _backupEscortRootOffset.Y,
-                    doorOffset.Z - _backupEscortRootOffset.Z);
-                return officer.GetOffsetPosition(officerOffset);
-            }
-            catch (Exception ex)
-            {
-                _log.Exception("NPC_BACKUP_ESCORT_DOOR_TARGET_FAILED", ex);
-                return doorPosition;
             }
         }
 
@@ -1284,10 +1280,9 @@ namespace LSImmersiveLife
             _backupEscortTaskIssued = false;
             _backupEntryTaskIssued = false;
             _backupVehicleDoorOpened = false;
-            _backupPhysicalEscortAttached = false;
-            _backupPhysicalEscortAttachAttempts = 0;
-            _backupEscortRootOffset = Vector3.Zero;
-            _backupEscortAnimationClip = string.Empty;
+            _backupVehicleDoorTaskIssued = false;
+            _backupArrestTaskIssued = false;
+            _backupArrestAttempts = 0;
             _backupCustodyOfferPresented = false;
             RestoreBackupTransportProtection();
             if (IsUsable(_subject))
@@ -1300,7 +1295,9 @@ namespace LSImmersiveLife
                 }
                 else
                 {
-                    _subject.Task.HandsUp(15000);
+                    if (!IsLivingDowned(_subject)
+                        && !IsLivingInjuredSubject(_subject))
+                        _subject.Task.HandsUp(15000);
                     _stage = _subjectVehicle == null
                         ? InteractionStage.FootAwaitingBackup
                         : InteractionStage.TrafficAwaitingBackup;
@@ -1375,11 +1372,15 @@ namespace LSImmersiveLife
                             ? "Citizen fled. Pursue on foot until the person stops or is down."
                             : "Citizen is attempting to leave. Waiting for real movement.";
                     case InteractionStage.FootResisting:
-                        return "Citizen is resisting the Police contact. Use appropriate force to end the threat or request Backup.";
+                        return IsLivingDowned(_subject)
+                            ? "Citizen is down but alive. Approach and press "
+                                + _controls.SecureKey + " to begin the physical arrest."
+                            : "Citizen is resisting the Police contact. Use appropriate force to end the threat or request Backup.";
                     case InteractionStage.TrafficPullingOver:
                         return "Driver is pulling over for Police contact.";
                     case InteractionStage.TrafficPreparing:
-                        return "Driver is pulled over. Approach the window and press Interact to investigate.";
+                        return "Driver is pulled over. Approach the window, open Citizen Ped Response with "
+                            + _controls.InteractionKey + ", and request the driver's documents.";
                     case InteractionStage.TrafficDocuments:
                         return RecordStatus("Traffic stop active. " + DecisionHint("release", "detain / pursue"));
                     case InteractionStage.TrafficRefused:
@@ -1395,7 +1396,7 @@ namespace LSImmersiveLife
                     case InteractionStage.FootAwaitingBackup:
                         return _footPlayerArrested
                             ? "Citizen is handcuffed and waiting for Police transport. Press "
-                                + _controls.EmergencyKey + " to request Backup."
+                                + _controls.EmergencyKey + " to open Back Up Response and choose Citizen assistance."
                             : "Subject is compliant and waiting for Police Backup transport.";
                     case InteractionStage.FootAwaitingPlayerArrest:
                         return "Citizen complied and is waiting for your physical arrest. Press "
@@ -1403,13 +1404,13 @@ namespace LSImmersiveLife
                     case InteractionStage.FootPlayerArresting:
                         return "Physical arrest is in progress. Stay beside the citizen.";
                     case InteractionStage.FootBackupContained:
-                        return "Backup has contained the fleeing citizen. Press "
-                            + _controls.InteractionKey + " to review the custody response.";
+                        return "Backup has contained the fleeing citizen. Open Citizen Ped Response with "
+                            + _controls.InteractionKey + " to review custody.";
                     case InteractionStage.TrafficAwaitingBackup:
                         return "Subject is compliant and waiting for Police Backup transport.";
                     case InteractionStage.TrafficBackupContained:
-                        return "Backup has stopped the fleeing driver. Approach and press "
-                            + _controls.InteractionKey + " to review the custody response.";
+                        return "Backup has stopped the fleeing driver. Approach and open Citizen Ped Response with "
+                            + _controls.InteractionKey + " to review custody.";
                     case InteractionStage.BackupSecuring:
                         return "Backup is physically securing the citizen.";
                     case InteractionStage.BackupEscort:
@@ -1422,10 +1423,18 @@ namespace LSImmersiveLife
             }
         }
 
+        internal LSPDNPCRecord CurrentRecord
+        {
+            get { return _currentRecord; }
+        }
+
+        internal bool CitizenRecordVisible { get; private set; }
+
         /// <summary>
         /// Runs only while PoliceCore has an explicitly active Authority session
-        /// and Patrol is on. G selects one valid subject, Y releases/completes,
-        /// and N refuses/escalates. All key handling is edge-triggered.
+        /// and Patrol is on. UI owns G as the Citizen framework key; E begins
+        /// quick contact when no Citizen is active and secures only at the
+        /// documented physical-arrest stage. Y/N remain decision shortcuts.
         /// </summary>
         internal void Process(bool isPatrolling, bool dispatchActive, bool paused)
         {
@@ -1479,6 +1488,7 @@ namespace LSImmersiveLife
 
             DateTime now = DateTime.UtcNow;
 
+            MaintainSubjectInjury(_subject, now, player);
             MaintainDeferredDeadSubject(player, now);
 
             // Once Backup owns a loaded prisoner, the player-facing contact
@@ -1524,16 +1534,13 @@ namespace LSImmersiveLife
             // offer or active scene, no new civilian/traffic contact is started.
             // PoliceCore also refuses a new dispatch handoff while this owner has
             // a contact. A quiet foot patrol may keep one short-lived approach
-            // candidate so a civilian can notice the officer before G begins a
-            // real interaction.
+            // candidate so a civilian can notice the officer before E begins a
+            // real interaction. G is routed by Police UI to the framework.
             if (_settings.InteractionsEnabled)
                 MaintainApproachCandidate(player, now, contactBlocked);
             else
                 ReleaseApproachCandidate();
 
-            bool interactionKeyPressed = _settings.InteractionsEnabled
-                && allowGameplayInput
-                && WasPressed(_controls.InteractionKey, ref _interactionKeyDown);
             bool secureKeyPressed = _settings.InteractionsEnabled
                 && allowGameplayInput
                 && WasPressed(_controls.SecureKey, ref _secureKeyDown);
@@ -1552,13 +1559,16 @@ namespace LSImmersiveLife
                 // Patrol vehicle, including addon models.
                 && Game.IsControlJustPressed(GTA.Control.VehicleHorn);
             if (_settings.InteractionsEnabled && allowGameplayInput
-                && (interactionKeyPressed
-                    || controllerInteraction || trafficSignal))
+                && secureKeyPressed && !HasActiveInteraction && !contactBlocked)
+                BeginNearestInteraction(player);
+
+            if (_settings.InteractionsEnabled && allowGameplayInput
+                && (controllerInteraction || trafficSignal))
             {
                 if (HasActiveInteraction
                     && (_stage == InteractionStage.FootBackupContained
                         || _stage == InteractionStage.TrafficBackupContained)
-                    && (interactionKeyPressed || controllerInteraction))
+                    && controllerInteraction)
                     PresentBackupCustodyOffer(player);
                 else if (contactBlocked && !HasActiveInteraction)
                     Notify("Dispatch is active. NPC contact is paused until the Police scene is clear.");
@@ -1566,16 +1576,18 @@ namespace LSImmersiveLife
                     BeginNearestInteraction(player, trafficSignal);
             }
             if (_settings.InteractionsEnabled && allowGameplayInput && HasActiveInteraction
-                && secureKeyPressed && _stage == InteractionStage.FootAwaitingPlayerArrest)
+                && secureKeyPressed && CanArrestCitizen)
                 BeginFootPlayerArrest(player, now);
             bool controllerAccept = _settings.InteractionsEnabled && allowGameplayInput
                 && Game.IsControlJustPressed(GTA.Control.FrontendAccept);
             bool controllerReject = _settings.InteractionsEnabled && allowGameplayInput
                 && Game.IsControlJustPressed(GTA.Control.FrontendCancel);
             if (_settings.InteractionsEnabled && allowGameplayInput && HasActiveInteraction
+                && CanDecideCitizenRecord
                 && (WasPressed(_controls.AcceptKey, ref _acceptKeyDown) || controllerAccept))
                 AcceptInteraction();
             if (_settings.InteractionsEnabled && allowGameplayInput && HasActiveInteraction
+                && CanDecideCitizenRecord
                 && (WasPressed(_controls.RejectKey, ref _rejectKeyDown) || controllerReject))
                 RejectInteraction(player);
 
@@ -1663,6 +1675,8 @@ namespace LSImmersiveLife
         {
             if (!HasActiveInteraction)
                 return "No NPC interaction is awaiting a decision.";
+            if (!CanDecideCitizenRecord)
+                return "Request Dispatcher validation before accepting the citizen's document.";
             AcceptInteraction();
             return HasActiveInteraction
                 ? StatusText
@@ -1673,10 +1687,74 @@ namespace LSImmersiveLife
         {
             if (!HasActiveInteraction)
                 return "No NPC interaction is awaiting a decision.";
+            if (!CanDecideCitizenRecord)
+                return "Request Dispatcher validation before rejecting the citizen's document.";
             RejectInteraction(Game.Player.Character);
             return HasActiveInteraction
                 ? StatusText
                 : "NPC interaction ended and the subject was released or fled.";
+        }
+
+        internal string RequestCitizenDocumentsCommand()
+        {
+            if (!HasActiveInteraction || !IsUsable(_subject))
+                return "Greet a citizen or stop a driver before requesting identification.";
+            if (!CanRequestCitizenDocuments)
+                return StatusText;
+
+            if (IsUsable(_subjectVehicle))
+            {
+                if (TryBeginTrafficWindowInvestigation(Game.Player.Character))
+                    return "Driver document handoff started. Wait for the driver to present the document.";
+                return "Approach the selected driver's window before requesting identification.";
+            }
+
+            DateTime now = DateTime.UtcNow;
+            _stage = InteractionStage.FootDocuments;
+            _documentsProvided = false;
+            _readyAt = DateTime.MaxValue;
+            _nextSubjectHold = DateTime.MinValue;
+            CitizenRecordVisible = false;
+            HoldFootSubject(Game.Player.Character, now);
+            BeginPendingAnimation(PendingAnimation.Documents, DocumentPresentationMilliseconds, now);
+            _log.Runtime("NPC_FOOT_DOCUMENT_REQUESTED", "Ped=" + _subject.Handle);
+            Notify("Citizen is presenting identification. The Dispatcher check is a separate selection.");
+            return "Citizen document handoff started.";
+        }
+
+        internal string RequestCitizenValidationCommand()
+        {
+            if (!HasActiveInteraction)
+                return "Start a Citizen contact before requesting a Dispatcher validation.";
+            if (!CanRequestCitizenValidation)
+                return "Request the citizen's document first, then request the Dispatcher validation.";
+
+            PresentCitizenRecord();
+            return _currentRecord == null
+                ? "The citizen database could not return a validation record. You may request the check again."
+                : "Dispatcher validation received for " + _currentRecord.FullName + ".";
+        }
+
+        internal string ArrestCitizenCommand()
+        {
+            if (!CanArrestCitizen)
+                return "Arrest is available after the citizen complies and waits for physical arrest.";
+            BeginFootPlayerArrest(Game.Player.Character, DateTime.UtcNow);
+            return StatusText;
+        }
+
+        internal string ReleaseCitizenCommand()
+        {
+            if (!CanReleaseCitizen)
+                return "Release is available after the Dispatcher record is shown and the contact is safe to clear.";
+            return AcceptInteractionCommand();
+        }
+
+        internal string ReviewCitizenFrameworkCommand()
+        {
+            if (CanReviewBackupCustodyOffer)
+                PresentBackupCustodyOffer(Game.Player.Character);
+            return StatusText;
         }
 
         internal void Reset()
@@ -1760,13 +1838,16 @@ namespace LSImmersiveLife
         /// </summary>
         private bool TryBeginTrafficWindowInvestigation(Ped player)
         {
-            if (_stage != InteractionStage.TrafficPreparing)
+            bool retryingDocumentHandoff = _stage == InteractionStage.TrafficDocuments
+                && !_documentsProvided
+                && _pendingAnimation == PendingAnimation.None;
+            if (_stage != InteractionStage.TrafficPreparing && !retryingDocumentHandoff)
                 return false;
             if (!IsUsable(_subject) || !IsUsable(_subjectVehicle))
                 return false;
 
             DateTime now = DateTime.UtcNow;
-            if (now < _readyAt)
+            if (!retryingDocumentHandoff && now < _readyAt)
             {
                 Notify("Wait for the driver to finish pulling over.");
                 return true;
@@ -1778,12 +1859,13 @@ namespace LSImmersiveLife
             }
             if (!IsAtTrafficDriverWindow(player))
             {
-                Notify("Move closer to the driver's window, then press Interact to investigate.");
+                Notify("Move closer to the driver's window, then open Citizen Ped Response and request the driver's documents.");
                 return true;
             }
 
             _stage = InteractionStage.TrafficDocuments;
             _readyAt = DateTime.MaxValue;
+            _documentsProvided = false;
             _nextSubjectHold = DateTime.MinValue;
             HoldTrafficSubject();
             try { _subject.Task.LookAt(player, 3500); }
@@ -1865,23 +1947,27 @@ namespace LSImmersiveLife
         private void BeginFootInteraction(Ped player, Ped ped)
         {
             _subject = ped;
+            CaptureSubjectInjuryState(ped);
             _subjectVehicle = null;
             _currentRecord = null;
+            CitizenRecordVisible = false;
             _backupRequested = false;
+            _documentsProvided = false;
             _suspiciousFootContact = IsUsable(_approachCandidate)
                 && _approachCandidate.Handle == ped.Handle
                 && _approachCandidateSuspicious;
             CaptureInteractionPersistence();
             _stage = InteractionStage.FootPreparing;
             DateTime now = DateTime.UtcNow;
-            _readyAt = now.AddMilliseconds(ContactPreparationMilliseconds);
+            _readyAt = now.AddMilliseconds(Math.Max(
+                ContactPreparationMilliseconds, SubjectOrientationMilliseconds));
             _expiresAt = now.AddMilliseconds(InteractionTimeoutMilliseconds);
             _nextSubjectHold = DateTime.MinValue;
             SetSubjectPoliceAware(ped);
             _animationHoldUntil = DateTime.MinValue;
             _interactionAnchor = ped.Position;
             ped.Task.StandStill(6000);
-            OrientSubjectToOfficer(ped, player, 1800);
+            OrientSubjectToOfficer(ped, player, SubjectOrientationMilliseconds);
             HoldFootSubject(player, now);
             _log.Runtime("NPC_FOOT_CONTACT_STARTED", "Ped=" + ped.Handle);
 
@@ -1936,9 +2022,12 @@ namespace LSImmersiveLife
             }
 
             _subject = driver;
+            CaptureSubjectInjuryState(driver);
             _subjectVehicle = vehicle;
             _currentRecord = null;
+            CitizenRecordVisible = false;
             _backupRequested = false;
+            _documentsProvided = false;
             _suspiciousTrafficContact = IsUsable(_approachCandidate)
                 && _approachCandidateTraffic
                 && _approachCandidateSuspicious
@@ -2247,9 +2336,14 @@ namespace LSImmersiveLife
 
             bool subjectExists = IsUsable(_subject);
             bool vehicleExists = _subjectVehicle == null || IsUsable(_subjectVehicle);
-            if (!subjectExists || _subject.IsDead || !vehicleExists)
+            if (!subjectExists || _subject.IsDead || _subject.Health <= 0 || !vehicleExists)
             {
-                bool subjectDown = subjectExists && _subject.IsDead;
+                bool subjectDown = subjectExists
+                    && (_subject.IsDead || _subject.Health <= 0);
+                if (subjectDown && _subjectVehicle == null
+                    && IsSubjectNonfatalRecoveryPending(_subject))
+                    return;
+
                 string availability = "Stage=" + _stage
                     + "; PedExists=" + subjectExists
                     + "; VehicleExists=" + vehicleExists;
@@ -2273,7 +2367,7 @@ namespace LSImmersiveLife
                             : downedStage == InteractionStage.FootFleeing
                                 ? "FleeingCitizenNeutralized"
                                 : "FootCitizenNeutralized"));
-                    Notify("The citizen is down. The foot-citizen incident is resolved; the scene will remain until you leave the area.");
+                    Notify("The citizen died. The foot-citizen incident is resolved; the scene will remain until you leave the area.");
                     return;
                 }
 
@@ -2295,7 +2389,7 @@ namespace LSImmersiveLife
                             : downedStage == InteractionStage.TrafficFleeing
                                 ? "FleeingDriverNeutralized"
                                 : "TrafficDriverNeutralized"));
-                    Notify("The driver is down. The traffic incident is resolved; the scene will remain until you leave the area.");
+                    Notify("The driver died. The traffic incident is resolved; the scene will remain until you leave the area.");
                     return;
                 }
 
@@ -2310,10 +2404,20 @@ namespace LSImmersiveLife
                         "NPC_INTERACTION_SUBJECT_UNAVAILABLE",
                         "Subject was no longer available. " + availability);
                 Notify(subjectDown
-                    ? "NPC interaction closed because the subject is down."
+                    ? "NPC interaction closed because the subject died."
                     : "NPC interaction ended because the subject is unavailable.");
                 return;
             }
+
+            SubjectInjuryState activeInjury;
+            if (_subjectInjuries.TryGetValue(_subject.Handle, out activeInjury)
+                && activeInjury.Wounded
+                && _stage != InteractionStage.FootPlayerArresting
+                && !_footPlayerArrested
+                && _stage != InteractionStage.BackupSecuring
+                && _stage != InteractionStage.BackupEscort
+                && _stage != InteractionStage.BackupTransport)
+                return;
 
             bool footOrTrafficPursuit = _stage == InteractionStage.FootFleeing
                 || _stage == InteractionStage.TrafficFleeing;
@@ -2396,7 +2500,7 @@ namespace LSImmersiveLife
 
             if (_stage == InteractionStage.FootPlayerArresting)
             {
-                MaintainFootPlayerArrest(now);
+                MaintainFootPlayerArrest(now, player);
                 return;
             }
 
@@ -2434,7 +2538,6 @@ namespace LSImmersiveLife
                 if (_stage == InteractionStage.FootPreparing)
                 {
                     _stage = InteractionStage.FootGreeting;
-                    OrientSubjectToOfficer(_subject, player, 1400);
                     BeginPendingAnimation(PendingAnimation.Greeting, FootGreetingMilliseconds, now);
                     _readyAt = DateTime.MaxValue;
                     _log.Runtime("NPC_FOOT_GREETING", "Ped=" + _subject.Handle);
@@ -2442,14 +2545,19 @@ namespace LSImmersiveLife
                 }
                 else if (_stage == InteractionStage.FootGreeting)
                 {
-                    _stage = InteractionStage.FootDocuments;
-                    OrientSubjectToOfficer(_subject, player, 1400);
-                    BeginPendingAnimation(PendingAnimation.Documents, DocumentPresentationMilliseconds, now);
                     _readyAt = DateTime.MaxValue;
-                    _log.Runtime("NPC_FOOT_DOCUMENTS_READY", "Ped=" + _subject.Handle);
-                    Notify("Citizen is providing identification.");
+                    _log.Runtime("NPC_FOOT_AWAITING_DOCUMENT_REQUEST", "Ped=" + _subject.Handle);
+                    Notify("Citizen is ready to provide identification. Open Citizen Ped Response and select Request the Validation ID/Document.");
                 }
             }
+
+            // Do not issue StandStill/HandsUp over a paired greeting or document
+            // exchange. The task can otherwise be accepted and then replaced on
+            // the same interaction tick, preventing validation from completing.
+            if (_pendingAnimation != PendingAnimation.None
+                || _animationVerificationAt != DateTime.MinValue
+                || now < _animationHoldUntil)
+                return;
 
             if (now < _nextSubjectHold)
                 return;
@@ -2502,13 +2610,14 @@ namespace LSImmersiveLife
                 + "; Vehicle=" + (_backupVehicle == null ? 0 : _backupVehicle.Handle)
                 + "; SubjectType=" + (_stage == InteractionStage.TrafficBackupContained ? "Traffic" : "Foot")
                 + (_currentRecord == null ? string.Empty : "; " + RecordStatus("Record")));
-            string recordText = _currentRecord == null
-                ? string.Empty
-                : "\n" + _currentRecord.ScreenText;
+            if (_currentRecord != null)
+                CitizenRecordVisible = true;
             Notify((_stage == InteractionStage.TrafficBackupContained
                 ? "Backup has stopped the fleeing driver. Backup will escort the driver to its Police vehicle. "
                 : "Backup has contained the citizen. Backup will escort the suspect to its Police vehicle. ")
-                + recordText + "\n"
+                + (_currentRecord == null
+                    ? string.Empty
+                    : "Citizen record is shown in the lower-left display. ")
                 + _controls.AcceptKey + " = accept, " + _controls.RejectKey + " = decline.");
         }
 
@@ -2524,8 +2633,10 @@ namespace LSImmersiveLife
             DateTime now = DateTime.UtcNow;
             _backupCustodyOfferPresented = false;
             _stage = InteractionStage.BackupSecuring;
-            _backupPhaseDeadline = now.AddSeconds(45);
+            _backupPhaseDeadline = now.AddSeconds(BackupPhysicalEscortTimeoutSeconds);
             _nextBackupSubjectTask = now;
+            _backupArrestTaskIssued = false;
+            _backupArrestAttempts = 0;
             _log.Runtime("NPC_BACKUP_CUSTODY_OFFER_ACCEPTED",
                 "Ped=" + (_subject == null ? 0 : _subject.Handle)
                 + "; Officer=" + (_backupOfficer == null ? 0 : _backupOfficer.Handle));
@@ -2555,6 +2666,11 @@ namespace LSImmersiveLife
             if (!HasActiveInteraction)
             {
                 Notify("No NPC interaction is awaiting a decision.");
+                return;
+            }
+            if (!CanDecideCitizenRecord)
+            {
+                Notify("Request Dispatcher validation before accepting the citizen's document.");
                 return;
             }
             if (_stage == InteractionStage.FootBackupContained
@@ -2612,6 +2728,11 @@ namespace LSImmersiveLife
             if (!HasActiveInteraction)
             {
                 Notify("No NPC interaction is awaiting a decision.");
+                return;
+            }
+            if (!CanDecideCitizenRecord)
+            {
+                Notify("Request Dispatcher validation before rejecting the citizen's document.");
                 return;
             }
             if (_stage == InteractionStage.FootBackupContained
@@ -2687,7 +2808,8 @@ namespace LSImmersiveLife
                 _stage = InteractionStage.TrafficAwaitingBackup;
                 HoldTrafficSubject();
                 _log.Runtime("NPC_TRAFFIC_DETENTION_READY", "Driver=" + _subject.Handle);
-                Notify("Driver remained compliant. Request Backup with " + _controls.EmergencyKey + " for physical station transport.");
+                Notify("Driver remained compliant. Open Back Up Response with " + _controls.EmergencyKey
+                    + " and choose Citizen assistance for transport.");
                 return;
             }
 
@@ -2802,9 +2924,12 @@ namespace LSImmersiveLife
 
         private void BeginFootPlayerArrest(Ped player, DateTime now)
         {
-            if (_stage != InteractionStage.FootAwaitingPlayerArrest)
+            bool downedAlive = IsLivingDowned(_subject)
+                || IsLivingInjuredSubject(_subject);
+            if (_stage != InteractionStage.FootAwaitingPlayerArrest && !downedAlive)
                 return;
-            if (!IsUsable(player) || !IsUsable(_subject) || _subject.IsDead)
+            if (!IsUsable(player) || !IsUsable(_subject)
+                || _subject.IsDead || _subject.Health <= 0)
             {
                 Notify("The compliant citizen is no longer available for arrest.");
                 return;
@@ -2827,38 +2952,114 @@ namespace LSImmersiveLife
             {
                 _stage = InteractionStage.FootPlayerArresting;
                 _readyAt = DateTime.MaxValue;
-                _animationHoldUntil = now.AddMilliseconds(FootPlayerArrestMilliseconds);
                 SetSubjectPoliceAware(_subject);
-                Function.Call(Hash.SET_ENABLE_HANDCUFFS, _subject, true);
                 _subject.BlockPermanentEvents = true;
                 _subject.CanSwitchWeapons = false;
-                _subject.Task.ClearAll();
+                if (downedAlive)
+                    Function.Call(Hash.REMOVE_ALL_PED_WEAPONS, _subject, true);
+
                 Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
                     player, _subject, 1000);
-                Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                    _subject, player, 1000);
+                if (!downedAlive)
+                {
+                    _subject.Task.ClearAll();
+                    Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                        _subject, player, 1000);
+                }
                 Function.Call(Hash.TASK_ARREST_PED, player, _subject);
+
+                int arrestHoldMilliseconds = FootPlayerArrestMilliseconds;
+                _footPlayerArrestAttempts = 1;
+                _footPlayerArrestDeadline = now.AddSeconds(30);
+                _animationHoldUntil = now.AddMilliseconds(arrestHoldMilliseconds);
                 _log.Runtime("NPC_FOOT_PLAYER_ARREST_STARTED",
                     "Ped=" + _subject.Handle + "; Player=" + player.Handle
-                    + "; Method=TaskArrestPed");
+                    + "; Method=GroundedTaskArrestPed"
+                    + "; SynchronizedScene=false"
+                    + "; HoldMilliseconds=" + arrestHoldMilliseconds
+                    + "; Attempt=1"
+                    + "; DownedAlive=" + downedAlive);
                 Notify("Physical arrest in progress. Stay beside the citizen until the handcuffs are secured.");
             }
             catch (Exception ex)
             {
                 _stage = InteractionStage.FootAwaitingPlayerArrest;
                 _animationHoldUntil = DateTime.MinValue;
+                _footPlayerArrestAttempts = 0;
+                _footPlayerArrestDeadline = DateTime.MinValue;
                 _log.Exception("NPC_FOOT_PLAYER_ARREST_START_FAILED", ex);
-                try { _subject.Task.HandsUp(15000); } catch { }
+                if (!downedAlive)
+                {
+                    try { _subject.Task.HandsUp(15000); } catch { }
+                }
                 Notify("The physical arrest could not be started. Try again while standing beside the citizen.");
             }
         }
 
-        private void MaintainFootPlayerArrest(DateTime now)
+        private void MaintainFootPlayerArrest(DateTime now, Ped player)
         {
-            if (!IsUsable(_subject) || _subject.IsDead)
+            if (!IsUsable(_subject) || _subject.IsDead || _subject.Health <= 0)
                 return;
             if (now < _animationHoldUntil)
                 return;
+
+            if (!IsPedPhysicallyCuffed(_subject))
+            {
+                bool playerCanContinue = IsUsable(player)
+                    && !player.IsInVehicle()
+                    && player.Position.DistanceTo(_subject.Position)
+                        <= FootPlayerArrestInteractionRadius + 1.5f;
+                if (playerCanContinue
+                    && _footPlayerArrestAttempts < FootPlayerArrestMaximumAttempts
+                    && now < _footPlayerArrestDeadline)
+                {
+                    try
+                    {
+                        bool downedAlive = IsLivingDowned(_subject)
+                            || IsLivingInjuredSubject(_subject);
+                        if (!downedAlive)
+                        {
+                            Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                                player, _subject, 1000);
+                            Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                                _subject, player, 1000);
+                        }
+                        Function.Call(Hash.TASK_ARREST_PED, player, _subject);
+                        _footPlayerArrestAttempts++;
+                        _animationHoldUntil = now.AddMilliseconds(
+                            FootPlayerArrestMilliseconds);
+                        _log.Runtime("NPC_FOOT_PLAYER_ARREST_RETRIED",
+                            "Ped=" + _subject.Handle + "; Player=" + player.Handle
+                            + "; Attempt=" + _footPlayerArrestAttempts
+                            + "; MaximumAttempts=" + FootPlayerArrestMaximumAttempts
+                            + "; DownedAlive=" + downedAlive);
+                        Notify("Stay beside the citizen while the physical handcuffing finishes.");
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.Exception("NPC_FOOT_PLAYER_ARREST_RETRY_FAILED", ex);
+                    }
+                }
+
+                _stage = InteractionStage.FootAwaitingPlayerArrest;
+                _animationHoldUntil = DateTime.MinValue;
+                _readyAt = DateTime.MaxValue;
+                _footPlayerArrestAttempts = 0;
+                _footPlayerArrestDeadline = DateTime.MinValue;
+                if (!IsLivingDowned(_subject)
+                    && !IsLivingInjuredSubject(_subject))
+                {
+                    try { _subject.Task.HandsUp(15000); } catch { }
+                }
+                _log.StateFailure("NPC_FOOT_PLAYER_ARREST_NOT_CONFIRMED",
+                    "Ped=" + _subject.Handle
+                    + "; Cuffed=" + IsPedPhysicallyCuffed(_subject)
+                    + "; PlayerAvailable=" + playerCanContinue);
+                Notify("The game did not confirm the handcuffs. The citizen remains available; move beside them and press "
+                    + _controls.SecureKey + " to retry.");
+                return;
+            }
 
             try
             {
@@ -2866,7 +3067,10 @@ namespace LSImmersiveLife
                 Function.Call(Hash.SET_ENABLE_HANDCUFFS, _subject, true);
                 _subject.BlockPermanentEvents = true;
                 _subject.CanSwitchWeapons = false;
+                RestoreSubjectInjuryState(_subject);
                 _footPlayerArrested = true;
+                _footPlayerArrestAttempts = 0;
+                _footPlayerArrestDeadline = DateTime.MinValue;
                 _stage = InteractionStage.FootAwaitingBackup;
                 _readyAt = DateTime.MaxValue;
                 _expiresAt = now.AddMinutes(6);
@@ -2876,13 +3080,15 @@ namespace LSImmersiveLife
                     "Ped=" + _subject.Handle + "; Method=TaskArrestPed");
                 Notify("Citizen is handcuffed and secured. Press "
                     + _controls.EmergencyKey
-                    + " to use your nearby Police car/van for personal custody, or request Backup when you are on a Police motorcycle.");
+                    + " to open Back Up Response and choose Citizen assistance when Police transport is needed.");
             }
             catch (Exception ex)
             {
                 _log.Exception("NPC_FOOT_PLAYER_ARREST_CONFIRM_FAILED", ex);
                 _stage = InteractionStage.FootAwaitingPlayerArrest;
                 _footPlayerArrested = false;
+                _footPlayerArrestAttempts = 0;
+                _footPlayerArrestDeadline = DateTime.MinValue;
                 _animationHoldUntil = DateTime.MinValue;
                 try { _subject.Task.HandsUp(15000); } catch { }
                 Notify("The handcuff state was not confirmed. The citizen remains compliant; press "
@@ -2931,7 +3137,7 @@ namespace LSImmersiveLife
 
         private void MaintainFootArrestedSubject()
         {
-            if (!IsUsable(_subject) || _subject.IsDead)
+            if (!IsUsable(_subject) || _subject.IsDead || _subject.Health <= 0)
                 return;
             try
             {
@@ -3265,6 +3471,8 @@ namespace LSImmersiveLife
         {
             if (!IsUsable(_subject) || !IsUsable(player) || _subject.IsDead)
                 return;
+            if (IsLivingDowned(_subject))
+                return;
             if (now < _nextResistanceTaskAt)
                 return;
 
@@ -3319,6 +3527,339 @@ namespace LSImmersiveLife
                 || stage == InteractionStage.TrafficResisting
                 || stage == InteractionStage.TrafficAwaitingBackup
                 || stage == InteractionStage.TrafficBackupContained;
+        }
+
+        private static bool IsLivingDowned(Ped subject)
+        {
+            if (!IsUsable(subject) || subject.IsDead || subject.Health <= 0)
+                return false;
+            try
+            {
+                return Function.Call<bool>(Hash.IS_PED_RAGDOLL, subject);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool IsLivingInjuredSubject(Ped subject)
+        {
+            if (!IsUsable(subject) || subject.IsDead || subject.Health <= 0)
+                return false;
+            SubjectInjuryState state;
+            return _subjectInjuries.TryGetValue(subject.Handle, out state)
+                && state.Wounded && !state.Fatal;
+        }
+
+        private static bool IsPedPhysicallyCuffed(Ped subject)
+        {
+            if (!IsUsable(subject))
+                return false;
+            try { return Function.Call<bool>(Hash.IS_PED_CUFFED, subject); }
+            catch { return false; }
+        }
+
+        private void CaptureSubjectInjuryState(Ped subject)
+        {
+            if (!IsUsable(subject) || _subjectInjuries.ContainsKey(subject.Handle))
+                return;
+
+            SubjectInjuryState state = new SubjectInjuryState
+            {
+                OriginalHealth = Math.Max(1, subject.Health),
+                OriginalMaximumHealth = Math.Max(1, subject.MaxHealth),
+                LastHealth = Math.Max(1, subject.Health),
+                OriginalNoCriticalHits = false
+            };
+            try
+            {
+                state.OriginalNoCriticalHits = Function.Call<bool>(
+                    Hash.GET_PED_CONFIG_FLAG, subject, 2, true);
+                Function.Call(Hash.SET_PED_CONFIG_FLAG, subject, 2, true);
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("NPC_SUBJECT_CRITICAL_HIT_CONTROL_FAILED", ex);
+            }
+            _subjectInjuries[subject.Handle] = state;
+        }
+
+        private void MaintainSubjectInjury(Ped subject, DateTime now, Ped player)
+        {
+            if (!IsUsable(subject))
+                return;
+
+            SubjectInjuryState state;
+            if (!_subjectInjuries.TryGetValue(subject.Handle, out state))
+                return;
+
+            int currentHealth = Math.Max(0, subject.Health);
+            if (currentHealth < state.LastHealth)
+            {
+                int damage = state.LastHealth - currentHealth;
+                state.DamageTaken += damage;
+                int bone = ReadAndClearLastDamageBone(subject);
+                SuspectHitZone hitZone = ClassifySuspectHitZone(bone);
+                if (hitZone == SuspectHitZone.Head)
+                    state.HeadHits++;
+                else if (hitZone == SuspectHitZone.Chest)
+                    state.ChestHits++;
+                else if (hitZone == SuspectHitZone.Stomach)
+                    state.StomachHits++;
+
+                state.Fatal = state.HeadHits >= 1
+                    || state.ChestHits >= 3
+                    || state.StomachHits >= 3;
+                // Explicit head/chest/stomach counts determine fatality.
+                // Keep unmapped damage under managed nonfatal recovery too.
+                state.Wounded = true;
+
+                _log.Runtime("NPC_SUBJECT_INJURY_RECORDED",
+                    "Ped=" + subject.Handle
+                    + "; Bone=" + bone
+                    + "; Zone=" + hitZone
+                    + "; HeadHits=" + state.HeadHits
+                    + "; ChestHits=" + state.ChestHits
+                    + "; StomachHits=" + state.StomachHits
+                    + "; Damage=" + damage
+                    + "; Fatal=" + state.Fatal);
+
+                if (state.Fatal)
+                {
+                    try { subject.Health = 0; } catch { }
+                    _log.Runtime("NPC_SUBJECT_FATAL_INJURY",
+                        "Ped=" + subject.Handle + "; Zone=" + hitZone
+                        + "; HeadHits=" + state.HeadHits
+                        + "; ChestHits=" + state.ChestHits
+                        + "; StomachHits=" + state.StomachHits);
+                    state.LastHealth = 0;
+                    return;
+                }
+
+                state.LastHealth = Math.Max(0, subject.Health);
+            }
+
+            MaintainNonfatalSubjectInjuryRecovery(subject, now, state);
+
+            if (state.Wounded && !state.Fatal && IsUsable(subject)
+                && !subject.IsDead && subject.Health > 0
+                && !subject.IsInVehicle()
+                && _stage != InteractionStage.FootPlayerArresting
+                && !_footPlayerArrested
+                && _stage != InteractionStage.BackupSecuring
+                && _stage != InteractionStage.BackupEscort
+                && _stage != InteractionStage.BackupTransport)
+            {
+                MaintainWoundedSubjectRagdoll(subject, now, player, state);
+            }
+        }
+
+        private void MaintainNonfatalSubjectInjuryRecovery(
+            Ped subject,
+            DateTime now,
+            SubjectInjuryState state)
+        {
+            if (state == null || !state.Wounded || state.Fatal
+                || (!subject.IsDead && subject.Health > 0))
+                return;
+
+            if (state.NonfatalRecoveryAttempts >= NonfatalInjuryRecoveryMaximumAttempts)
+            {
+                if (!state.NonfatalRecoveryExhaustionLogged)
+                {
+                    state.NonfatalRecoveryExhaustionLogged = true;
+                    _log.Runtime("STATE_FAILURE_NPC_SUBJECT_INJURY_RECOVERY_EXHAUSTED",
+                        "Ped=" + subject.Handle
+                        + "; Attempts=" + state.NonfatalRecoveryAttempts
+                        + "; Health=" + subject.Health
+                        + "; Dead=" + subject.IsDead);
+                }
+                return;
+            }
+            if (now < state.NextNonfatalRecoveryAt)
+                return;
+
+            state.NextNonfatalRecoveryAt = now.AddMilliseconds(150);
+            state.NonfatalRecoveryAttempts++;
+            try
+            {
+                if (subject.IsDead && !state.NonfatalResurrectionAttempted)
+                {
+                    Function.Call(Hash.RESURRECT_PED, subject);
+                    state.NonfatalResurrectionAttempted = true;
+                }
+
+                subject.MaxHealth = state.OriginalMaximumHealth;
+                int healthToRestore = Math.Max(50,
+                    Math.Min(state.OriginalMaximumHealth,
+                        state.OriginalHealth - state.DamageTaken));
+                subject.Health = healthToRestore;
+                Function.Call(Hash.SET_PED_CONFIG_FLAG, subject, 2, true);
+
+                int healthAfter = Math.Max(0, subject.Health);
+                bool aliveAfter = !subject.IsDead && healthAfter > 0;
+                if (aliveAfter)
+                {
+                    int recoveryAttempts = state.NonfatalRecoveryAttempts;
+                    state.LastHealth = healthAfter;
+                    state.NonfatalRecoveryAttempts = 0;
+                    state.NonfatalRecoveryExhaustionLogged = false;
+                    state.NonfatalResurrectionAttempted = false;
+                    _log.Runtime("NPC_SUBJECT_NONFATAL_INJURY_RETAINED",
+                        "Ped=" + subject.Handle
+                        + "; Health=" + healthAfter
+                        + "; Alive=true; Arrestable=true; Attempts="
+                        + recoveryAttempts);
+                    return;
+                }
+
+                _log.Runtime("NPC_SUBJECT_NONFATAL_INJURY_RECOVERY_RETRY",
+                    "Ped=" + subject.Handle
+                    + "; Attempt=" + state.NonfatalRecoveryAttempts
+                    + "; Health=" + healthAfter
+                    + "; Dead=" + subject.IsDead);
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("NPC_SUBJECT_NONFATAL_INJURY_RECOVERY_FAILED", ex);
+            }
+        }
+
+        private bool IsSubjectNonfatalRecoveryPending(Ped subject)
+        {
+            SubjectInjuryState state;
+            return IsUsable(subject)
+                && _subjectInjuries.TryGetValue(subject.Handle, out state)
+                && state.Wounded && !state.Fatal
+                && state.NonfatalRecoveryAttempts < NonfatalInjuryRecoveryMaximumAttempts;
+        }
+
+        private void MaintainWoundedSubjectRagdoll(
+            Ped subject,
+            DateTime now,
+            Ped player,
+            SubjectInjuryState state)
+        {
+            if (now < state.NextRagdollRefreshAt)
+                return;
+
+            state.NextRagdollRefreshAt = now.AddSeconds(3);
+            try
+            {
+                if (Function.Call<bool>(Hash.IS_PED_IN_WRITHE, subject))
+                {
+                    state.WritheTaskStarted = true;
+                    return;
+                }
+
+                if (!state.WritheTaskStarted)
+                    subject.Task.ClearAll();
+                Function.Call(Hash.TASK_WRITHE,
+                    subject,
+                    IsUsable(player) ? player : subject,
+                    1,
+                    0,
+                    false,
+                    0);
+                state.WritheTaskStarted = true;
+                _log.Runtime("NPC_SUBJECT_WRITHE_TASK_ISSUED",
+                    "Ped=" + subject.Handle + "; Target="
+                    + (IsUsable(player) ? player.Handle : subject.Handle)
+                    + "; Arrestable=true; Teleport=false; Attachment=false");
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    Function.Call(Hash.SET_PED_TO_RAGDOLL,
+                        subject, 3500, 3500, 0, false, false, false);
+                    state.WritheTaskStarted = true;
+                }
+                catch (Exception ragdollException)
+                {
+                    _log.Exception("NPC_SUBJECT_WRITHE_FALLBACK_FAILED", ragdollException);
+                }
+                _log.Exception("NPC_SUBJECT_WRITHE_TASK_FAILED", ex);
+            }
+        }
+
+        private static int ReadAndClearLastDamageBone(Ped subject)
+        {
+            int bone = 0;
+            try
+            {
+                using (OutputArgument output = new OutputArgument())
+                {
+                    if (Function.Call<bool>(
+                        Hash.GET_PED_LAST_DAMAGE_BONE, subject, output))
+                        bone = output.GetResult<int>();
+                }
+                Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, subject);
+            }
+            catch { }
+            return bone;
+        }
+
+        private static SuspectHitZone ClassifySuspectHitZone(int bone)
+        {
+            switch (bone)
+            {
+                case 31086: // SKEL_Head
+                case 39317: // SKEL_Neck_1
+                case 65068: // SKEL_Neck_2
+                    return SuspectHitZone.Head;
+                case 64729: // SKEL_L_Clavicle
+                case 10706: // SKEL_R_Clavicle
+                case 24817: // SKEL_Spine2
+                case 24818: // SKEL_Spine3
+                    return SuspectHitZone.Chest;
+                case 11816: // SKEL_Pelvis
+                case 57597: // SKEL_Spine_Root
+                case 23553: // SKEL_Spine0
+                case 24816: // SKEL_Spine1
+                    return SuspectHitZone.Stomach;
+                case 45509: // SKEL_L_Hand
+                case 40269: // SKEL_R_Hand
+                case 61163: // SKEL_L_Forearm
+                case 43810: // SKEL_R_Forearm
+                case 28252: // SKEL_L_UpperArm
+                case 18905: // SKEL_R_UpperArm
+                case 57005: // SKEL_R_Hand
+                case 58271: // SKEL_L_Thigh
+                case 51826: // SKEL_R_Thigh
+                case 63931: // SKEL_L_Calf
+                case 36864: // SKEL_R_Calf
+                case 14201: // SKEL_L_Foot
+                case 52301: // SKEL_R_Foot
+                case 2108:  // SKEL_L_Toe0
+                case 20781: // SKEL_R_Toe0
+                    return SuspectHitZone.Limb;
+                default:
+                    return SuspectHitZone.Unknown;
+            }
+        }
+
+        private void RestoreSubjectInjuryState(Ped subject)
+        {
+            if (!IsUsable(subject))
+                return;
+
+            SubjectInjuryState state;
+            if (!_subjectInjuries.TryGetValue(subject.Handle, out state))
+                return;
+
+            try
+            {
+                subject.MaxHealth = Math.Max(1, state.OriginalMaximumHealth);
+                Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                    subject, 2, state.OriginalNoCriticalHits);
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("NPC_SUBJECT_INJURY_STATE_RESTORE_FAILED", ex);
+            }
+            _subjectInjuries.Remove(subject.Handle);
         }
 
         private void DeferDeadFootSubject(Ped subject, DateTime now)
@@ -4664,6 +5205,7 @@ namespace LSImmersiveLife
 
         private void MaintainPendingAnimation(DateTime now)
         {
+            VerifyPendingAnimationPlayback(now);
             if (_pendingAnimation == PendingAnimation.None || !IsUsable(_subject))
                 return;
 
@@ -4672,61 +5214,91 @@ namespace LSImmersiveLife
             ResolvePendingAnimation(out dictionary, out clip);
             try
             {
-                if (Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dictionary))
+                if (!Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dictionary))
                 {
-                    int flags = _pendingAnimation == PendingAnimation.HandcuffedIdle
-                        || _pendingAnimation == PendingAnimation.CompliantKneel
-                        ? 49 : 48;
-                    Function.Call(Hash.TASK_PLAY_ANIM, _subject, dictionary, clip,
-                        3.0f, -2.0f, _pendingAnimationDuration, flags, 0f,
-                        false, false, false);
-                    PendingAnimation completed = _pendingAnimation;
-                    _pendingAnimation = PendingAnimation.None;
-                    _animationHoldUntil = now.AddMilliseconds(_pendingAnimationDuration);
-                    if (completed == PendingAnimation.Greeting)
+                    if (now >= _animationLoadDeadline)
                     {
-                        _readyAt = _animationHoldUntil;
-                        Notify("Citizen greeted Police Anyi and remains for identification.");
+                        FailPendingAnimation(now,
+                            "NPC_ANIMATION_STREAM_TIMEOUT",
+                            "Dictionary=" + dictionary + "; Clip=" + clip);
+                        return;
                     }
-                    else if (completed == PendingAnimation.Documents)
-                    {
-                        _readyAt = DateTime.MaxValue;
-                        PresentCitizenRecord();
-                    }
-                    else if (completed == PendingAnimation.CompliantKneel)
-                    {
-                        Notify("Citizen is kneeling with hands visible and awaiting the physical arrest.");
-                    }
+                    if (now >= _nextAnimationRequest)
+                        RequestPendingAnimation(now);
                     return;
                 }
 
-                if (now >= _animationLoadDeadline)
+                float playbackDuration;
+                if (!LSImmersiveDictionaryAnimation.TryGetClipDuration(
+                    dictionary, clip, out playbackDuration))
                 {
-                    PendingAnimation timedOut = _pendingAnimation;
-                    _pendingAnimation = PendingAnimation.None;
-                    _animationHoldUntil = now.AddMilliseconds(700);
-                    if (_log != null)
-                    {
-                        if (timedOut == PendingAnimation.CompliantKneel)
-                            _log.Runtime("NPC_FOOT_COMPLIANCE_POSE_FALLBACK",
-                                "Ped=" + _subject.Handle + "; Fallback=HandsUp");
-                        else
-                            _log.StateFailure("NPC_ANIMATION_STREAM_TIMEOUT",
-                                "Animation=" + timedOut + "; Ped=" + _subject.Handle);
-                    }
-                    try { _subject.Task.LookAt(Game.Player.Character, 1400); } catch { }
-                    if (timedOut == PendingAnimation.Greeting)
-                        _readyAt = _animationHoldUntil;
-                    else if (timedOut == PendingAnimation.Documents)
-                    {
-                        _readyAt = DateTime.MaxValue;
-                        PresentCitizenRecord();
-                    }
+                    FailPendingAnimation(now,
+                        "NPC_ANIMATION_CLIP_UNAVAILABLE",
+                        "Dictionary=" + dictionary + "; Clip=" + clip);
                     return;
                 }
 
-                if (now >= _nextAnimationRequest)
-                    RequestPendingAnimation(now);
+                PendingAnimation requested = _pendingAnimation;
+                bool loopingPose = requested == PendingAnimation.HandcuffedIdle
+                    || requested == PendingAnimation.CompliantKneel;
+                bool citizenInteraction = requested == PendingAnimation.Greeting
+                    || requested == PendingAnimation.Documents;
+                int flags = loopingPose ? 1 : citizenInteraction ? 48 : 0;
+                int taskDurationMilliseconds = loopingPose || citizenInteraction
+                    ? -1 : _pendingAnimationDuration;
+
+                // Run only the Citizen's gesture. The former paired scene
+                // forced the player's root position and left both actors
+                // hovering when the streamed clips failed to start.
+                _subject.Task.ClearAll();
+                if (!LSImmersiveDictionaryAnimation.TryPlay(
+                    _subject,
+                    dictionary,
+                    clip,
+                    3.0f,
+                    -2.0f,
+                    taskDurationMilliseconds,
+                    flags,
+                    1.0f,
+                    out playbackDuration))
+                {
+                    FailPendingAnimation(now,
+                        "NPC_ANIMATION_TASK_REJECTED",
+                        "Ped=" + _subject.Handle + "; Dictionary=" + dictionary
+                        + "; Clip=" + clip);
+                    return;
+                }
+
+                SchedulePendingAnimationVerification(
+                    now, requested, dictionary, clip, _subject,
+                    string.Empty, null, -1);
+                _pendingAnimation = PendingAnimation.None;
+                int holdMilliseconds = _pendingAnimationDuration;
+                if (citizenInteraction)
+                    holdMilliseconds = Math.Max(holdMilliseconds,
+                        (int)Math.Ceiling(playbackDuration * 1000.0f));
+                _animationHoldUntil = now.AddMilliseconds(holdMilliseconds);
+                _log.Runtime("NPC_ANIMATION_TASK_STARTED",
+                    "Action=" + requested + "; Ped=" + _subject.Handle
+                    + "; Dictionary=" + dictionary + "; Clip=" + clip
+                    + "; ClipDuration=" + playbackDuration.ToString("0.000")
+                    + "; Flags=" + flags
+                    + "; PlaybackRate=1.0"
+                    + "; TaskDurationMs=" + taskDurationMilliseconds
+                    + "; Playback=CitizenOnlyTask; PlayerAnimation=false; Scene=none");
+                if (requested == PendingAnimation.Greeting)
+                {
+                    _readyAt = _animationHoldUntil;
+                    Notify("Citizen waved to Police Anyi and remains for identification.");
+                }
+                else if (requested == PendingAnimation.Documents)
+                {
+                    _readyAt = DateTime.MaxValue;
+                    _documentsProvided = false;
+                    Notify("Citizen document gesture started. Waiting for the physical exchange to play.");
+                }
+                else if (requested == PendingAnimation.CompliantKneel)
+                    Notify("Citizen is kneeling with hands visible and awaiting the physical arrest.");
             }
             catch (Exception ex)
             {
@@ -4737,7 +5309,159 @@ namespace LSImmersiveLife
                     _readyAt = now.AddMilliseconds(700);
                 else if (_stage == InteractionStage.FootDocuments
                     || _stage == InteractionStage.TrafficDocuments)
-                    PresentCitizenRecord();
+                {
+                    _documentsProvided = false;
+                    _readyAt = now.AddMilliseconds(700);
+                    _animationHoldUntil = now.AddMilliseconds(700);
+                    Notify("The document handoff could not play. Select Request the Validation ID/Document to retry it.");
+                }
+            }
+        }
+
+        private void SchedulePendingAnimationVerification(
+            DateTime now,
+            PendingAnimation action,
+            string dictionary,
+            string subjectClip,
+            Ped subject,
+            string playerClip,
+            Ped player,
+            int sceneId)
+        {
+            _animationVerificationAt = now.AddMilliseconds(350);
+            _animationVerificationDeadline = now.AddSeconds(2);
+            _animationVerificationAction = action;
+            _animationVerificationPassed = false;
+            _animationVerificationSceneId = sceneId;
+            _animationVerificationDictionary = dictionary ?? string.Empty;
+            _animationVerificationSubjectClip = subjectClip ?? string.Empty;
+            _animationVerificationPlayerClip = playerClip ?? string.Empty;
+            _animationVerificationSubject = subject;
+            _animationVerificationPlayer = player;
+        }
+
+        private void VerifyPendingAnimationPlayback(DateTime now)
+        {
+            if (_animationVerificationAt == DateTime.MinValue
+                || now < _animationVerificationAt)
+                return;
+
+            if (_animationVerificationAction == PendingAnimation.Documents
+                && _animationVerificationPassed)
+            {
+                _documentsProvided = true;
+                _readyAt = now;
+                _animationHoldUntil = now;
+                _log.Runtime("NPC_DOCUMENT_HANDOFF_COMPLETED",
+                    "Ped=" + GetAnimationVerificationHandle(_animationVerificationSubject)
+                    + "; Player=" + GetAnimationVerificationHandle(_animationVerificationPlayer)
+                    + "; Contact=" + (_subjectVehicle == null ? "Foot" : "Traffic")
+                    + "; CitizenGesturePlaybackConfirmed=true; HoldElapsed=true"
+                    + "; PlayerAnimation=false");
+                Notify("Document received. Select Request Dispatcher For Validation Request to open the citizen record.");
+                ClearAnimationVerification();
+                return;
+            }
+
+            bool subjectPlaying = LSImmersiveDictionaryAnimation.IsPlaying(
+                _animationVerificationSubject,
+                _animationVerificationDictionary,
+                _animationVerificationSubjectClip);
+            bool playerExpected = !string.IsNullOrEmpty(
+                _animationVerificationPlayerClip);
+            bool playerPlaying = playerExpected
+                && LSImmersiveDictionaryAnimation.IsPlaying(
+                    _animationVerificationPlayer,
+                    _animationVerificationDictionary,
+                    _animationVerificationPlayerClip);
+            bool playbackConfirmed = subjectPlaying && (!playerExpected || playerPlaying);
+            if (!playbackConfirmed && now < _animationVerificationDeadline)
+            {
+                // Give the single Citizen task a short start window before
+                // treating the physical gesture as unavailable.
+                _animationVerificationAt = now.AddMilliseconds(150);
+                return;
+            }
+            _log.Runtime(playbackConfirmed
+                    ? "NPC_ANIMATION_PLAYING_CONFIRMED"
+                    : "NPC_ANIMATION_PLAYBACK_NOT_CONFIRMED",
+                "Ped=" + GetAnimationVerificationHandle(_animationVerificationSubject)
+                + "; Dictionary=" + _animationVerificationDictionary
+                + "; Clip=" + _animationVerificationSubjectClip
+                + "; IsPlaying=" + subjectPlaying
+                + "; Scene=" + (_animationVerificationSceneId < 0
+                    ? "none" : _animationVerificationSceneId.ToString())
+                + (playerExpected
+                    ? "; Player=" + GetAnimationVerificationHandle(_animationVerificationPlayer)
+                        + "; PlayerClip=" + _animationVerificationPlayerClip
+                        + "; PlayerIsPlaying=" + playerPlaying
+                    : string.Empty));
+
+            if (_animationVerificationAction == PendingAnimation.Documents)
+            {
+                if (playbackConfirmed)
+                {
+                    _animationVerificationPassed = true;
+                    _animationVerificationAt = _animationHoldUntil;
+                    return;
+                }
+                else
+                {
+                    _documentsProvided = false;
+                    _readyAt = now.AddMilliseconds(700);
+                    _animationHoldUntil = _readyAt;
+                    Notify("The document exchange did not play correctly. Select Request the Validation ID/Document to retry it.");
+                }
+            }
+
+            ClearAnimationVerification();
+        }
+
+        private static int GetAnimationVerificationHandle(Ped ped)
+        {
+            try { return ped != null && ped.Exists() ? ped.Handle : 0; }
+            catch { return 0; }
+        }
+
+        private void ClearAnimationVerification()
+        {
+            _animationVerificationAt = DateTime.MinValue;
+            _animationVerificationDeadline = DateTime.MinValue;
+            _animationVerificationAction = PendingAnimation.None;
+            _animationVerificationPassed = false;
+            _animationVerificationSceneId = -1;
+            _animationVerificationDictionary = string.Empty;
+            _animationVerificationSubjectClip = string.Empty;
+            _animationVerificationPlayerClip = string.Empty;
+            _animationVerificationSubject = null;
+            _animationVerificationPlayer = null;
+        }
+
+        private void FailPendingAnimation(DateTime now, string category, string reason)
+        {
+            PendingAnimation failed = _pendingAnimation;
+            _pendingAnimation = PendingAnimation.None;
+            _animationHoldUntil = now.AddMilliseconds(700);
+            ClearAnimationVerification();
+            if (_log != null)
+                _log.StateFailure(category,
+                    "Animation=" + failed + "; Ped="
+                    + (_subject == null ? 0 : _subject.Handle)
+                    + "; Reason=" + (reason ?? string.Empty));
+
+            if (failed == PendingAnimation.CompliantKneel)
+            {
+                try { _subject.Task.HandsUp(15000); } catch { }
+                _log.Runtime("NPC_FOOT_COMPLIANCE_POSE_FALLBACK",
+                    "Ped=" + _subject.Handle + "; Fallback=HandsUp");
+            }
+            else if (failed == PendingAnimation.Greeting)
+                _readyAt = _animationHoldUntil;
+            else if (failed == PendingAnimation.Documents)
+            {
+                _readyAt = _animationHoldUntil;
+                _documentsProvided = false;
+                Notify("The document handoff did not finish. Select Request the Validation ID/Document to retry it.");
             }
         }
 
@@ -4758,8 +5482,8 @@ namespace LSImmersiveLife
         {
             if (_pendingAnimation == PendingAnimation.Greeting)
             {
-                dictionary = "gestures@m@standing@casual";
-                clip = "gesture_hello";
+                dictionary = "friends@frj@ig_1";
+                clip = "wave_a";
                 return;
             }
             if (_pendingAnimation == PendingAnimation.HandcuffedIdle)
@@ -4775,7 +5499,7 @@ namespace LSImmersiveLife
                 return;
             }
             dictionary = "mp_common";
-            clip = "givetake1_a";
+            clip = "givetake1_b";
         }
 
         private void PresentCitizenRecord()
@@ -4785,12 +5509,15 @@ namespace LSImmersiveLife
 
             if (_currentRecord == null)
             {
+                CitizenRecordVisible = false;
                 Notify("Identification was presented, but the citizen database is unavailable. "
                     + DecisionHint("release", "detain / pursue"));
                 return;
             }
 
-            Notify(_currentRecord.ScreenText + "\n" + DecisionHint("release", "detain / pursue"));
+            CitizenRecordVisible = true;
+            Notify("Citizen record opened in the lower-left display. "
+                + DecisionHint("release", "detain / pursue"));
             _log.Runtime("NPC_DOCUMENT_CHECK_COMPLETED",
                 "Ped=" + _subject.Handle + "; " + _currentRecord.DetailText
                 + "; Recommended=" + _currentRecord.RecommendedResponse);
@@ -4815,8 +5542,8 @@ namespace LSImmersiveLife
 
         private void ClearInteractionState()
         {
-            if (_backupPhysicalEscortAttached)
-                DetachBackupSubjectFromOfficer("InteractionStateCleared");
+            RestoreSubjectInjuryState(_subject);
+            DetachBackupSubjectFromOfficer("InteractionStateCleared");
             CleanupSubjectBlip();
             RestoreInteractionPersistence();
             _stage = InteractionStage.None;
@@ -4837,10 +5564,18 @@ namespace LSImmersiveLife
             _pullOverDeadline = DateTime.MinValue;
             _nextAnimationRequest = DateTime.MinValue;
             _animationLoadDeadline = DateTime.MinValue;
+            _animationVerificationAt = DateTime.MinValue;
+            _animationVerificationDeadline = DateTime.MinValue;
+            _animationVerificationAction = PendingAnimation.None;
+            _animationVerificationPassed = false;
+            _animationVerificationSceneId = -1;
+            _animationVerificationDictionary = string.Empty;
+            _animationVerificationSubjectClip = string.Empty;
+            _animationVerificationPlayerClip = string.Empty;
+            _animationVerificationSubject = null;
+            _animationVerificationPlayer = null;
             _backupPhaseDeadline = DateTime.MinValue;
             _nextBackupSubjectTask = DateTime.MinValue;
-            _lastBackupPhysicalEscortAttachAt = DateTime.MinValue;
-            _lastBackupEscortAnimationAt = DateTime.MinValue;
             _fleeLastPosition = Vector3.Zero;
             _trafficPullOverPosition = Vector3.Zero;
             _interactionAnchor = Vector3.Zero;
@@ -4857,22 +5592,25 @@ namespace LSImmersiveLife
             _pullOverRecoveryIssued = false;
             _approachCandidateStopped = false;
             _backupRequested = false;
+            _documentsProvided = false;
             _backupBackgroundTransport = false;
             _footPlayerArrested = false;
+            _footPlayerArrestAttempts = 0;
+            _footPlayerArrestDeadline = DateTime.MinValue;
             _secureKeyDown = false;
             _backupEscortTaskIssued = false;
             _backupEntryTaskIssued = false;
             _backupVehicleDoorOpened = false;
-            _backupPhysicalEscortAttached = false;
-            _backupPhysicalEscortAttachAttempts = 0;
-            _backupEscortRootOffset = Vector3.Zero;
-            _backupEscortAnimationClip = string.Empty;
+            _backupVehicleDoorTaskIssued = false;
+            _backupArrestTaskIssued = false;
+            _backupArrestAttempts = 0;
             _backupCustodyOfferPresented = false;
             _backupOfficer = null;
             _backupVehicle = null;
             _pendingAnimation = PendingAnimation.None;
             _pendingAnimationDuration = 0;
             _currentRecord = null;
+            CitizenRecordVisible = false;
         }
 
         private void EnsureSubjectBlip(string name)
@@ -5219,7 +5957,6 @@ namespace LSImmersiveLife
 
         private void SynchronizeKeyStates()
         {
-            _interactionKeyDown = (GetAsyncKeyState((int)_controls.InteractionKey) & 0x8000) != 0;
             _acceptKeyDown = (GetAsyncKeyState((int)_controls.AcceptKey) & 0x8000) != 0;
             _rejectKeyDown = (GetAsyncKeyState((int)_controls.RejectKey) & 0x8000) != 0;
             _secureKeyDown = (GetAsyncKeyState((int)_controls.SecureKey) & 0x8000) != 0;
@@ -5227,7 +5964,6 @@ namespace LSImmersiveLife
 
         private void ResetKeyStates()
         {
-            _interactionKeyDown = false;
             _acceptKeyDown = false;
             _rejectKeyDown = false;
             _secureKeyDown = false;

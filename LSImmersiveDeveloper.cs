@@ -29,6 +29,7 @@ namespace LSImmersiveLife
         private readonly LSIMMERSIVEPATH _paths;
         private readonly LSImmersiveLog _log;
         private readonly LSDeveloperSettings _settings;
+        private readonly LSDeveloperBranchCatalog _branchCatalog;
         private readonly string _configurationPath;
         private readonly Queue<LSDeveloperTraceEvent> _traceBuffer =
             new Queue<LSDeveloperTraceEvent>();
@@ -46,6 +47,13 @@ namespace LSImmersiveLife
         private LSDeveloperTestSession _lastTest;
         private LSDeveloperAnalysisResult _lastAnalysis;
         private bool _shutDown;
+        private NativeListItem<string> _testEventItem;
+        private NativeListItem<string> _branchTestItem;
+        private NativeItem _liveBranchStatusItem;
+        private NativeItem _startBranchTestItem;
+        private NativeItem _captureBranchTestItem;
+        private NativeItem _showCheckpointTestItem;
+        private NativeItem _endCheckpointTaskItem;
 
         internal NativeMenu Menu { get; private set; }
 
@@ -61,10 +69,17 @@ namespace LSImmersiveLife
                     if (_log != null)
                         _log.Debug("DEVELOPER_CONFIG", message);
                 });
+            _branchCatalog = LSDeveloperBranchCatalog.Load(
+                _paths.DeveloperBranchesXmlPath,
+                delegate(string message)
+                {
+                    if (_log != null)
+                        _log.Debug("DEVELOPER_BRANCH_CATALOG", message);
+                });
 
             Menu = LSImmersiveMenuFactory.Create(
                 "Developer",
-                "Bounded runtime inspection and test evidence");
+                "Inspect the Development Session");
             Menu.NoItemsText = "Developer Mode is disabled in LSDeveloper.xml.";
             BuildMenu();
             LSDeveloperRuntime.Attach(this);
@@ -233,137 +248,128 @@ namespace LSImmersiveLife
 
         private void BuildMenu()
         {
-            AddHeader("TEST SESSION");
+            string[] testEvents = _branchCatalog.EventNames();
+            string[] eventChoices = testEvents.Length == 0
+                ? new[] { "No documented test events" }
+                : testEvents;
 
-            NativeListItem<string> branch = new NativeListItem<string>(
-                "Test Branch",
-                "Choose one behavior before starting a controlled test.",
-                LSDeveloperBranchCatalog.Names());
-            branch.SelectedItem = LSDeveloperBranchCatalog.Names()[0];
-            branch.ItemChanged += delegate(object sender, ItemChangedEventArgs<string> args)
+            _testEventItem = new NativeListItem<string>(
+                "Test Event",
+                "Choose the gameplay event to inspect.",
+                eventChoices);
+            _testEventItem.SelectedItem = eventChoices[0];
+            _testEventItem.Enabled = testEvents.Length > 0;
+            _testEventItem.ItemChanged += delegate(object sender, ItemChangedEventArgs<string> args)
             {
-                Notify("Developer branch selected: " + args.Object);
+                UpdateBranchTestChoices(args.Object);
             };
-            Menu.Add(branch);
+            Menu.Add(_testEventItem);
 
-            AddAction(
-                "Start Test",
-                "Start a bounded evidence session. This never starts, stops, or changes gameplay.",
-                delegate { StartTest(branch.SelectedItem); });
-            AddAction(
-                "Capture Checkpoint",
-                "Flush the bounded trace around the current controlled test checkpoint.",
+            _branchTestItem = new NativeListItem<string>(
+                "Branch Test",
+                "Choose a documented branch for the selected event.",
+                new[] { "No documented branches" });
+            _branchTestItem.SelectedItem = "No documented branches";
+            _branchTestItem.Enabled = false;
+            _branchTestItem.ItemChanged += delegate
+            {
+                RefreshMenuControls();
+            };
+            Menu.Add(_branchTestItem);
+
+            _startBranchTestItem = AddAction(
+                "Start the Branch Test",
+                "Begin a bounded observation of the selected documented branch.",
+                StartSelectedBranchTest);
+
+            _liveBranchStatusItem = new NativeItem("Live Branch Test Not Started");
+            _liveBranchStatusItem.Enabled = false;
+            Menu.Add(_liveBranchStatusItem);
+
+            _captureBranchTestItem = AddAction(
+                "Capture and Conclude the Test",
+                "Capture the current test checkpoint for review.",
                 CaptureCheckpoint);
-            AddAction(
-                "End Test",
-                "End the evidence session and preserve the observed timeline for analysis.",
-                delegate { EndTestInternal("Player ended test", true); });
-            AddAction(
-                "Analyze Current Test",
-                "Compare the selected branch against the observed event timeline and report the first divergence.",
+            _showCheckpointTestItem = AddAction(
+                "Show Checkpoint Test",
+                "Show the human-readable result from the captured test.",
                 AnalyzeCurrentTest);
-            AddAction(
-                "Compare Checkpoints",
-                "Show the event interval between the last two checkpoints.",
-                CompareCheckpoints);
+            _endCheckpointTaskItem = AddAction(
+                "End the Checkpoint Task",
+                "End the active Developer observation session.",
+                delegate { EndTestInternal("Player ended the checkpoint task", true); });
 
-            AddHeader("LIVE INSPECTION");
-            AddAction(
-                "Active Test / Selected Actor",
-                "Inspect only the most recently observed actor from the active test.",
-                ShowLiveInspection);
-            AddAction(
-                "Current State / Task / Owner",
-                "Show the latest observed logical state, last issued task, owner, target, and vehicle.",
-                ShowCurrentActorEvidence);
-
-            AddHeader("BEHAVIOR TRACE");
-            AddAction("State Timeline", "Show recent state transitions.", delegate { ShowTimeline("StateTransition"); });
-            AddAction("Task Timeline", "Show recent task issue and replacement evidence.", delegate { ShowTimeline("Task"); });
-            AddAction("Behavioral Confirmation", "Show the latest low-frequency physical and native task-status samples.", delegate { ShowTimeline("Behavioral"); });
-            AddAction("Ownership Timeline", "Show actor ownership changes and conflicts.", delegate { ShowTimeline("Ownership"); });
-            AddAction("Dispatch / Backup / Convoy Timeline", "Show the latest supporting-system events.", delegate { ShowTimeline("Systems"); });
-
-            AddHeader("FAILURE ANALYSIS");
-            AddAction("First Divergence", "Show the first known or inferred divergence from the last analysis.", ShowFirstDivergence);
-            AddAction("Latest Failure", "Show the latest evidence without treating it as the root cause.", ShowLatestFailure);
-            AddAction("Task Conflict", "Show incompatible task owners without resolving the conflict.", delegate { ShowTimeline("TaskConflict"); });
-            AddAction("Physical Mismatch", "Show logical/physical mismatches observed by selective sampling.", delegate { ShowTimeline("PhysicalMismatch"); });
-            AddAction("Behavioral Stall", "Show the first bounded evidence that a selected actor stayed in a stage without the expected next transition.", delegate { ShowTimeline("BehaviorStall"); });
-
-            AddHeader("VALIDATION");
-            AddAction("XML / Path / Payload Validation", "Validate the isolated Developer configuration and gameplay data without changing it.", ValidatePayload);
-            AddAction("Runtime Log Validation", "Read bounded tails of LSRuntime.log and LSDebug.log and report evidence counts.", ValidateRuntimeLogs);
-
-            AddHeader("SETTINGS");
-            NativeListItem<string> traceMode = new NativeListItem<string>(
-                "Trace Mode",
-                "Off keeps the observer inert; Test buffers evidence for a controlled session; Always keeps the bounded observer active.",
-                new[] { "Off", "Test", "Always" });
-            traceMode.SelectedItem = _settings.TraceMode.ToString();
-            traceMode.ItemChanged += delegate(object sender, ItemChangedEventArgs<string> args)
-            {
-                _settings.TraceMode = LSDeveloperSettings.ParseTraceMode(args.Object, _settings.TraceMode);
-                LogRuntime("DEVELOPER_TRACE_MODE_CHANGED", "TraceMode=" + _settings.TraceMode);
-                Notify("Developer trace mode changed to " + _settings.TraceMode + ".");
-            };
-            Menu.Add(traceMode);
-
-            NativeListItem<bool> anomaly = new NativeListItem<bool>(
-                "Automatic Anomaly Detection",
-                "Detect serious evidence, task conflicts, and physical mismatches without changing gameplay.",
-                new[] { false, true });
-            anomaly.SelectedItem = _settings.AutomaticAnomalyDetection;
-            anomaly.ItemChanged += delegate(object sender, ItemChangedEventArgs<bool> args)
-            {
-                _settings.AutomaticAnomalyDetection = args.Object;
-                LogRuntime("DEVELOPER_ANOMALY_DETECTION_CHANGED", "Enabled=" + args.Object);
-            };
-            Menu.Add(anomaly);
-
-            NativeListItem<bool> behavioral = new NativeListItem<bool>(
-                "Live Behavioral Confirmation",
-                "At the configured sampling interval, read only the selected test actors for movement, weapon, combat, target, and task-status evidence.",
-                new[] { false, true });
-            behavioral.SelectedItem = _settings.LiveBehavioralConfirmation;
-            behavioral.ItemChanged += delegate(object sender, ItemChangedEventArgs<bool> args)
-            {
-                _settings.LiveBehavioralConfirmation = args.Object;
-                LogRuntime("DEVELOPER_BEHAVIORAL_CONFIRMATION_CHANGED", "Enabled=" + args.Object);
-                Notify("Live behavioral confirmation " + (args.Object ? "enabled" : "disabled") + ".");
-            };
-            Menu.Add(behavioral);
-
-            NativeListItem<bool> watch = new NativeListItem<bool>(
-                "Automatic Runtime Watch",
-                "Read only bounded tails of the two normal logs at a safe interval.",
-                new[] { false, true });
-            watch.SelectedItem = _settings.AutomaticRuntimeWatch;
-            watch.ItemChanged += delegate(object sender, ItemChangedEventArgs<bool> args)
-            {
-                _settings.AutomaticRuntimeWatch = args.Object;
-                _nextRuntimeWatchUtc = DateTime.MinValue;
-                LogRuntime("DEVELOPER_RUNTIME_WATCH_CHANGED", "Enabled=" + args.Object);
-            };
-            Menu.Add(watch);
-
-            AddAction(
-                "Save Developer Configuration",
-                "Save only LSDeveloper.xml. Police gameplay configuration is not touched.",
-                SaveConfiguration);
-            AddAction(
-                "Reload Developer Configuration",
-                "Reload only LSDeveloper.xml. No gameplay system is reloaded or reset.",
-                ReloadConfiguration);
-
-            AddHeader("SAFETY BOUNDARY");
-            NativeItem boundary = new NativeItem(
-                "Observer only: no spawn, delete, teleport, reset, force, or AI override");
-            boundary.Enabled = false;
-            Menu.Add(boundary);
+            if (testEvents.Length > 0)
+                UpdateBranchTestChoices(eventChoices[0]);
+            else
+                RefreshMenuControls();
         }
 
-        private void StartTest(string branchName)
+        private void UpdateBranchTestChoices(string eventName)
+        {
+            string[] branchChoices = _branchCatalog.BranchNames(eventName);
+            _branchTestItem.Clear();
+
+            if (branchChoices.Length == 0)
+            {
+                _branchTestItem.Add("No documented branches");
+                _branchTestItem.SelectedItem = "No documented branches";
+                _branchTestItem.Enabled = false;
+            }
+            else
+            {
+                foreach (string branchName in branchChoices)
+                    _branchTestItem.Add(branchName);
+                _branchTestItem.SelectedItem = branchChoices[0];
+                _branchTestItem.Enabled = true;
+            }
+
+            RefreshMenuControls();
+        }
+
+        private void RefreshMenuControls()
+        {
+            if (_testEventItem == null || _branchTestItem == null)
+                return;
+
+            bool developerEnabled = _settings.Enabled && _settings.DeveloperMenuEnabled;
+            bool hasSelectedBranch = _branchCatalog.Find(
+                _testEventItem.SelectedItem,
+                _branchTestItem.SelectedItem) != null;
+            bool hasTest = _activeTest != null || _lastTest != null;
+
+            if (_startBranchTestItem != null)
+                _startBranchTestItem.Enabled = developerEnabled && hasSelectedBranch && _activeTest == null;
+            if (_captureBranchTestItem != null)
+                _captureBranchTestItem.Enabled = developerEnabled && _activeTest != null;
+            if (_showCheckpointTestItem != null)
+                _showCheckpointTestItem.Enabled = developerEnabled && hasTest;
+            if (_endCheckpointTaskItem != null)
+                _endCheckpointTaskItem.Enabled = developerEnabled && _activeTest != null;
+
+            if (_liveBranchStatusItem != null)
+            {
+                _liveBranchStatusItem.Title = _activeTest == null
+                    ? "Live Branch Test Not Started"
+                    : "Live Branch Test Started";
+                _liveBranchStatusItem.Description = _activeTest == null
+                    ? "No branch test is currently active."
+                    : _activeTest.Branch.EventName + " — " + _activeTest.Branch.Name;
+            }
+        }
+
+        private void StartSelectedBranchTest()
+        {
+            if (_testEventItem == null || _branchTestItem == null)
+            {
+                Notify("The Developer branch choices are not available.");
+                return;
+            }
+
+            StartTest(_testEventItem.SelectedItem, _branchTestItem.SelectedItem);
+        }
+
+        private void StartTest(string eventName, string branchName)
         {
             if (!_settings.Enabled || !_settings.DeveloperMenuEnabled)
             {
@@ -372,12 +378,15 @@ namespace LSImmersiveLife
             }
 
             if (_activeTest != null)
-                EndTestInternal("Replaced by a newly selected test", true);
+            {
+                Notify("End the current Branch Test before starting another one.");
+                return;
+            }
 
-            LSDeveloperBranchDefinition branch = LSDeveloperBranchCatalog.Find(branchName);
+            LSDeveloperBranchDefinition branch = _branchCatalog.Find(eventName, branchName);
             if (branch == null)
             {
-                Notify("The selected Developer test branch is unavailable.");
+                Notify("The selected documented Branch Test is unavailable.");
                 return;
             }
 
@@ -402,9 +411,12 @@ namespace LSImmersiveLife
             LogRuntime(
                 "DEVELOPER_TEST_STARTED",
                 "TestId=" + _activeTest.TestId
+                + "; TestEvent=" + branch.EventName
                 + "; Branch=" + branch.Name
+                + "; Source=" + branch.SourceSection + " lines " + branch.SourceLines
                 + "; Expected=" + branch.ExpectedBehavior);
-            Notify("Developer test started: " + branch.Name + ". Perform one controlled branch only.");
+            Notify("Branch Test started: " + branch.Name + ". Perform one controlled branch only.");
+            RefreshMenuControls();
         }
 
         private void CaptureCheckpoint()
@@ -1627,6 +1639,7 @@ namespace LSImmersiveLife
             LSDeveloperAnalysisResult result = new LSDeveloperAnalysisResult
             {
                 TestId = session.TestId,
+                Event = session.Branch.EventName,
                 Branch = session.Branch.Name,
                 ExpectedBehavior = session.Branch.ExpectedBehavior,
                 Events = events
@@ -1674,13 +1687,22 @@ namespace LSImmersiveLife
                 result.Classification = session.IsEnded ? "OBSERVED_INCOMPLETE" : "UNKNOWN";
                 result.Inferences.Add("The trace contains no serious event proving the cause of the missing step.");
             }
+            else if (session.Branch.Steps.Count == 0)
+            {
+                result.FirstDivergence = "This documented Branch Test does not yet have a runtime step map, so the available evidence cannot be marked as a pass.";
+                result.Classification = session.IsEnded ? "INCOMPLETE" : "UNKNOWN";
+                result.Unknown.Add("No expected-step mapping is attached to this documented branch. Review the captured evidence without treating it as a pass or a gameplay failure.");
+            }
             else
             {
                 result.FirstDivergence = "No divergence was observed in the available evidence for the selected branch.";
                 result.Classification = "NO_DIVERGENCE_OBSERVED";
             }
 
-            result.ConfirmedFacts.Add("TestId=" + session.TestId + "; Branch=" + session.Branch.Name);
+            result.ConfirmedFacts.Add("TestId=" + session.TestId
+                + "; TestEvent=" + session.Branch.EventName
+                + "; Branch=" + session.Branch.Name
+                + "; Source=" + session.Branch.SourceSection + " lines " + session.Branch.SourceLines);
             result.ConfirmedFacts.Add("Trace event count=" + events.Count.ToString(CultureInfo.InvariantCulture) + ".");
             foreach (LSDeveloperTraceEvent trace in events.Where(item => item.EventKind != "ObservedState").Take(30))
                 result.ConfirmedFacts.Add("Runtime emitted " + trace.Category + " at " + FormatTime(trace.TimestampUtc) + ".");
@@ -1710,6 +1732,7 @@ namespace LSImmersiveLife
                 result.Unknown.Add("Some events did not expose an actor handle, so ownership cannot be attributed to an entity for those events.");
             result.EventHistory = LastItems(events, 80).Select(DescribeEvent).ToList();
             result.Summary = "TestId=" + session.TestId
+                + "; TestEvent=" + session.Branch.EventName
                 + "; Branch=" + session.Branch.Name
                 + "; Classification=" + result.Classification
                 + "; Events=" + events.Count.ToString(CultureInfo.InvariantCulture)
@@ -1728,12 +1751,6 @@ namespace LSImmersiveLife
                     + ValueOrUnknown(problem.ExpectedNext)
                     + "' was not confirmed after the selected actor remained in the observed logical/physical condition. "
                     + "This confirms a behavioral stall, not the hidden GTA cause. Evidence="
-                    + DescribeEvent(problem);
-            }
-            if (session.Branch.Id == "fleeing-citizen-interception"
-                && expectedStep.IndexOf("custody", StringComparison.OrdinalIgnoreCase) >= 0)
-            {
-                return "Backup interception did not transition into custody after a valid interception boundary was observed. Evidence="
                     + DescribeEvent(problem);
             }
             if (problem.EventKind == "TaskConflict")
@@ -1793,6 +1810,8 @@ namespace LSImmersiveLife
 
             StringBuilder output = new StringBuilder();
             output.AppendLine("ANALYSIS_REPORT | TestId=" + Sanitize(result.TestId));
+            output.AppendLine("TEST EVENT=" + Sanitize(result.Event));
+            output.AppendLine("BRANCH TEST=" + Sanitize(result.Branch));
             output.AppendLine("CONFIRMED FACT");
             foreach (string line in result.ConfirmedFacts)
                 output.AppendLine("- " + Sanitize(line));
@@ -2012,17 +2031,21 @@ namespace LSImmersiveLife
             Menu.Add(header);
         }
 
-        private void AddAction(string title, string description, Action action)
+        private NativeItem AddAction(string title, string description, Action action)
         {
             NativeItem item = new NativeItem(title, description);
             item.Activated += delegate
             {
                 if (_settings.Enabled && _settings.DeveloperMenuEnabled && action != null)
+                {
                     action();
+                    RefreshMenuControls();
+                }
                 else
                     Notify("Developer Mode is disabled in LSDeveloper.xml.");
             };
             Menu.Add(item);
+            return item;
         }
 
         private void Notify(string message)
@@ -3058,105 +3081,214 @@ namespace LSImmersiveLife
     internal sealed class LSDeveloperBranchDefinition
     {
         internal string Id { get; private set; }
+        internal string EventId { get; private set; }
+        internal string EventName { get; private set; }
         internal string Name { get; private set; }
+        internal string SourceSection { get; private set; }
+        internal string SourceLines { get; private set; }
         internal string ExpectedBehavior { get; private set; }
         internal List<LSDeveloperExpectedStep> Steps { get; private set; }
 
         internal LSDeveloperBranchDefinition(
             string id,
+            string eventId,
+            string eventName,
             string name,
+            string sourceSection,
+            string sourceLines,
             string expectedBehavior,
-            params LSDeveloperExpectedStep[] steps)
+            IEnumerable<LSDeveloperExpectedStep> steps)
         {
             Id = id;
+            EventId = eventId;
+            EventName = eventName;
             Name = name;
+            SourceSection = sourceSection;
+            SourceLines = sourceLines;
             ExpectedBehavior = expectedBehavior;
-            Steps = new List<LSDeveloperExpectedStep>(steps ?? new LSDeveloperExpectedStep[0]);
+            Steps = new List<LSDeveloperExpectedStep>(steps ?? Enumerable.Empty<LSDeveloperExpectedStep>());
         }
     }
 
-    internal static class LSDeveloperBranchCatalog
+    internal sealed class LSDeveloperTestEventDefinition
     {
-        private static readonly List<LSDeveloperBranchDefinition> Branches = Create();
+        internal string Id { get; private set; }
+        internal string Name { get; private set; }
+        internal string SourceSection { get; private set; }
+        internal string SourceLines { get; private set; }
+        internal List<LSDeveloperBranchDefinition> Branches { get; private set; }
 
-        internal static string[] Names()
+        internal LSDeveloperTestEventDefinition(
+            string id,
+            string name,
+            string sourceSection,
+            string sourceLines,
+            IEnumerable<LSDeveloperBranchDefinition> branches)
         {
-            return Branches.Select(item => item.Name).ToArray();
+            Id = id;
+            Name = name;
+            SourceSection = sourceSection;
+            SourceLines = sourceLines;
+            Branches = new List<LSDeveloperBranchDefinition>(branches ?? Enumerable.Empty<LSDeveloperBranchDefinition>());
+        }
+    }
+
+    internal sealed class LSDeveloperBranchCatalog
+    {
+        private readonly List<LSDeveloperTestEventDefinition> _events;
+
+        private LSDeveloperBranchCatalog(IEnumerable<LSDeveloperTestEventDefinition> events)
+        {
+            _events = new List<LSDeveloperTestEventDefinition>(events ?? Enumerable.Empty<LSDeveloperTestEventDefinition>());
         }
 
-        internal static LSDeveloperBranchDefinition Find(string name)
+        internal static LSDeveloperBranchCatalog Load(string path, Action<string> diagnostic)
         {
-            return Branches.FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
-        }
-
-        private static List<LSDeveloperBranchDefinition> Create()
-        {
-            Func<LSDeveloperTraceEvent, bool> category = delegate(LSDeveloperTraceEvent trace)
+            try
             {
-                return trace != null;
-            };
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    throw new FileNotFoundException("The documented Developer Branch XML was not found.", path);
 
-            return new List<LSDeveloperBranchDefinition>
-            {
-                new LSDeveloperBranchDefinition(
-                    "foot-citizen-document-rejection",
-                    "Foot citizen document rejection",
-                    "NPC document check -> foot rejection decision -> compliance, resistance, flee, or physical arrest outcome.",
-                    Step("Document check", "NPC_DOCUMENT_CHECK_COMPLETED", "NPC_FOOT_DOCUMENTS_READY"),
-                    Step("Foot rejection decision", "NPC_FOOT_NEGATIVE_DECISION"),
-                    Step("Physical foot outcome", "NPC_FOOT_COMPLIANCE_STARTED", "NPC_FOOT_RESISTANCE_STARTED", "NPC_FOOT_FLEE_ATTEMPT", "NPC_FOOT_PLAYER_ARREST_STARTED")),
-                new LSDeveloperBranchDefinition(
-                    "vehicle-citizen-document-rejection",
-                    "Vehicle citizen document rejection",
-                    "Traffic document check -> vehicle rejection decision -> pull-away, resistance, flee, or detention outcome.",
-                    Step("Traffic document check", "NPC_DOCUMENT_CHECK_COMPLETED", "NPC_TRAFFIC_DOCUMENTS_READY"),
-                    Step("Traffic rejection decision", "NPC_TRAFFIC_NEGATIVE_DECISION"),
-                    Step("Physical vehicle outcome", "NPC_TRAFFIC_FLEE_ATTEMPT", "NPC_TRAFFIC_RESISTANCE_STARTED", "NPC_TRAFFIC_DETENTION_READY", "NPC_TRAFFIC_PULL_OVER")),
-                new LSDeveloperBranchDefinition(
-                    "backup-request",
-                    "Backup request",
-                    "Backup request -> asset preparation -> staging/en route -> arrival -> support or handoff.",
-                    Step("Backup requested", "NPC_BACKUP_HANDOFF_REQUESTED", "POLICE_BACKUP_NPC_REQUESTED", "POLICE_BACKUP_REQUESTED"),
-                    Step("Assets prepared", "POLICE_BACKUP_ASSETS_REQUESTED", "POLICE_BACKUP_ASSETS_READY"),
-                    Step("Backup travels or stages", "POLICE_BACKUP_STATE", "POLICE_BACKUP_UNIT_STAGED", "POLICE_BACKUP_ROUTE_RECOVERY"),
-                    Step("Backup arrival or support", "POLICE_BACKUP_ARRIVED", "POLICE_BACKUP_INTERCEPTION_AREA_REACHED", "NPC_BACKUP_INTERVENTION_STARTED", "POLICE_BACKUP_NPC_PHYSICAL_CONTAINMENT_STARTED")),
-                new LSDeveloperBranchDefinition(
-                    "fleeing-citizen-interception",
-                    "Fleeing citizen interception",
-                    "Flee decision -> Backup request -> interception -> containment -> custody.",
-                    Step("Fleeing task", "NPC_FOOT_FLEE_ATTEMPT", "NPC_TRAFFIC_FLEE_ATTEMPT", "NPC_FOOT_FLEE_MOVEMENT_CONFIRMED", "NPC_TRAFFIC_FLEE_MOVEMENT_CONFIRMED"),
-                    Step("Backup request", "NPC_BACKUP_HANDOFF_REQUESTED", "POLICE_BACKUP_NPC_REQUESTED", "POLICE_BACKUP_INTERCEPTION_STARTED"),
-                    Step("Interception boundary", "POLICE_BACKUP_INTERCEPTION_AREA_REACHED", "POLICE_BACKUP_NPC_PHYSICAL_CONTAINMENT_STARTED", "POLICE_BACKUP_NPC_BLOCKED"),
-                    Step("Containment", "NPC_BACKUP_FLEEING_CONTAINMENT_CONFIRMED", "NPC_BACKUP_TRAFFIC_FLEEING_CONTAINMENT_CONFIRMED", "POLICE_BACKUP_NPC_CONTAINED", "POLICE_BACKUP_NPC_BLOCKED"),
-                    Step("Custody", "NPC_BACKUP_CUSTODY_OFFER_PRESENTED", "NPC_BACKUP_CUSTODY_OFFER_ACCEPTED", "NPC_BACKUP_SUBJECT_SECURED", "POLICE_BACKUP_SUSPECT_COMPLIANT")),
-                new LSDeveloperBranchDefinition(
-                    "escort-to-police-vehicle",
-                    "Escort to Police vehicle",
-                    "Custody accepted -> subject secured -> escort movement -> door interaction -> real vehicle entry.",
-                    Step("Custody accepted", "NPC_BACKUP_CUSTODY_OFFER_ACCEPTED", "NPC_BACKUP_PLAYER_CUSTODY_CONFIRMED"),
-                    Step("Subject secured", "NPC_BACKUP_SUBJECT_SECURED", "NPC_FOOT_PLAYER_ARREST_COMPLETED"),
-                    Step("Escort movement", "NPC_BACKUP_ESCORT_MOVEMENT_STARTED", "NPC_BACKUP_ESCORT_TO_VEHICLE_STARTED"),
-                    Step("Vehicle door interaction", "NPC_BACKUP_ESCORT_REACHED_VEHICLE", "NPC_BACKUP_PRISONER_DOOR_OPENED", "POLICE_CONVOY_PRISONER_DOOR_OPENED"),
-                    Step("Real vehicle entry", "NPC_BACKUP_PRISONER_ENTRY_TASK_ISSUED", "NPC_BACKUP_TRANSPORT_STARTED", "POLICE_CONVOY_PRISONER_HANDOFF_STARTED"))
-            };
-        }
-
-        private static LSDeveloperExpectedStep Step(string name, params string[] categories)
-        {
-            return new LSDeveloperExpectedStep(
-                name,
-                delegate(LSDeveloperTraceEvent trace)
+                XmlReaderSettings settings = new XmlReaderSettings
                 {
-                    if (trace == null)
-                        return false;
-                    return categories.Any(category => string.Equals(trace.Category, category, StringComparison.OrdinalIgnoreCase));
-                });
+                    DtdProcessing = DtdProcessing.Prohibit,
+                    XmlResolver = null
+                };
+
+                XDocument document;
+                using (XmlReader reader = XmlReader.Create(path, settings))
+                    document = XDocument.Load(reader);
+
+                XElement root = document.Root;
+                if (root == null
+                    || root.Name != "LSDeveloperBranches"
+                    || Attribute(root, "version") != "1")
+                    throw new InvalidDataException("Unexpected LSDeveloperBranches XML root or version.");
+
+                List<LSDeveloperTestEventDefinition> events = new List<LSDeveloperTestEventDefinition>();
+                foreach (XElement eventElement in root.Elements("TestEvent"))
+                {
+                    string eventId = Attribute(eventElement, "id");
+                    string eventName = Attribute(eventElement, "name");
+                    if (string.IsNullOrWhiteSpace(eventId) || string.IsNullOrWhiteSpace(eventName))
+                        throw new InvalidDataException("Each Developer TestEvent requires an id and name.");
+
+                    List<LSDeveloperBranchDefinition> branches = new List<LSDeveloperBranchDefinition>();
+                    foreach (XElement branchElement in eventElement.Elements("Branch"))
+                    {
+                        string branchId = Attribute(branchElement, "id");
+                        string branchName = Attribute(branchElement, "name");
+                        if (string.IsNullOrWhiteSpace(branchId) || string.IsNullOrWhiteSpace(branchName))
+                            throw new InvalidDataException("Each Developer Branch requires an id and name.");
+
+                        List<LSDeveloperExpectedStep> steps = new List<LSDeveloperExpectedStep>();
+                        XElement stepsElement = branchElement.Element("ExpectedSteps");
+                        if (stepsElement != null)
+                        {
+                            foreach (XElement stepElement in stepsElement.Elements("Step"))
+                            {
+                                string stepName = Attribute(stepElement, "name");
+                                string[] categories = (Attribute(stepElement, "categories") ?? string.Empty)
+                                    .Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)
+                                    .Select(item => item.Trim())
+                                    .Where(item => item.Length > 0)
+                                    .ToArray();
+                                if (string.IsNullOrWhiteSpace(stepName) || categories.Length == 0)
+                                    throw new InvalidDataException("Each Developer expected step requires a name and trace categories.");
+
+                                steps.Add(new LSDeveloperExpectedStep(
+                                    stepName,
+                                    delegate(LSDeveloperTraceEvent trace)
+                                    {
+                                        return trace != null && categories.Any(category =>
+                                            string.Equals(trace.Category, category, StringComparison.OrdinalIgnoreCase));
+                                    }));
+                            }
+                        }
+
+                        branches.Add(new LSDeveloperBranchDefinition(
+                            branchId,
+                            eventId,
+                            eventName,
+                            branchName,
+                            Attribute(branchElement, "sourceSection"),
+                            Attribute(branchElement, "sourceLines"),
+                            Attribute(branchElement, "expectedBehavior"),
+                            steps));
+                    }
+
+                    events.Add(new LSDeveloperTestEventDefinition(
+                        eventId,
+                        eventName,
+                        Attribute(eventElement, "sourceSection"),
+                        Attribute(eventElement, "sourceLines"),
+                        branches));
+                }
+
+                if (events.Select(item => item.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != events.Count
+                    || events.Select(item => item.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != events.Count)
+                    throw new InvalidDataException("Developer TestEvent ids and names must be unique.");
+
+                foreach (LSDeveloperTestEventDefinition testEvent in events)
+                {
+                    if (testEvent.Branches.Select(item => item.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count() != testEvent.Branches.Count
+                        || testEvent.Branches.Select(item => item.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != testEvent.Branches.Count)
+                        throw new InvalidDataException("Developer Branch ids and names must be unique inside each TestEvent.");
+                }
+
+                return new LSDeveloperBranchCatalog(events);
+            }
+            catch (Exception error)
+            {
+                if (diagnostic != null)
+                    diagnostic("Could not load documented Developer branches from " + path + ": " + error.Message);
+                return new LSDeveloperBranchCatalog(Enumerable.Empty<LSDeveloperTestEventDefinition>());
+            }
+        }
+
+        internal string[] EventNames()
+        {
+            return _events.Select(item => item.Name).ToArray();
+        }
+
+        internal string[] BranchNames(string eventName)
+        {
+            LSDeveloperTestEventDefinition testEvent = FindEvent(eventName);
+            return testEvent == null
+                ? new string[0]
+                : testEvent.Branches.Select(item => item.Name).ToArray();
+        }
+
+        internal LSDeveloperBranchDefinition Find(string eventName, string branchName)
+        {
+            LSDeveloperTestEventDefinition testEvent = FindEvent(eventName);
+            return testEvent == null
+                ? null
+                : testEvent.Branches.FirstOrDefault(item => string.Equals(
+                    item.Name,
+                    branchName,
+                    StringComparison.OrdinalIgnoreCase));
+        }
+
+        private LSDeveloperTestEventDefinition FindEvent(string eventName)
+        {
+            return _events.FirstOrDefault(item => string.Equals(
+                item.Name,
+                eventName,
+                StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static string Attribute(XElement element, string name)
+        {
+            XAttribute attribute = element == null ? null : element.Attribute(name);
+            return attribute == null ? string.Empty : attribute.Value;
         }
     }
 
     internal sealed class LSDeveloperAnalysisResult
     {
         internal string TestId { get; set; }
+        internal string Event { get; set; }
         internal string Branch { get; set; }
         internal string ExpectedBehavior { get; set; }
         internal string Classification { get; set; }

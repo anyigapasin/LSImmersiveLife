@@ -1,7 +1,9 @@
 using GTA;
 using GTA.Math;
+using GTA.Native;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace LSImmersiveLife
@@ -16,11 +18,16 @@ namespace LSImmersiveLife
     {
         private const int TaskRefreshMilliseconds = 6000;
         private const float SceneArrivalRadius = 18f;
+        private const float InteriorThresholdRadius = 1.35f;
+        private const int InteriorTaskRefreshMilliseconds = 4500;
+        private const int InteriorRouteTimeoutSeconds = 75;
+        private const int MaximumInteriorRouteRecoveries = 3;
 
         private readonly LSPDAudioDispatch _audio;
         private readonly LSPDProfile _profile;
         private readonly LSImmersiveLog _log;
         private readonly LSPoliceResponseSettings _settings;
+        private LSWorldAmbientBehavior _ambientWorld;
         private readonly List<PoliceResponseUnit> _units =
             new List<PoliceResponseUnit>();
         private readonly Dictionary<int, DateTime> _authorityAcknowledgements =
@@ -69,7 +76,32 @@ namespace LSImmersiveLife
             internal DateTime LastTaskAt;
             internal bool Responding;
             internal bool Owned;
+            internal string IncidentId;
+            internal string IncidentType;
+            internal string ResponseMode;
+            internal bool EmergencyUrgent;
+            internal bool EmergencySignalsOn;
+            // Interior follow is owned by this response unit, while AmbientWorld
+            // owns the mapped threshold and registered physical door session.
+            internal int InteriorFollowPhase;
+            internal int InteriorTargetId;
+            internal AmbientInteriorAccessRoute InteriorRoute;
+            internal DateTime InteriorFollowStartedAt;
+            internal DateTime InteriorFollowNextTaskAt;
+            internal int InteriorFollowRecoveryCount;
+            internal int InteriorThreatTargetHandle;
         }
+
+        private const int InteriorPhaseVehicleResponse = 0;
+        private const int InteriorPhaseLeaveVehicle = 1;
+        private const int InteriorPhaseApproachEntry = 2;
+        private const int InteriorPhaseCrossingEntry = 3;
+        private const int InteriorPhaseFollowPlayer = 4;
+        private const int InteriorPhaseApproachExit = 5;
+        private const int InteriorPhaseCrossingExit = 6;
+        private const int InteriorPhaseEnterVehicle = 7;
+        private const int InteriorPhaseOutdoorResponse = 8;
+        private const int InteriorPhaseFailed = 9;
 
         internal LSPDPoliceResponse(LSPDAudioDispatch audio)
             : this(audio, null, null, null)
@@ -105,6 +137,11 @@ namespace LSImmersiveLife
             }
         }
 
+        internal void AttachAmbientWorld(LSWorldAmbientBehavior ambientWorld)
+        {
+            _ambientWorld = ambientWorld;
+        }
+
         /// <summary>
         /// Count from the last local Authority support scan. It is presentation
         /// data only: this class never takes ownership of these vanilla peds.
@@ -116,6 +153,17 @@ namespace LSImmersiveLife
 
         internal bool EnsureResponseUnit(Vector3 destination)
         {
+            return EnsureResponseUnit(
+                destination, string.Empty, string.Empty, "SceneSupport", false);
+        }
+
+        internal bool EnsureResponseUnit(
+            Vector3 destination,
+            string incidentId,
+            string incidentType,
+            string responseMode,
+            bool urgent)
+        {
             if (!_settings.Enabled || _settings.MaximumUnitsPerIncident <= 0)
                 return false;
             CleanupDead();
@@ -125,6 +173,8 @@ namespace LSImmersiveLife
             {
                 existing.Destination = destination;
                 existing.Responding = true;
+                UpdateAssignment(
+                    existing, incidentId, incidentType, responseMode, urgent, true);
                 SendTo(existing, destination, true);
                 return true;
             }
@@ -189,6 +239,18 @@ namespace LSImmersiveLife
                 driver.MaxHealth = 250;
                 driver.Health = 250;
                 driver.Armor = 100;
+                try
+                {
+                    int copGroup = unchecked((int)StringHash.AtStringHash("COP", 0));
+                    Function.Call(Hash.SET_PED_AS_COP, driver, true);
+                    if (copGroup != 0)
+                        Function.Call(Hash.SET_PED_RELATIONSHIP_GROUP_HASH,
+                            driver, copGroup);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_RESPONSE_OFFICER_ALLY_SETUP_FAILED", ex);
+                }
 
                 PoliceResponseUnit unit = new PoliceResponseUnit
                 {
@@ -197,14 +259,24 @@ namespace LSImmersiveLife
                     Destination = destination,
                     LastTaskAt = DateTime.MinValue,
                     Responding = true,
-                    Owned = true
+                    Owned = true,
+                    IncidentId = incidentId ?? string.Empty,
+                    IncidentType = incidentType ?? string.Empty,
+                    ResponseMode = responseMode ?? string.Empty
                 };
                 _units.Add(unit);
+                SetEmergencySignals(unit, urgent);
                 SendTo(unit, destination, true);
                 Report("lsimmersivelife.police.dispatch.assigned", "assigned");
                 LogRuntime(
                     "POLICE_RESPONSE_UNIT_CREATED",
-                    "Vehicle=" + vehicleName + "; Driver=" + officerName + "; Destination=" + destination);
+                    "Incident=" + unit.IncidentId
+                    + "; Type=" + unit.IncidentType
+                    + "; Mode=" + unit.ResponseMode
+                    + "; EmergencySignals=" + urgent
+                    + "; Vehicle=" + vehicleName
+                    + "; Driver=" + officerName
+                    + "; Destination=" + destination);
                 Notify("~b~POLICE RESPONSE~s~\nA response unit is heading to the scene.");
                 return true;
             }
@@ -222,6 +294,29 @@ namespace LSImmersiveLife
 
         internal void Update(Vector3? destination)
         {
+            Update(destination, string.Empty, string.Empty, string.Empty, false);
+        }
+
+        internal void Update(
+            Vector3? destination,
+            string incidentId,
+            string incidentType,
+            string responseMode,
+            bool urgent)
+        {
+            Update(destination, incidentId, incidentType, responseMode, urgent,
+                null, Game.Player.Character);
+        }
+
+        internal void Update(
+            Vector3? destination,
+            string incidentId,
+            string incidentType,
+            string responseMode,
+            bool urgent,
+            LSPDDispatchEvent incident,
+            Ped player)
+        {
             CleanupDead();
             foreach (PoliceResponseUnit unit in _units.ToArray())
             {
@@ -231,16 +326,88 @@ namespace LSImmersiveLife
 
                 Vector3 target = destination.HasValue ? destination.Value : unit.Destination;
                 float distance = unit.Vehicle.Position.DistanceTo(target);
+                bool incidentChanged = !string.Equals(
+                    unit.IncidentId ?? string.Empty,
+                    incidentId ?? string.Empty,
+                    StringComparison.Ordinal);
+                bool assignmentChanged = UpdateAssignment(
+                    unit, incidentId, incidentType, responseMode, urgent, false);
+                if (incidentChanged && unit.InteriorFollowPhase != InteriorPhaseVehicleResponse)
+                    ResetInteriorFollow(unit, "ResponseAssignmentChanged");
                 unit.Destination = target;
+                SetEmergencySignals(unit, urgent && distance > SceneArrivalRadius);
+
+                bool interiorAssignment = incident != null
+                    && incident.OwnedByDispatch
+                    && incident.SceneResolution != null
+                    && incident.SceneResolution.IsInteriorScene
+                    && incident.SceneResolution.InteriorId != 0
+                    && string.Equals(unit.IncidentId, incident.Id, StringComparison.Ordinal);
+                int playerInteriorId = 0;
+                bool hasPlayerInterior = interiorAssignment
+                    && player != null && player.Exists()
+                    && _ambientWorld != null
+                    && _ambientWorld.TryGetActorInteriorId(player, out playerInteriorId);
+                bool playerInsideIncident = hasPlayerInterior
+                    && playerInteriorId == incident.SceneResolution.InteriorId;
+                bool responseAlreadyOnFoot = unit.InteriorFollowPhase >= InteriorPhaseLeaveVehicle
+                    && unit.InteriorFollowPhase <= InteriorPhaseEnterVehicle;
+                if (interiorAssignment
+                    && unit.InteriorFollowPhase == InteriorPhaseOutdoorResponse
+                    && playerInsideIncident
+                    && distance <= SceneArrivalRadius)
+                {
+                    unit.InteriorFollowPhase = unit.Driver.IsInVehicle()
+                        ? InteriorPhaseLeaveVehicle : InteriorPhaseApproachEntry;
+                    unit.InteriorTargetId = incident.SceneResolution.InteriorId;
+                    unit.InteriorFollowStartedAt = DateTime.UtcNow;
+                    unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                }
+
+                if (interiorAssignment && (responseAlreadyOnFoot
+                    || (playerInsideIncident && distance <= SceneArrivalRadius)
+                    || unit.InteriorFollowPhase == InteriorPhaseFailed))
+                {
+                    if (distance <= SceneArrivalRadius && unit.Responding)
+                    {
+                        unit.Responding = false;
+                        SetEmergencySignals(unit, false);
+                        Report("lsimmersivelife.police.dispatch.arrived", "arrived");
+                        LogRuntime(
+                            "POLICE_RESPONSE_UNIT_ARRIVED",
+                            "Incident=" + unit.IncidentId
+                            + "; Type=" + unit.IncidentType
+                            + "; Mode=" + unit.ResponseMode
+                            + "; Distance=" + distance);
+                        Notify("~b~POLICE RESPONSE~s~\nResponse unit arrived near the active scene.");
+                    }
+                    MaintainInteriorIncidentResponse(unit, incident, player, playerInsideIncident);
+                    continue;
+                }
+
                 if (distance <= SceneArrivalRadius)
                 {
                     if (unit.Responding)
                     {
                         unit.Responding = false;
                         try { unit.Driver.Task.ClearAll(); } catch { }
+                        SetEmergencySignals(unit, false);
                         Report("lsimmersivelife.police.dispatch.arrived", "arrived");
-                        LogRuntime("POLICE_RESPONSE_UNIT_ARRIVED", "Distance=" + distance);
+                        LogRuntime("POLICE_RESPONSE_UNIT_ARRIVED",
+                            "Incident=" + unit.IncidentId
+                            + "; Type=" + unit.IncidentType
+                            + "; Mode=" + unit.ResponseMode
+                            + "; Distance=" + distance);
                         Notify("~b~POLICE RESPONSE~s~\nResponse unit arrived near the active scene.");
+                    }
+                    if (interiorAssignment && playerInsideIncident
+                        && unit.InteriorFollowPhase != InteriorPhaseOutdoorResponse)
+                    {
+                        unit.InteriorTargetId = incident.SceneResolution.InteriorId;
+                        unit.InteriorFollowPhase = InteriorPhaseLeaveVehicle;
+                        unit.InteriorFollowStartedAt = DateTime.UtcNow;
+                        unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                        MaintainInteriorIncidentResponse(unit, incident, player, playerInsideIncident);
                     }
                     continue;
                 }
@@ -251,8 +418,583 @@ namespace LSImmersiveLife
                 // cap without spawning a duplicate response vehicle.
                 if (!unit.Responding)
                     unit.Responding = true;
-                SendTo(unit, target, false);
+                SendTo(unit, target, assignmentChanged);
             }
+        }
+
+        private void MaintainInteriorIncidentResponse(
+            PoliceResponseUnit unit,
+            LSPDDispatchEvent incident,
+            Ped player,
+            bool playerInsideIncident)
+        {
+            if (unit == null || !unit.Owned || unit.Driver == null || !unit.Driver.Exists()
+                || _ambientWorld == null || incident == null
+                || incident.SceneResolution == null || !incident.SceneResolution.IsInteriorScene)
+                return;
+
+            Ped officer = unit.Driver;
+            int interiorId = incident.SceneResolution.InteriorId;
+            if (interiorId == 0)
+                return;
+            unit.InteriorTargetId = interiorId;
+            DateTime now = DateTime.UtcNow;
+
+            if (unit.InteriorFollowPhase >= InteriorPhaseApproachEntry
+                && unit.InteriorFollowPhase <= InteriorPhaseCrossingExit
+                && unit.InteriorFollowStartedAt != DateTime.MinValue
+                && now >= unit.InteriorFollowStartedAt.AddSeconds(InteriorRouteTimeoutSeconds))
+            {
+                bool entering = unit.InteriorFollowPhase <= InteriorPhaseCrossingEntry;
+                RecoverInteriorFollow(unit,
+                    entering,
+                    "The response officer did not finish the physical doorway route before its timeout.");
+                return;
+            }
+
+            int officerInteriorId;
+            if (!_ambientWorld.TryGetActorInteriorId(officer, out officerInteriorId))
+            {
+                RecoverInteriorFollow(
+                    unit,
+                    unit.InteriorFollowPhase <= InteriorPhaseCrossingEntry,
+                    "GTA could not identify the response officer's live interior context.");
+                return;
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseVehicleResponse)
+            {
+                if (!playerInsideIncident)
+                    return;
+                unit.InteriorFollowPhase = officer.IsInVehicle()
+                    ? InteriorPhaseLeaveVehicle : InteriorPhaseApproachEntry;
+                unit.InteriorFollowStartedAt = now;
+                unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                unit.InteriorFollowRecoveryCount = 0;
+                LogRuntime(
+                    "POLICE_RESPONSE_INTERIOR_FOLLOW_STARTED",
+                    "Incident=" + incident.Id
+                    + "; Officer=" + officer.Handle
+                    + "; InteriorId=" + interiorId
+                    + "; Vehicle=" + (unit.Vehicle == null ? 0 : unit.Vehicle.Handle));
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseLeaveVehicle)
+            {
+                if (officer.IsInVehicle())
+                {
+                    if (now >= unit.InteriorFollowNextTaskAt)
+                    {
+                        try
+                        {
+                            Function.Call(Hash.TASK_LEAVE_VEHICLE, officer, unit.Vehicle, 0);
+                            Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                            unit.InteriorFollowNextTaskAt = now.AddSeconds(2);
+                            LogRuntime(
+                                "POLICE_RESPONSE_INTERIOR_VEHICLE_EXIT_REQUESTED",
+                                "Incident=" + incident.Id
+                                + "; Officer=" + officer.Handle
+                                + "; Vehicle=" + unit.Vehicle.Handle);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_RESPONSE_INTERIOR_VEHICLE_EXIT_FAILED", ex);
+                            RecoverInteriorFollow(unit, true, ex.Message);
+                        }
+                    }
+                    return;
+                }
+
+                unit.InteriorFollowPhase = officerInteriorId == interiorId
+                    ? InteriorPhaseFollowPlayer : InteriorPhaseApproachEntry;
+                unit.InteriorFollowStartedAt = now;
+                unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseApproachEntry)
+            {
+                if (officerInteriorId == interiorId)
+                {
+                    unit.InteriorFollowPhase = InteriorPhaseFollowPlayer;
+                    unit.InteriorRoute = null;
+                    unit.InteriorFollowRecoveryCount = 0;
+                    LogRuntime(
+                        "POLICE_RESPONSE_INTERIOR_CONTEXT_OBSERVED",
+                        "Incident=" + incident.Id
+                        + "; Officer=" + officer.Handle
+                        + "; InteriorId=" + interiorId
+                        + "; Crossing=ObservedBeforeResponseRoute");
+                }
+                else if (officerInteriorId != 0)
+                {
+                    FailInteriorFollow(unit,
+                        "The response officer is in a different interior from the Dispatch scene.");
+                    return;
+                }
+                else
+                {
+                    if (unit.InteriorRoute == null)
+                    {
+                        AmbientInteriorAccessRoute resolvedRoute;
+                        string routeFailure;
+                        if (!_ambientWorld.TryResolveInteriorAccessRouteForInterior(
+                            officer, interiorId, true, out resolvedRoute, out routeFailure))
+                        {
+                            RecoverInteriorFollow(unit, true, routeFailure);
+                            return;
+                        }
+                        unit.InteriorRoute = resolvedRoute;
+                        LogRuntime(
+                            "POLICE_RESPONSE_INTERIOR_ROUTE_RESOLVED",
+                            "Incident=" + incident.Id
+                            + "; Officer=" + officer.Handle
+                            + "; InteriorId=" + interiorId
+                            + "; Outside=" + resolvedRoute.Pair.OutsidePoint.SourceRecord
+                            + "; Inside=" + resolvedRoute.Pair.InsidePoint.SourceRecord
+                            + "; Entry=" + resolvedRoute.EntryPosition
+                            + "; Destination=" + resolvedRoute.DestinationPosition);
+                    }
+
+                    AmbientInteriorAccessRoute route = unit.InteriorRoute;
+                    float distanceToEntry = officer.Position.DistanceTo(route.EntryPosition);
+                    if (distanceToEntry > InteriorThresholdRadius)
+                    {
+                        if (now >= unit.InteriorFollowNextTaskAt)
+                        {
+                            try
+                            {
+                                Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                                    officer,
+                                    route.EntryPosition.X,
+                                    route.EntryPosition.Y,
+                                    route.EntryPosition.Z,
+                                    1.65f,
+                                    -1,
+                                    0.9f,
+                                    1,
+                                    route.Pair.OutsidePoint.HasHeading
+                                        ? route.Pair.OutsidePoint.Heading : 0f);
+                                Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                                unit.InteriorFollowNextTaskAt = now.AddMilliseconds(
+                                    InteriorTaskRefreshMilliseconds);
+                                LogRuntime(
+                                    "POLICE_RESPONSE_INTERIOR_ENTRY_APPROACH_STARTED",
+                                    "Incident=" + incident.Id
+                                    + "; Officer=" + officer.Handle
+                                    + "; Distance=" + distanceToEntry.ToString("0.0", CultureInfo.InvariantCulture));
+                            }
+                            catch (Exception ex)
+                            {
+                                LogException("POLICE_RESPONSE_INTERIOR_ENTRY_APPROACH_FAILED", ex);
+                                RecoverInteriorFollow(unit, true, ex.Message);
+                            }
+                        }
+                        return;
+                    }
+
+                    string doorFailure;
+                    if (!_ambientWorld.TryBeginInteriorAccess(officer, route, out doorFailure))
+                    {
+                        RecoverInteriorFollow(unit, true, doorFailure);
+                        return;
+                    }
+                    unit.InteriorFollowPhase = InteriorPhaseCrossingEntry;
+                    unit.InteriorFollowStartedAt = now;
+                    unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                    LogRuntime(
+                        "POLICE_RESPONSE_INTERIOR_DOOR_OPENING_REQUESTED",
+                        "Incident=" + incident.Id
+                        + "; Officer=" + officer.Handle
+                        + "; InteriorId=" + interiorId
+                        + "; DoorPair=" + route.Pair.InsidePoint.SourceRecord);
+                }
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseCrossingEntry
+                || unit.InteriorFollowPhase == InteriorPhaseCrossingExit)
+            {
+                bool entering = unit.InteriorFollowPhase == InteriorPhaseCrossingEntry;
+                AmbientInteriorAccessRoute route = unit.InteriorRoute;
+                if (route == null)
+                {
+                    RecoverInteriorFollow(unit, entering,
+                        "The response officer's physical door route was lost.");
+                    return;
+                }
+
+                string accessMessage;
+                AmbientInteriorAccessStatus accessStatus = _ambientWorld.MaintainInteriorAccess(
+                    officer, out accessMessage);
+                if (accessStatus == AmbientInteriorAccessStatus.Failed
+                    || accessStatus == AmbientInteriorAccessStatus.None)
+                {
+                    RecoverInteriorFollow(unit, entering, accessMessage);
+                    return;
+                }
+                if (accessStatus == AmbientInteriorAccessStatus.ReadyToCross
+                    && now >= unit.InteriorFollowNextTaskAt)
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                            officer,
+                            route.DestinationPosition.X,
+                            route.DestinationPosition.Y,
+                            route.DestinationPosition.Z,
+                            1.45f,
+                            -1,
+                            0.35f,
+                            1,
+                            entering
+                                ? (route.Pair.InsidePoint.HasHeading
+                                    ? route.Pair.InsidePoint.Heading : 0f)
+                                : (route.Pair.OutsidePoint.HasHeading
+                                    ? route.Pair.OutsidePoint.Heading : 0f));
+                        Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                        unit.InteriorFollowNextTaskAt = now.AddSeconds(3);
+                        LogRuntime(
+                            entering
+                                ? "POLICE_RESPONSE_INTERIOR_CROSSING_TASK_STARTED"
+                                : "POLICE_RESPONSE_EXTERIOR_CROSSING_TASK_STARTED",
+                            "Incident=" + incident.Id
+                            + "; Officer=" + officer.Handle
+                            + "; Destination=" + route.DestinationPosition
+                            + "; DoorPair=" + route.Pair.InsidePoint.SourceRecord);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_RESPONSE_DOOR_CROSSING_TASK_FAILED", ex);
+                        RecoverInteriorFollow(unit, entering, ex.Message);
+                        return;
+                    }
+                }
+                if (accessStatus == AmbientInteriorAccessStatus.Completed)
+                {
+                    if (entering)
+                    {
+                        unit.InteriorFollowPhase = InteriorPhaseFollowPlayer;
+                        unit.InteriorFollowRecoveryCount = 0;
+                        unit.InteriorThreatTargetHandle = 0;
+                        LogRuntime(
+                            "POLICE_RESPONSE_INTERIOR_ENTRY_CONFIRMED",
+                            "Incident=" + incident.Id
+                            + "; Officer=" + officer.Handle
+                            + "; InteriorId=" + interiorId
+                            + "; DoorPair=" + route.Pair.InsidePoint.SourceRecord
+                            + "; PhysicalCrossing=true");
+                    }
+                    else
+                    {
+                        unit.InteriorFollowPhase = InteriorPhaseEnterVehicle;
+                        LogRuntime(
+                            "POLICE_RESPONSE_INTERIOR_EXIT_CONFIRMED",
+                            "Incident=" + incident.Id
+                            + "; Officer=" + officer.Handle
+                            + "; DoorPair=" + route.Pair.InsidePoint.SourceRecord
+                            + "; PhysicalCrossing=true");
+                    }
+                    unit.InteriorRoute = null;
+                    unit.InteriorFollowStartedAt = now;
+                    unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                }
+                return;
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseFollowPlayer)
+            {
+                if (officerInteriorId == 0)
+                {
+                    if (playerInsideIncident)
+                    {
+                        unit.InteriorFollowPhase = InteriorPhaseApproachEntry;
+                        unit.InteriorFollowStartedAt = now;
+                        unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                    }
+                    else
+                    {
+                        unit.InteriorFollowPhase = InteriorPhaseEnterVehicle;
+                    }
+                    return;
+                }
+                if (officerInteriorId != interiorId)
+                {
+                    FailInteriorFollow(unit,
+                        "The response officer left the mapped interior through an untracked route.");
+                    return;
+                }
+                if (!playerInsideIncident)
+                {
+                    unit.InteriorFollowPhase = InteriorPhaseApproachExit;
+                    unit.InteriorFollowStartedAt = now;
+                    unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                    return;
+                }
+
+                if (player == null || !player.Exists() || player.IsDead || player.IsInVehicle())
+                    return;
+                float playerDistance = officer.Position.DistanceTo(player.Position);
+                if (playerDistance > 6.0f && now >= unit.InteriorFollowNextTaskAt)
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                            officer,
+                            player.Position.X,
+                            player.Position.Y,
+                            player.Position.Z,
+                            1.25f,
+                            -1,
+                            4.0f,
+                            1,
+                            Function.Call<float>(Hash.GET_ENTITY_HEADING, player));
+                        Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                        unit.InteriorFollowNextTaskAt = now.AddMilliseconds(
+                            InteriorTaskRefreshMilliseconds);
+                        LogRuntime(
+                            "POLICE_RESPONSE_INTERIOR_PLAYER_FOLLOW_TASK",
+                            "Incident=" + incident.Id
+                            + "; Officer=" + officer.Handle
+                            + "; Player=" + player.Handle
+                            + "; Distance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture));
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_RESPONSE_INTERIOR_PLAYER_FOLLOW_FAILED", ex);
+                        RecoverInteriorFollow(unit, false, ex.Message);
+                    }
+                }
+                return;
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseApproachExit)
+            {
+                if (playerInsideIncident)
+                {
+                    unit.InteriorFollowPhase = InteriorPhaseFollowPlayer;
+                    unit.InteriorRoute = null;
+                    unit.InteriorFollowStartedAt = now;
+                    unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                    return;
+                }
+                if (officerInteriorId == 0)
+                {
+                    unit.InteriorFollowPhase = InteriorPhaseEnterVehicle;
+                    return;
+                }
+                if (officerInteriorId != interiorId)
+                {
+                    FailInteriorFollow(unit,
+                        "The response officer cannot resolve its mapped interior exit from the current interior.");
+                    return;
+                }
+                if (unit.InteriorRoute == null)
+                {
+                    AmbientInteriorAccessRoute route;
+                    string routeFailure;
+                    if (!_ambientWorld.TryResolveInteriorAccessRouteForInterior(
+                        officer, interiorId, false, out route, out routeFailure))
+                    {
+                        RecoverInteriorFollow(unit, false, routeFailure);
+                        return;
+                    }
+                    unit.InteriorRoute = route;
+                    LogRuntime(
+                        "POLICE_RESPONSE_INTERIOR_EXIT_ROUTE_RESOLVED",
+                        "Incident=" + incident.Id
+                        + "; Officer=" + officer.Handle
+                        + "; InteriorId=" + interiorId
+                        + "; Inside=" + route.Pair.InsidePoint.SourceRecord
+                        + "; Outside=" + route.Pair.OutsidePoint.SourceRecord);
+                }
+
+                AmbientInteriorAccessRoute exitRoute = unit.InteriorRoute;
+                float exitEntryDistance = officer.Position.DistanceTo(exitRoute.EntryPosition);
+                if (exitEntryDistance > InteriorThresholdRadius)
+                {
+                    if (now >= unit.InteriorFollowNextTaskAt)
+                    {
+                        try
+                        {
+                            Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                                officer,
+                                exitRoute.EntryPosition.X,
+                                exitRoute.EntryPosition.Y,
+                                exitRoute.EntryPosition.Z,
+                                1.4f,
+                                -1,
+                                0.9f,
+                                1,
+                                exitRoute.Pair.InsidePoint.HasHeading
+                                    ? exitRoute.Pair.InsidePoint.Heading : 0f);
+                            Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                            unit.InteriorFollowNextTaskAt = now.AddMilliseconds(
+                                InteriorTaskRefreshMilliseconds);
+                            LogRuntime(
+                                "POLICE_RESPONSE_INTERIOR_EXIT_APPROACH_STARTED",
+                                "Incident=" + incident.Id
+                                + "; Officer=" + officer.Handle
+                                + "; Distance=" + exitEntryDistance.ToString("0.0", CultureInfo.InvariantCulture));
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_RESPONSE_INTERIOR_EXIT_APPROACH_FAILED", ex);
+                            RecoverInteriorFollow(unit, false, ex.Message);
+                        }
+                    }
+                    return;
+                }
+
+                string exitDoorFailure;
+                if (!_ambientWorld.TryBeginInteriorAccess(officer, exitRoute, out exitDoorFailure))
+                {
+                    RecoverInteriorFollow(unit, false, exitDoorFailure);
+                    return;
+                }
+                unit.InteriorFollowPhase = InteriorPhaseCrossingExit;
+                unit.InteriorFollowStartedAt = now;
+                unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                LogRuntime(
+                    "POLICE_RESPONSE_EXTERIOR_DOOR_OPENING_REQUESTED",
+                    "Incident=" + incident.Id
+                    + "; Officer=" + officer.Handle
+                    + "; InteriorId=" + interiorId
+                    + "; DoorPair=" + exitRoute.Pair.InsidePoint.SourceRecord);
+                return;
+            }
+
+            if (unit.InteriorFollowPhase == InteriorPhaseEnterVehicle)
+            {
+                if (officer.IsInVehicle())
+                {
+                    unit.InteriorFollowPhase = InteriorPhaseOutdoorResponse;
+                    unit.InteriorRoute = null;
+                    unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+                    LogRuntime(
+                        "POLICE_RESPONSE_INTERIOR_FOLLOW_RETURNED_TO_VEHICLE",
+                        "Incident=" + incident.Id
+                        + "; Officer=" + officer.Handle
+                        + "; Vehicle=" + (unit.Vehicle == null ? 0 : unit.Vehicle.Handle));
+                    return;
+                }
+                if (unit.Vehicle == null || !unit.Vehicle.Exists())
+                {
+                    FailInteriorFollow(unit, "The response vehicle is no longer available outside.");
+                    return;
+                }
+                float vehicleDistance = officer.Position.DistanceTo(unit.Vehicle.Position);
+                if (vehicleDistance > 4.0f)
+                {
+                    if (now >= unit.InteriorFollowNextTaskAt)
+                    {
+                        try
+                        {
+                            Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                                officer,
+                                unit.Vehicle.Position.X,
+                                unit.Vehicle.Position.Y,
+                                unit.Vehicle.Position.Z,
+                                1.5f,
+                                -1,
+                                2.0f,
+                                1,
+                                Function.Call<float>(Hash.GET_ENTITY_HEADING, unit.Vehicle));
+                            Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                            unit.InteriorFollowNextTaskAt = now.AddMilliseconds(
+                                InteriorTaskRefreshMilliseconds);
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_RESPONSE_RETURN_TO_VEHICLE_FAILED", ex);
+                            FailInteriorFollow(unit, ex.Message);
+                        }
+                    }
+                    return;
+                }
+                if (now >= unit.InteriorFollowNextTaskAt)
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_ENTER_VEHICLE,
+                            officer, unit.Vehicle, 12000, -1, 1.0f, 1, 0);
+                        Function.Call(Hash.SET_PED_KEEP_TASK, officer, true);
+                        unit.InteriorFollowNextTaskAt = now.AddSeconds(3);
+                        LogRuntime(
+                            "POLICE_RESPONSE_RETURN_TO_VEHICLE_REQUESTED",
+                            "Incident=" + incident.Id
+                            + "; Officer=" + officer.Handle
+                            + "; Vehicle=" + unit.Vehicle.Handle);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_RESPONSE_RETURN_TO_VEHICLE_FAILED", ex);
+                        FailInteriorFollow(unit, ex.Message);
+                    }
+                }
+            }
+        }
+
+        private void RecoverInteriorFollow(
+            PoliceResponseUnit unit,
+            bool entering,
+            string reason)
+        {
+            if (unit == null)
+                return;
+            if (_ambientWorld != null && unit.Driver != null)
+                _ambientWorld.CancelInteriorAccess(unit.Driver, "PoliceResponseRouteRecovery");
+            unit.InteriorFollowRecoveryCount++;
+            unit.InteriorRoute = null;
+            unit.InteriorFollowNextTaskAt = DateTime.UtcNow.AddSeconds(2);
+            unit.InteriorFollowStartedAt = DateTime.UtcNow;
+            if (unit.InteriorFollowRecoveryCount >= MaximumInteriorRouteRecoveries)
+            {
+                FailInteriorFollow(unit, reason);
+                return;
+            }
+            unit.InteriorFollowPhase = entering
+                ? InteriorPhaseApproachEntry : InteriorPhaseApproachExit;
+            LogRuntime(
+                "POLICE_RESPONSE_INTERIOR_ROUTE_RECOVERING",
+                "Incident=" + unit.IncidentId
+                + "; Officer=" + (unit.Driver == null ? 0 : unit.Driver.Handle)
+                + "; Attempt=" + unit.InteriorFollowRecoveryCount
+                + "; Direction=" + (entering ? "Enter" : "Exit")
+                + "; Reason=" + (reason ?? string.Empty));
+        }
+
+        private void FailInteriorFollow(PoliceResponseUnit unit, string reason)
+        {
+            if (unit == null)
+                return;
+            if (_ambientWorld != null && unit.Driver != null)
+                _ambientWorld.CancelInteriorAccess(unit.Driver, "PoliceResponseRouteFailed");
+            unit.InteriorFollowPhase = InteriorPhaseFailed;
+            unit.InteriorRoute = null;
+            unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+            LogRuntime(
+                "POLICE_RESPONSE_INTERIOR_ROUTE_FAILED",
+                "Incident=" + unit.IncidentId
+                + "; Officer=" + (unit.Driver == null ? 0 : unit.Driver.Handle)
+                + "; InteriorId=" + unit.InteriorTargetId
+                + "; Reason=" + (reason ?? string.Empty)
+                + "; Action=NoTeleportAndHoldCurrentPosition");
+            Notify("~b~POLICE RESPONSE~s~\nThe officer could not safely cross the mapped interior door.");
+        }
+
+        private void ResetInteriorFollow(PoliceResponseUnit unit, string reason)
+        {
+            if (unit == null)
+                return;
+            if (_ambientWorld != null && unit.Driver != null)
+                _ambientWorld.CancelInteriorAccess(unit.Driver,
+                    string.IsNullOrWhiteSpace(reason) ? "PoliceResponseReset" : reason);
+            unit.InteriorFollowPhase = InteriorPhaseVehicleResponse;
+            unit.InteriorTargetId = 0;
+            unit.InteriorRoute = null;
+            unit.InteriorFollowStartedAt = DateTime.MinValue;
+            unit.InteriorFollowNextTaskAt = DateTime.MinValue;
+            unit.InteriorFollowRecoveryCount = 0;
+            unit.InteriorThreatTargetHandle = 0;
         }
 
         /// <summary>
@@ -558,6 +1300,48 @@ namespace LSImmersiveLife
             }
         }
 
+        private static bool UpdateAssignment(
+            PoliceResponseUnit unit,
+            string incidentId,
+            string incidentType,
+            string responseMode,
+            bool urgent,
+            bool force)
+        {
+            if (unit == null)
+                return false;
+            string nextIncidentId = incidentId ?? string.Empty;
+            string nextIncidentType = incidentType ?? string.Empty;
+            string nextResponseMode = responseMode ?? string.Empty;
+            bool changed = force
+                || !string.Equals(unit.IncidentId, nextIncidentId, StringComparison.Ordinal)
+                || !string.Equals(unit.IncidentType, nextIncidentType, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(unit.ResponseMode, nextResponseMode, StringComparison.OrdinalIgnoreCase)
+                || unit.EmergencyUrgent != urgent;
+            unit.IncidentId = nextIncidentId;
+            unit.IncidentType = nextIncidentType;
+            unit.ResponseMode = nextResponseMode;
+            unit.EmergencyUrgent = urgent;
+            return changed;
+        }
+
+        private static void SetEmergencySignals(PoliceResponseUnit unit, bool enabled)
+        {
+            if (unit == null || !unit.Owned || unit.Vehicle == null
+                || !unit.Vehicle.Exists() || unit.EmergencySignalsOn == enabled)
+                return;
+            try
+            {
+                Function.Call(Hash.SET_VEHICLE_SIREN, unit.Vehicle, enabled);
+                Function.Call(Hash.SET_VEHICLE_HAS_MUTED_SIRENS, unit.Vehicle, !enabled);
+                unit.EmergencySignalsOn = enabled;
+            }
+            catch
+            {
+                // Signal failure must not discard the physical response unit.
+            }
+        }
+
         private LSPDPoliceStationDefinition SelectedStation()
         {
             if (_profile == null)
@@ -597,6 +1381,7 @@ namespace LSImmersiveLife
         {
             if (unit == null || !unit.Owned)
                 return;
+            SetEmergencySignals(unit, false);
             try { if (unit.Driver != null && unit.Driver.Exists()) unit.Driver.Delete(); } catch { }
             try { if (unit.Vehicle != null && unit.Vehicle.Exists()) unit.Vehicle.Delete(); } catch { }
             unit.Owned = false;

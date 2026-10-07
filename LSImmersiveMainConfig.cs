@@ -163,7 +163,7 @@ namespace LSImmersiveLife
             // Version 1 values are removed only after their version 2
             // equivalent has been written. Unknown attributes/comments remain.
             RemoveLegacy(root.Element("Audio"), "enabled", "volume");
-            RemoveLegacy(root.Element("PoliceControls"), "patrol", "accept", "reject", "investigate", "secure", "transport", "transportComplete", "interaction", "emergency", "reset");
+            RemoveLegacy(root.Element("PoliceControls"), "patrol", "accept", "reject", "investigate", "secure", "transport", "transportComplete", "interaction", "emergency", "dispatchMenu", "reset");
             RemoveLegacyMenuKey(root.Element("UniversalSettings"));
 
             string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -400,7 +400,8 @@ namespace LSImmersiveLife
 
     internal enum LSPDControlAction
     {
-        Patrol, Accept, Reject, Investigate, Secure, Transport, TransportComplete, Interaction, Emergency, Reset
+        Patrol, Accept, Reject, Investigate, Secure, Transport, TransportComplete, Interaction,
+        Emergency, DispatchMenu, Reset
     }
 
     internal sealed class LSPDControlBindings
@@ -410,7 +411,7 @@ namespace LSImmersiveLife
             LSPDControlAction.Patrol, LSPDControlAction.Accept, LSPDControlAction.Reject,
             LSPDControlAction.Investigate, LSPDControlAction.Secure, LSPDControlAction.Transport,
             LSPDControlAction.TransportComplete, LSPDControlAction.Interaction,
-            LSPDControlAction.Emergency, LSPDControlAction.Reset
+            LSPDControlAction.Emergency, LSPDControlAction.DispatchMenu, LSPDControlAction.Reset
         };
 
         internal static IEnumerable<LSPDControlAction> Actions { get { return AllActions; } }
@@ -423,6 +424,7 @@ namespace LSImmersiveLife
         internal Keys TransportCompleteKey { get; private set; }
         internal Keys InteractionKey { get; private set; }
         internal Keys EmergencyKey { get; private set; }
+        internal Keys DispatchMenuKey { get; private set; }
         internal Keys ResetKey { get; private set; }
 
         internal static LSPDControlBindings Default()
@@ -432,10 +434,10 @@ namespace LSImmersiveLife
                 PatrolKey = Keys.P, AcceptKey = Keys.Y, RejectKey = Keys.N,
                 InvestigateKey = Keys.I, SecureKey = Keys.E, TransportKey = Keys.R,
                 TransportCompleteKey = Keys.T, InteractionKey = Keys.G,
-                // B is the consistent player-facing backup request key. The
-                // legacy property name remains so saved emergency bindings
-                // continue to load from the one main configuration document.
-                EmergencyKey = Keys.B, ResetKey = Keys.F10
+                // Keep reading the legacy emergency field, but B opens the
+                // documented Back Up Response framework so the Player chooses
+                // an activity-specific request there.
+                EmergencyKey = Keys.B, DispatchMenuKey = Keys.D, ResetKey = Keys.F10
             };
         }
 
@@ -450,6 +452,7 @@ namespace LSImmersiveLife
                 SecureKey = Key(node, "secure", result.SecureKey), TransportKey = Key(node, "transport", result.TransportKey),
                 TransportCompleteKey = Key(node, "transportComplete", result.TransportCompleteKey),
                 InteractionKey = Key(node, "interaction", result.InteractionKey), EmergencyKey = Key(node, "emergency", result.EmergencyKey),
+                DispatchMenuKey = Key(node, "dispatchMenu", result.DispatchMenuKey),
                 ResetKey = Key(node, "reset", result.ResetKey)
             };
         }
@@ -462,7 +465,8 @@ namespace LSImmersiveLife
                 new XAttribute("reject", RejectKey), new XAttribute("investigate", InvestigateKey),
                 new XAttribute("secure", SecureKey), new XAttribute("transport", TransportKey),
                 new XAttribute("transportComplete", TransportCompleteKey), new XAttribute("interaction", InteractionKey),
-                new XAttribute("emergency", EmergencyKey), new XAttribute("reset", ResetKey));
+                new XAttribute("emergency", EmergencyKey), new XAttribute("dispatchMenu", DispatchMenuKey),
+                new XAttribute("reset", ResetKey));
         }
 
         internal Keys Get(LSPDControlAction action)
@@ -478,6 +482,7 @@ namespace LSImmersiveLife
                 case LSPDControlAction.TransportComplete: return TransportCompleteKey;
                 case LSPDControlAction.Interaction: return InteractionKey;
                 case LSPDControlAction.Emergency: return EmergencyKey;
+                case LSPDControlAction.DispatchMenu: return DispatchMenuKey;
                 case LSPDControlAction.Reset: return ResetKey;
                 default: throw new ArgumentOutOfRangeException("action");
             }
@@ -496,6 +501,7 @@ namespace LSImmersiveLife
                 case LSPDControlAction.TransportComplete: TransportCompleteKey = value; break;
                 case LSPDControlAction.Interaction: InteractionKey = value; break;
                 case LSPDControlAction.Emergency: EmergencyKey = value; break;
+                case LSPDControlAction.DispatchMenu: DispatchMenuKey = value; break;
                 case LSPDControlAction.Reset: ResetKey = value; break;
                 default: throw new ArgumentOutOfRangeException("action");
             }

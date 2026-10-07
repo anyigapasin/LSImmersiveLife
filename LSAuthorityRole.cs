@@ -22,8 +22,10 @@ namespace LSImmersiveLife
             _policeUi = policeUi ?? throw new ArgumentNullException("policeUi");
             _selectedMode = LSRoleplayMode.NoneSelected;
 
-            Menu = LSImmersiveMenuFactory.Create("Authority", string.Empty);
-            Menu.NoItemsText = "Select a Roleplay mode first.";
+            Menu = LSImmersiveMenuFactory.Create(
+                "Authority Role",
+                "Immersive Gameplay Role");
+            Menu.NoItemsText = "Select a Role Gameplay in Role Play Options";
             RebuildAuthorityMenu();
         }
 
@@ -56,32 +58,33 @@ namespace LSImmersiveLife
             _log.Runtime("ROLEPLAY_MODE_SELECTED", DisplayName(mode));
             RebuildAuthorityMenu();
 
-            // Police Authority is the selected role's gameplay surface. Route
-            // directly through this authority boundary so the player does not
-            // have to open an otherwise empty intermediate screen first. The
-            // Authority menu still retains its explicit reopen action.
-            if (mode == LSRoleplayMode.PoliceAuthority)
-            {
-                OpenActiveRole();
-                return;
-            }
-
-            // Roleplay immediately forwards the player to the selected role's
-            // Authority surface. This makes the chosen mode clear without
-            // making the universal Main UI a second authority menu.
+            // Return to the five-choice Main UI after saving the selected
+            // role. Its Authority choice opens the role UI directly, without
+            // an additional "Open Gameplay" menu.
+            Menu.Visible = false;
             if (Menu.Parent != null)
-                Menu.Parent.Visible = false;
-            Menu.Visible = true;
+                Menu.Parent.Visible = true;
         }
 
         internal void OpenActiveRole()
         {
+            if (_selectedMode == LSRoleplayMode.NoneSelected)
+            {
+                if (Menu.Parent != null)
+                    Menu.Parent.Visible = false;
+                Menu.Visible = true;
+                return;
+            }
+
             if (_selectedMode != LSRoleplayMode.PoliceAuthority)
             {
                 _log.Debug(
                     "AUTHORITY_ROUTE_UNAVAILABLE",
                     "No implemented authority module is registered for "
                     + DisplayName(_selectedMode) + ".");
+                if (Menu.Parent != null)
+                    Menu.Parent.Visible = false;
+                Menu.Visible = true;
                 return;
             }
 
@@ -94,14 +97,14 @@ namespace LSImmersiveLife
             _log.Runtime("AUTHORITY_ROUTE_OPENED", "Police Authority");
         }
 
-        internal void Process(bool paused)
+        internal void Process(bool paused, bool allowStationSetupEntry)
         {
             // Police Core also completes a queued normal-player restoration after
             // Police Authority is turned off. Keeping this lightweight lifecycle
             // call here allows that safe recovery to finish even if the user has
             // already selected another role. Police gameplay remains gated by
             // Police Core's own active Authority state.
-            _policeUi.Process(paused);
+            _policeUi.Process(paused, allowStationSetupEntry);
         }
 
         internal void Shutdown()
@@ -118,11 +121,9 @@ namespace LSImmersiveLife
             switch (_selectedMode)
             {
                 case LSRoleplayMode.PoliceAuthority:
-                    AddReadOnlyRow("Selected Role: Police Authority");
-                    LSImmersiveMenuFactory.AddAction(
-                        Menu,
-                        "Open Police Gameplay",
-                        OpenActiveRole);
+                    // Police selection routes directly to Police UI from
+                    // SelectRoleplayMode; the Authority screen must not add a
+                    // second "Open Police Gameplay" click.
                     break;
 
                 case LSRoleplayMode.Citizen:
@@ -136,7 +137,6 @@ namespace LSImmersiveLife
                     break;
 
                 default:
-                    AddReadOnlyRow("Choose Roleplay, then select an Authority.");
                     break;
             }
         }
@@ -153,11 +153,11 @@ namespace LSImmersiveLife
             switch (mode)
             {
                 case LSRoleplayMode.PoliceAuthority:
-                    return "Police Authority";
+                    return "Los Santos Police Authority";
                 case LSRoleplayMode.Citizen:
-                    return "Citizen";
+                    return "Los Santos Citizen";
                 case LSRoleplayMode.GangLeader:
-                    return "Gang Leader";
+                    return "Gang Turf Leader";
                 default:
                     return "No Roleplay Mode";
             }

@@ -1,0 +1,1995 @@
+﻿
+//NPCFootInteraction
+
+//PlayerPatrolDutyMode
+
+PlayerApproachtoSelectedFootCitizenandInteract
+NPCGreetPlayerInteraction
+PlayerAskaValidationDocument
+NPCHandoutheValidation
+IF
+PlayerAgreetotheDocumentandReleasetheFootPed
+Else
+PlayerDisagreetotheDocument
+
+//ComplianceNPC
+
+NPCCompliance 
+PlayerNPCHandcuff
+PlayerEscortNPCinPersonalVehicle
+PlayerLoadedNPCinPersonalVehicle
+PlayerDriveNPCtoStation
+PlayerUnloadedNPCinPersonalVehicle
+PlayerHoldingHandcuffNPCtoStandbyPolicePedinStation
+PlayerTransporttoPrison
+PlayerUnloadedNPCinPrison
+PlayerHoldingHandcuffNPCtoStandbyPolicePedinPrison
+
+
+
+//AggresiveNPC
+
+NPCResistAggresiveInteraction 
+PlayerInteracttheAgrresiveNPC
+NPCAggresionActiveFightthePlayer
+//IF
+PlayerRequestaBackUP
+BackUPPoliceCarArrivingtoPlayer
+BackUPPEDPartnerandDriverUnloadtoPoliceCarandFootRunningtoScene
+BackUpPedsArrivetoPlayerScenesandPointoutaGuntoAggresiveNPC
+NPCAggresiveswitchtoKneelingdownAnimation]
+BackUPPEdapproachsecuredNPCandLoadedintoCar
+BackUPPedandNPCandDriverPedloadedintoPoliceCarDriveAway
+PlayerEndedfromNPCInteractionandContinuePatrolDuty
+//ELSE
+PlayerWillShoottheAggrresiveNPC
+NPCKIlledbyPlayerandPlayerNPCInteractionMissionCompleted
+
+//FleeingNPC
+
+NPCFleeingRejectedDocumentInteraction 
+PlayerInteracttheNPC
+NPCFledActiveRunAwayFromthePlayer
+
+//IF
+PlayerRequestaBackUP
+OneBackUPPoliceCarArrivingtothePathofNPCFled
+TwoBackUpPoliceCarArrivingAheadoftrackNPCFled
+OneBackUPPEDPartnerandDriverBlockthePathofNPCFled
+TwoBackUPPEDPartnerandDriverBlockthePathofNPCFled
+BackUpPedsArrivetoPathofFledNPCScenesandPointoutaGuntoFledPC
+NPCFledwitchtoKneelingdownAnimationorHandupAnimation
+PlayerArrivedtoScene
+PlayerAcceptedtheBackUpPedEscort
+BackUPPEdapproachsecuredNPCandLoadedintoCar
+BackUPPedandNPCandDriverPedloadedintoPoliceCarDriveAway
+PlayerEndedfromNPCInteractionandContinuePatrolDuty
+//ELSE
+PlayerWillShootandKilltheFledNPC
+NPCKIlledbyPlayerandPlayerNPCInteractionMissionCompleted
+
+//NPCSuspiciousBehavior
+
+PlayerPatrolOnRoad
+NPCSuspiciouslyActingWaryandWalkFastonPolice
+PlayerNoticestheSuspiciousNPC
+TheSuspiciousNPCBegantoFlee
+
+//IF
+PlayerRequestaBackUP
+OneBackUPPoliceCarArrivingtothePathofWaryNPC
+TwoBackUpPoliceCarArrivingAheadoftrackWaryNPC
+OneBackUPPEDPartnerandDriverBlockthePathofWaryNPC
+TwoBackUPPEDPartnerandDriverBlockthePathofWaryNPC
+
+BackUpPedsArrivetoPathofFledNPCScenesandPointoutaGuntoFledPC
+NPCFledwitchtoKneelingdownAnimationorHandupAnimation
+PlayerArrivedtoSceneandInvestigatetheValidationofArrestedPed
+PlayerApproachtheHandcuffNPC
+PlayerDeterminetheValidationNPC
+NPCHadaBadSatusDocument
+PlayerAcceptedBackUpPedEscort
+BackUPPEdapproachsecuredNPCandLoadedintoCar
+BackUPPedandNPCandDriverPedloadedintoPoliceCarDriveAway
+PlayerEndedfromNPCInteractionandContinuePatrolDuty
+//ELSE
+PlayerWillShootandKilltheFledNPC
+NPCKIlledbyPlayerandPlayerNPCInteractionMissionCompleted
+
+//NPCVehicleRoadInteraction
+
+//PlayerPatrolDutyMode
+//IF
+PlayerInPoliceUtilityVehicle
+//Else
+PlayerInRoadFoot
+//Then
+PlayerApproachandInteractwithRoadVehiclePed
+NPCGreetPlayerInteractionThroughWindowSide
+PlayerAskaValidationDocument
+NPCHandoutheValidation
+//Then
+PlayerDrovethroughTheRoadandTurnONitsSiren
+NearVehiclePedStoppedandParktotheSideoftheRoad
+PlayerParkeditsUtilityVehicle
+PlayerApproachandInteractwithRoadVehiclePed
+NPCGreetPlayerInteractionThroughWindowSide
+PlayerAskaValidationDocument
+NPCHandoutheValidation
+
+
+
+
+
+
+IF
+PlayerAgreetotheDocumentandReleasetheVehiclePed
+
+Else
+PlayerDisagreetotheDocument
+
+//ComplianceNPC
+
+//IFPLAYERONWALKEDFOOTROADMODE
+
+PlayerWalkedandApproachNearVehiclePedandInteract
+VehiclePedCompliantThroughtheirVehicle
+NPCUnloadedthroughTheirCar
+PlayerPhysicallyHandcufftheCitizen
+PlayerRequestaBackUP
+OneBackUpCarAppearedNaturally
+BackUPPedApproachPlayerPosition
+BackUpPedSecureandPhysicallyhandcufftheCitizenfromitsCAR
+BackUpPedSecuredandLoadedintoBackPedCar
+BackUpPedDriveAwaywiththeSuspectandPlayerReleasedfromInteraction
+
+
+
+
+//IF Player is on Vehicle Utility
+PlayerDriveSlowlyonSideofRoad
+PlayerNoticesaVehiclePed
+PlayerTurnOnitsSiren
+NPCPedStopNearSideofRoadforInteraction
+PlayerParkeditsUtilityinFrontofVehiclePed
+PlayerInteractandApproachwiththeVehiclePed
+
+//BackUp Request Unnecessary IF Player using the Preferred four-seat Supported Utility
+VehiclePedComplianceThroughtheirVehicle
+NPCUnloadedthroughTheirCar
+PlayerPhysicallyHandcufftheCitizen
+PlayerEscortNPCinPersonalVehicle
+PlayerLoadedNPCinPersonalVehicle
+PlayerDriveNPCtoStation
+PlayerUnloadedNPCinPersonalVehicle
+PlayerHoldingHandcuffNPCtoStandbyPolicePedinStation
+PlayerTransporttoPrison
+PlayerUnloadedNPCinPrison
+PlayerHoldingHandcuffNPCtoStandbyPolicePedinPrison
+PlayerReleasestheirInteractionDuty
+
+//else if Player not using the Preferred four-seat Supported Utility
+PlayerRequestaBackUP
+OneBackUpCarAppearedNaturally
+BackUPPedApproachPlayerPosition
+BackUpPedSecureandPhysicallyhandcufftheCitizenfromitsCAR
+BackUpPedSecuredandLoadedintoBackPedCar
+BackUpPedDriveAwaywiththeSuspectandPlayerReleasedfromInteraction
+
+
+//AggresiveVehiclePed
+
+//IIFPLAYERONFOOTPATROL
+
+PLAYERWALKEDACROSSANDAPPROACHVEHICLEPED
+PLAYERINTERACTANDAPPROACHAVEHICLEPED
+PLAYERASKAVALIDATIONTHROUGHWINDOWSIDE
+PLAYERDISAGREETODOCUMENTATION
+PEDGETDOWNTOITSCARANDSTARTEDTOBRINGOUTWEAPONANDFIGHTTHEPLAYER
+PLAYERESCALTEDANDDEFEATEDANDSHOOTTHEPED
+PLAYERRELEASEDTHENPCINTERACTIONANDCONTINUETHEDUTY
+
+//ELSEPLAYERONUTILITYPATROL
+
+PlayerDriveSlowlyonSideofRoad
+PlayerNoticesaVehiclePed
+PlayerTurnOnitsSiren
+NPCPedStopNearSideofRoadforInteraction
+PLAYERPARKEDITSVEHICLEINSIDEORFRONTOFTHEVEHICLEPED
+PLAYERWALKEDACROSSANDAPPROACHVEHICLEPED
+PLAYERINTERACTANDAPPROACHAVEHICLEPED
+PLAYERASKAVALIDATIONTHROUGHWINDOWSIDE
+PLAYERDISAGREETODOCUMENTATION
+PEDGETDOWNTOITSCARANDSTARTEDTOBRINGOUTWEAPONANDFIGHTTHEPLAYER
+PLAYERESCALTEDANDDEFEATEDANDSHOOTTHEPED
+PLAYERRELEASEDTHENPCINTERACTIONANDCONTINUETHEDUTY
+
+
+//FledVehiclePed
+
+NPCVehicleFleeingRejectedDocumentInteraction
+PlayerInteracttheNPCVehicle
+PlayerDriveSlowlyonSideofRoad
+PlayerNoticesaVehiclePed
+PlayerTurnOnitsSiren
+NPCPedStopNearSideofRoadforInteraction
+NPCFledActiveRunAwayFromthePlayerAfterDocumentValidation
+
+//IF
+PlayerRequestaBackUP
+OneBackUPPoliceCarPursuitothePathofNPCFledonBack
+TwoBackUpPoliceCarPursuitAheadoftrackNPCFledonFront
+OneBackUPPEDPartnerandDriverCrashtheNPCFledCar
+NPCCarFledStoppedFleeinh
+TwoBackUPPEDPartnerandDriverBlockthePathofNPCFled
+BackUpPedsRuntoPathofFledNPCCarScenesandPointoutaGuntoFledCarNPC
+NPCGetDowntoitsCar
+NPCFledwitchtoKneelingdownAnimationorHandupAnimation
+PlayerArrivedtoScene
+PlayerAcceptedtheBackUpPedEscort
+BackUPPEdapproachsecuredNPCandLoadedintoCar
+BackUPPedandNPCandDriverPedloadedintoPoliceCarDriveAway
+PlayerEndedfromNPCInteractionandContinuePatrolDuty
+//ELSE
+PlayerWillCrashPursuitandShootandKilltheFledNPCCar
+NPCKIlledbyPlayerandPlayerNPCInteractionMissionCompleted
+
+//SuspiciousVehiclePed
+
+PlayerPatrolOnRoad
+CarNPCSuspiciouslyActingWaryandWalkFastFromTowardPolicePlayer
+PlayerNoticestheSuspiciousNPC
+TheSuspiciousNPCBegantoFleewithCar
+
+//IF
+PlayerRequestaBackUP
+OneBackUPPoliceCarPursuitothePathofNPCFledonBack
+TwoBackUpPoliceCarPursuitAheadoftrackNPCFledonFront
+OneBackUPPEDPartnerandDriverCrashtheNPCFledCar
+NPCCarFledStoppedFleeinh
+TwoBackUPPEDPartnerandDriverBlockthePathofNPCFled
+BackUpPedsRuntoPathofFledNPCCarScenesandPointoutaGuntoFledCarNPC
+NPCGetDowntoitsCar
+NPCFledwitchtoKneelingdownAnimationorHandupAnimation
+PlayerArrivedtoScene
+PlayerAskaValidationoftheHandcuffedPedandShowaBadStatusDocument
+PlayerAcceptedtheBackUpPedEscort
+BackUPPEdapproachsecuredNPCandLoadedintoCar
+BackUPPedandNPCandDriverPedloadedintoPoliceCarDriveAway
+PlayerEndedfromNPCInteractionandContinuePatrolDuty
+
+
+//ELSE
+PlayerWillCrashPursuitandShootandKilltheFledNPCCar
+NPCKIlledbyPlayerandPlayerNPCInteractionMissionCompleted
+
+//PolicePatrolPlayerMode
+
+//NewPlayerModeOn
+PlayeronChoosingPoliceRolePlay
+PlayerGoToRandomStation
+PlayerEnterBlipNearDooratStation
+PlayerSelectedStationSavedinProfileuntilChooseDifferentStation
+PlayerEnterinPoliceInterface
+PlayerSelectPoliceModel
+PlayerSelectPoliceAgency
+PlayerSelectPoliceVehicle
+PlayerStartonDuty
+Player’sSelectedVehicleShownNearParkoftheStationwithBlipforGuide
+PlayerDriveonPoliceCar
+PlayerClickPatrolMode
+PlayerDispatchModeOn
+
+//PlayerisAlreadyonChosenProfileandDailyPlayerMode
+PlayerEnteronLaunchGame
+PlayerisonVanillaState
+PlayerSelectPoliceModeThroughLSImmersiveLifeUIRoleplay
+PlayerNaturallySwitchtoitSelectedPreferredModelPedVehicleModel&Armory
+PlayerStartitsOwnDuty
+
+
+//DispatchEventActivity
+
+PlayerItsOnDutyPatrolModeUtilityCar
+PlayerReceivedaDispatchRequest
+DispatchRequestPlayanAudio
+PlayerAgreesonDispatchRequest
+IF
+PlayerAudioAcceptancePlay
+Then
+PlayerAudioRejectedRequestPlay
+Then
+AcceptanceonDispatchActivity
+
+
+//TeamBackUPEvent+PlusGroupofSuspectonScene
++ShotFired
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+TheSeveralSuspectonScene
+PlayerNeedBackUPRequest. 
+PlayerClick"B"BackUp
+PlayerAudioResponseBackUpRequest
+BackUPRequestArrived
+SuspectsonSceneShotFired
+PlayerAutoRespondAudioShotFired
+BackUpPedandPlayerShotFiredatSuspects
+SuspectsGroupNeutralized
+PlayerClick"I"Investigate
+PlayerMissionAccomplishedResponseAudioAutoPlay
+
+//OneSuspectEvent+SuspectEscalated+PlayerAcceptedSinglehandledly
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+TheOneSuspectonEscalatedScene
+PlayerArrivalonSceneConfirmedAudioResponseAuto
+SuspectonSceneShotFired
+PlayerAutoRespondAudioShotFired
+PlayerShotFiredatSuspects
+SuspectsNeutralized
+PlayerClick"I"Investigate
+PlayerMissionAccomplishedResponseAudioAutoPlay
+
+
+
+
+
+
+
+//OneVehicleSuspectEscalatedEvent+PlayerAcceptedSinglehandledly
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+PlayerSawFleeingVehicleSuspect
+PlayeronPursuittheVehicleSuspect 
+PlayerCrashingtheVehicleSuspect
+PlayerShootBulletthroughTire
+PlayerEvenAudioResponseSuspectGotStoppedandAbouttoArrestAuto
+
+//ifPlayerUnabletoReachonPursuitModeoftheVehicleSuspectPursuit
+
+PlayerRequestaBackUpEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedontheFrontofFledCar
+TwoBackUparAppearedonBehindofFledCar
+BackUpandPlayerShootingTireoftheSuspectandCrashingthroughSuspectCar
+SuspectFledCarCrashthroughandTireFlat
+SuspectFledCarStopped
+FewofBackUpPedCarSurroundtheSuspectPosistion
+PlayerApproachtotheSuspectandHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+
+
+//If Player Crash and Shoot the Vehicle Suspect's Car Tires or Crashes and Suspect Alive
+
+SuspectPedVehicleHalt
+if
+Halt Vehicle Ped on Event
+else
+SuspectFledfromVehicle
+then
+PlayerShootdowntheSuspect
+else
+PlayerRequestaBackUPtoHalttheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+If
+SuspectResistsfromVehicle
+SuspectGetdowntotheCar
+SuspectTakeoutaGunorKnifeandFightthePlayer
+then
+PlayerShootdowntheSuspect
+
+If
+SuspectStoppedandisonComplianceAgreement
+SuspectShownHandUpToThePlayerthroughCar
+PlayerTakeouttheSuspectfromitsCarwhileHandup
+PlayerhandcufftheSuspectImmediately
+Then
+PlayerTransportModeandBackUpEscortMode
+
+
+
+//DispatchFootOneSuspectSingleHandledlyPlayerDispatch
+
+SuspectShotFiredatStore
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerSawASuspectRunFromStore
+PlayerAutoResponseAudioSuspectonSight
+
+//PlayerShoottheFledSuspect
+
+PlayerShootaSuspectThenMissionShotFiredEnded
+ThenPlayerDispatchActivityAudioResponseAudioAuto
+PlayerAccomplishedDispatchActivity
+PlayerReturnedtoPatrolDuty
+
+//PlayerDidNotAbletoPursuit
+
+PlayerRideonitsUtilityCar
+PlayerRequestaBackUP
+PlayerAudioResponseBackUpRequestPlay
+PlayeronPursuitMode
+
+BackUpCarOneArrivedonAheadofSuspect
+BackUpCarTwoArrivedAtBackofSuspect
+SuspectGetSurrounded
+BackUPPedsPointatGunatSuspect
+SuspectGotHandUPImmediately
+PlayerintheScenes
+PlayerTransportModeandBackUpEscortMode
+PlayerTransportAudioResponseAcceptancePlay
+
+//Bank One Suspect Robbery + Escape Suspect
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneSuspectRobberyInsideBank
+PlayerSawSuspectRunningOutFromBank
+PlayerSuspectStartedFleeingFromBank
+
+PlayerChasetheSuspect
+
+IF
+
+SuspectStoppedandComplianceAgreement
+SuspectShowHandUpToThePlayer
+PlayerApproachTheSuspect
+PlayerHandcufftheSuspectImmediately
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectKeptRunningAway
+
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+
+OneBackUpCarArrivedAheadOfSuspect
+TwoBackUpCarArrivedBehindSuspect
+BackUpPedsBlockTheSuspectPath
+BackUpPedsPointoutAGunatSuspect
+SuspectGotSurrounded
+SuspectGotHandUpImmediately
+
+PlayerArrivedontheScene
+PlayerHandcufftheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+IF
+
+SuspectTurnedAggresiveAndFightThePlayer
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+
+
+
+//Bank One Suspect Shot Fired Inside Store + PlayerSingleHandledly
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneSuspectShotFiredInsideBank
+SuspectOnSceneShotFired
+PlayerAutoRespondAudioShotFired
+PlayerEnteredTheBankScene
+
+IF
+
+PlayerSawSuspectWithWeapon
+PlayerPointGunAtSuspect
+
+IF
+SuspectStoppedandComplianceAgreement
+SuspectShowHandUpToThePlayer
+PlayerApproachTheSuspect
+PlayerHandcufftheSuspectImmediately
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectTakeoutGunAndFightThePlayer
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+Else
+
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpRequestArrived
+BackUpPedandPlayerEngageSuspect
+SuspectGroupOrOneSuspectNeutralized
+PlayerInvestigateEvent
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Disturbance Armed Suspect Outside Business
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneArmedSuspectOutsideBusiness
+PlayerSawArmedSuspectThreateningPeople
+SuspectOnSceneShotFired
+
+PlayerAutoRespondAudioShotFired
+
+IF
+
+SuspectDroppedWeapon
+SuspectShowHandUp
+PlayerApproachSuspect
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectRunsAwayFromBusiness
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+BackUpPedsBlockSuspectPath
+SuspectGotSurrounded
+SuspectShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectTakeoutWeaponAndFightThePlayer
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Fleeing Foot Suspect from Store Robbery
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+PlayerSawASuspectRunFromStore
+PlayerAutoResponseAudioSuspectonSight
+PlayerPursuittheFledSuspect
+
+IF
+
+SuspectStoppedAndComplianceAgreement
+SuspectShowHandUpToThePlayer
+PlayerApproachTheSuspect
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+PlayerUnabletoCatchTheFledSuspect
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAheadOfSuspect
+TwoBackUpCarsArrivedBehindSuspect
+SuspectGotSurrounded
+BackUpPedsPointatGunatSuspect
+SuspectGotHandUpImmediately
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectResistsFromBackUpPed
+SuspectFightTheBackUpPed
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Store Robbery Group Suspect Shot Fired
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSeveralSuspectRobbingStore
+SuspectGroupInsideStore
+SuspectsGroupShotFired
+
+PlayerAutoRespondAudioShotFired
+
+IF
+
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpRequestArrived
+BackUpPedsArriveToStore
+BackUpPedsandPlayerShotFiredatSuspectGroup
+SuspectsGroupNeutralized
+PlayerInvestigateEvent
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+Else
+
+PlayerEntersStoreSingleHandledly
+PlayerPointGunAtSuspectGroup
+
+IF
+
+SuspectsShowHandUp
+PlayerApproachSuspectGroup
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectsGroupRunsFromStore
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedsPursuitTheSuspectGroup
+SuspectGroupStopped
+SuspectGroupShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+
+//Vehicle Suspect Pursuit After Carjacking
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+PlayerSawFleeingVehicleSuspect
+PlayeronPursuitTheVehicleSuspect
+PlayerChaseTheSuspectVehicle
+
+IF
+
+PlayerUnabletoReachonPursuitModeoftheVehicleSuspectPursuit
+
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+
+OneBackUpCarArrivedOnFrontOfSuspect
+TwoBackUpCarArrivedBehindSuspect
+BackUpPedsBlockSuspectVehicle
+SuspectVehicleStopped
+
+PlayerApproachSuspectVehicle
+SuspectExitVehicle
+SuspectShowHandUp
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+PlayerCrashedTheSuspectVehicle
+PlayerShootBulletThroughTire
+
+IF
+
+SuspectPedVehicleHalt
+HaltVehiclePedOnEvent
+PlayerApproachSuspect
+SuspectShowHandUp
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectFledFromVehicle
+PlayerRequestaBackUPToHaltTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+If
+
+SuspectResistsFromVehicle
+SuspectGetDowntotheCar
+SuspectTakeoutaGunOrKnifeAndFightThePlayer
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Group Suspect Gang Ambush on Road
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSeveralGangSuspectAmbushOnRoad
+PlayerSawSeveralSuspectWaitingAroundRoad
+SuspectGroupStartShootingAtPlayer
+
+PlayerAutoRespondAudioShotFired
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+
+BackUpRequestArrived
+BackUpPedsandPlayerShotFiredatSuspects
+SuspectsGroupNeutralized
+
+PlayerClick"I"Investigate
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Drug Deal Several Suspect on Alley
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSeveralSuspectDrugDealOnAlley
+PlayerSawDrugExchange
+PlayerSawSeveralSuspectStandingNearVehicle
+
+IF
+
+SuspectGroupNoticesPlayer
+SuspectGroupStops
+SuspectGroupShowHandUp
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedsArrived
+PlayerApproachTheSuspectGroup
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectGroupRunsAway
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedsChaseSuspectGroup
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+SuspectGroupSurrounded
+SuspectGroupShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectGroupStartShooting
+PlayerAutoRespondAudioShotFired
+BackUpPedsandPlayerShotFiredatSuspectGroup
+SuspectGroupNeutralized
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Criminal Meeting Several Suspect on Alley
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSeveralSuspectCriminalMeetingOnAlley
+PlayerSawSeveralSuspectTalkingAndMeeting
+PlayerSawCriminalExchange
+
+IF
+
+SuspectsRemainCalm
+PlayerApproachSuspectGroup
+PlayerPointGunAtSuspectGroup
+SuspectsShowHandUp
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedsArrived
+BackUpPedsApproachSuspectGroup
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectsGroupFleeFromAlley
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+BackUpPedsBlockSuspectPath
+SuspectsGroupSurrounded
+SuspectsShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectsGroupAggresiveAndShotFired
+PlayerAutoRespondAudioShotFired
+PlayerRequestaBackUPEvent
+BackUpPedsandPlayerShotFiredatSuspectGroup
+SuspectsGroupNeutralized
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+//Reckless Driver One Vehicle Suspect
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneVehicleRecklessDriver
+PlayerSawRecklessVehicle
+PlayerFollowTheVehicleSuspect
+PlayerTurnOnSiren
+
+IF
+
+SuspectRejectandFledFromPoliceInteraction
+SuspectFledVehicle
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+PlayeronPursuitMode
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+SuspectVehicleStopped
+PlayerApproachTheSuspect
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectGetsOutOfVehicleAndFights
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Vehicle Theft in Progress One Vehicle Suspect
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneSuspectStealingVehicle
+PlayerSawSuspectEnteringVehicle
+PlayerSawVehicleStartMoving
+
+PlayeronPursuitMode
+PlayerFollowTheSuspectVehicle
+
+IF
+
+SuspectVehicleStopped
+SuspectExitVehicle
+SuspectShowHandUp
+PlayerApproachSuspect
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectVehicleFled
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+BackUpCarsSurroundSuspectVehicle
+SuspectVehicleStopped
+SuspectExitVehicle
+SuspectShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+//Carjacking One Vehicle Suspect
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneSuspectCarjackingVehicle
+PlayerSawVictimOutsideVehicle
+PlayerSawSuspectDriveAwayInStolenVehicle
+
+PlayeronPursuitMode
+PlayerFollowTheSuspectVehicle
+
+IF
+
+PlayerStoppedTheVehicleSuspect
+SuspectExitVehicle
+SuspectShowHandUpToThePlayer
+PlayerApproachSuspect
+PlayerHandcuffTheSuspect
+VictimVehicleRecovered
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectVehicleFledFromPlayer
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+BackUpCarsBlockSuspectVehicle
+SuspectVehicleStopped
+SuspectExitVehicle
+SuspectShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+
+
+
+
+//Group Suspect dealtaMoneyArmoryonAlley
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSeveralSuspectDealtaMoneyAndArmoryOnAlley
+PlayerSawSeveralSuspectMeeting
+MoneyAndWeaponExchangeConfirmed
+
+IF
+
+SuspectsRemainCalm
+PlayerApproachSuspectGroup
+PlayerPointGunAtSuspectGroup
+SuspectsShowHandUp
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedsArrived
+BackUpPedsPointGunAtSuspectGroup
+SuspectsGroupKneelingDown
+PlayerApproachSuspectGroup
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectsGroupStartRunningAway
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAhead
+TwoBackUpCarsArrivedBehind
+BackUpPedsBlockTheAlley
+SuspectsGroupSurrounded
+SuspectsGroupShowHandUp
+PlayerArrivedontheScene
+PlayerHandcuffSuspects
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectsGroupStartShooting
+PlayerAutoRespondAudioShotFired
+BackUpPedsandPlayerShotFiredatSuspectGroup
+SuspectsGroupNeutralized
+PlayerInvestigateEvent
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+//SuspectSnatchOnVictiminRoad
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSuspectSnatchingVictimOnRoad
+PlayerSawSuspectGrabVictim
+VictimTryingToEscapeSuspect
+
+IF
+
+SuspectStopped
+VictimReleased
+SuspectShowHandUpToThePlayer
+PlayerApproachSuspect
+PlayerHandcuffTheSuspectImmediately
+PlayerCheckVictim
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectRunsAwayFromVictim
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedsChaseSuspectPath
+BackUpPedsBlockSuspect
+SuspectGotHandUp
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectFightThePlayer
+PlayerShootdownTheSuspect
+PlayerCheckVictim
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+//SuspectSeenonMurderVictimOnAlley
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheMurderVictimOnTheGround
+PlayerSawSuspectNearMurderVictim
+PlayerSawSuspectAttemptedToLeaveScene
+
+IF
+
+SuspectStoppedAndComplianceAgreement
+SuspectShowHandUp
+PlayerApproachSuspect
+PlayerHandcuffTheSuspectImmediately
+PlayerInvestigateTheVictim
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectRunsAwayFromMurderScene
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAheadOfSuspect
+TwoBackUpCarArrivedBehindSuspect
+BackUpPedsBlockSuspectPath
+SuspectGotHandUp
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectTakeoutGunAndFightThePlayer
+PlayerShootdownTheSuspect
+PlayerInvestigateTheMurderVictim
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Vehicle Suspect on Road Doing Car Speed Chaos
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneVehicleSuspectSpeedingOnRoad
+PlayerSawTheVehicleSuspectDrivingFast
+PlayerFollowTheVehicleSuspect
+
+IF
+
+VehicleSuspectStopsOnRoad
+PlayerTurnOnSiren
+VehicleSuspectParkOnSideOfRoad
+PlayerApproachVehicleWindow
+PlayerAskValidationInformation
+SuspectShowValidationInformation
+
+IF
+SuspectStopsandComplianceAgreement
+PlayerReleaseTheVehicleSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+Else
+
+SuspectDisagreesAndVehicleFlees
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+PlayeronPursuitMode
+BackUpCarOneArrivedAheadOfSuspect
+BackUpCarTwoArrivedBehindSuspect
+SuspectVehicleGotSurrounded
+SuspectVehicleStopped
+PlayerApproachVehicleSuspect
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+//Foot Suspect on Road Doing Shot Fired Chaos
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheFootSuspectShotFiredOnRoad
+SuspectOnSceneShotFired
+PlayerAutoRespondAudioShotFired
+PlayerSawSuspectHoldingWeapon
+
+IF
+
+SuspectStoppedandComplianceAgreement
+SuspectShowHandUpToThePlayer
+PlayerApproachSuspect
+PlayerHandcufftheSuspectImmediately
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectRunsAcrossTheRoad
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAheadOfSuspect
+TwoBackUpCarArrivedBehindSuspect
+BackUpPedsBlockSuspectPath
+SuspectGotHandUpImmediately
+PlayerArrivedontheScene
+PlayerHandcufftheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectResistsAndFightThePlayer
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Narrow Alley Shot Fired Suspect + OneSuspect
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheOneSuspectShotFiredInsideNarrowAlley
+PlayerAutoRespondAudioShotFired
+PlayerEnteredTheAlley
+
+IF
+
+SuspectSawPolicePlayer
+SuspectStopped
+SuspectShowHandUpToThePlayer
+PlayerApproachSuspect
+PlayerHandcufftheSuspectImmediately
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectRunsAwayFromAlley
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+OneBackUpCarArrivedAtFrontOfAlley
+TwoBackUpPedApproachFromBack
+SuspectGotSurrounded
+SuspectShowHandUp
+PlayerArrivedontheScene
+PlayerHandcufftheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectResistsAndShootAtPlayer
+PlayerShootdownTheSuspect
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+
+//Narrow Alley Kidnapping Suspect + VictimPresent
+
+PlayerReceivedaDispatchAudioMessage
+PlayerAcceptedDispatchEvent
+PlayerAudioResponsePlayAccept
+PlayerArrivedontheScene
+PlayerInvestigateEvent
+PlayerAudioResponsePlayerArrival
+
+TheSuspectHoldingTheVictimInsideNarrowAlley
+PlayerSawKidnappingSuspect
+VictimPresentOnScene
+
+IF
+
+SuspectNotAggresiveAndPlayerPointGun
+SuspectStopped
+SuspectShowHandUpToThePlayer
+PlayerApproachSuspect
+PlayerHandcuffTheSuspectImmediately
+
+PlayerCheckTheVictim
+VictimReleasedFromSuspect
+
+PlayerTransportModeandBackUpEscortMode
+
+Else
+
+SuspectTakeoutGunAndFightPlayer
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpRequestArrived
+BackUpPedandPlayerEngageSuspect
+SuspectNeutralized
+
+PlayerInvestigateEvent
+PlayerMissionAccomplishedResponseAudioAutoPlay
+PlayerReturnedtoPatrolDuty
+
+Else
+
+SuspectFleeWithVictim
+PlayerRequestaBackUPEvent
+PlayerAudioResponseBackUpRequestAutoPlay
+BackUpPedPursuitSuspectAndVictimPath
+OneBackUpCarArrivedAhead
+TwoBackUpCarArrivedBehind
+SuspectStopped
+VictimReleased
+SuspectShowHandUpToThePlayer
+PlayerArrivedontheScene
+PlayerHandcuffTheSuspect
+PlayerTransportModeandBackUpEscortMode
+
+//Player Escort and Transport Convoy Gameplay 
+
+//One Suspect on the Dispatch Activity //SecuredSuspectfromVehicleandFootofPursuit/Compliant/FledBehavior
+
+If Vehicle Suspect Ped
+SuspectGetDownToitsVehicle
+Else Foot Suspect Ped
+SuspectHandUptoitsPosistion
+SuspectCompletelyHandUpfromPlayerandBackUp
+PlayerAudioResponseSuspectSecurePlay
+PlayerHandCuffSuspectAnimation
+PlayerRequestaTransportEvent
+PlayerTransportAudioRequestAcceptance
+DispatchAudioRequestPlayerifUsingPreferredTransportPersonalUtility
+
+//IfPlayerUsingNon-SupportedExtraSeatand
+PoliceBike
+
+ThenPlayerTransportRequestEscortApproved
+
+TransportEscortVanArrived
+
+//SwitchTransportEscortPedEscortaSuspect
+EscortCarryinganHandCuffSuspect
+EscortLoadSuspecttoUtilityVan
+
+//CasePlayerEscortaSuspect
+EscortCarryinganHandCuffSuspect
+EscortLoadSuspecttoUtilityVan
+
+PlayerDrivingTransporttoStationApproved
+PlayerDrivingTransportAudiotoDispatchPlay
+
+PlayerArrivedtoStationandGetDowntoVan
+PlayerUnloadSuspectfromUtilityVan
+StandbyStationPedTakeSuspectfromVan
+IfPlayerAcceptanceConvoytoPrisonAcceptance
+Then
+ConvoyToPrisonMissionEventStart
+Else
+IfPlayerConvoytoPrisonDisagree
+Then
+PlayerDispatchMissionCompleted
+Else
+//IfPlayerUsingExtraSeatSupportedUtility
+ThenPlayerPersonalUtilityTransportRequestEscortApproved
+ThenPlayerRequestAudioPersonalResonsePlay
+TransportEscortPersonalUtilityStart
+ElseTransportPlayerEscortaSuspect
+EscortCarryinganHandCuffSuspect
+EscortLoadSuspecttoUtilityVan
+PlayerDrivingTransporttoStationApproved
+PlayerArrivedtoStationandGetDowntoitsUtility
+PlayerUnloadSuspectfromUtilityVan
+StandbyStationPedTakeSuspectfromVan
+IfPlayerAcceptanceConvoytoPrisonAcceptance
+ThenConvoyAcceptanceMissiontoPrisonStart
+IfPlayerDisagreeConvoytoPrisonDisagreeement
+ThenMissionCompletedDispatch
+
+
+
+//TwotoThreeDispatchSuspectofCompliant/FledPursuitfromFootScenario
+
+
+IfTwotoThreeFoot Suspect Ped
+PlayerandSeveralBackUpPedsSurroundingandPointingtheGroupofSuspects
+SuspectsHandUptoitsPosistion
+SuspectCompletelyHandUpfromPlayerandBackUp
+PlayerAudioResponseSuspectSecurePlay
+PlayerHandCuffSuspectAnimation
+PlayerandBackUpPedHandcuffandSecureallTwotoThreePeds
+PlayerRequestaTransportEvent
+PlayerTransportAudioRequestAcceptance
+DispatchAudioRequestPlayerifUsingPreferredTransportPersonalUtility
+
+TransportEscortVanArrived
+
+//IfTwoToThreeSuspectintheScene
+TransportEscortPedEscortaSuspect1
+BackUpEscortPedEscortaSuspect2
+PlayerEscortSuspect3
+EscortCarryinganHandCuffSuspect
+EscortLoadSuspecttoUtilityVan
+TwotoThreeSuspectloadedtoUtilityVan
+
+PlayerDrivingTransporttoStationApproved
+PlayerDrivingTransportAudiotoDispatchPlay
+
+PlayerArrivedtoStationandGetDowntoVan
+PlayerUnloadSuspectsfromUtilityVan
+StandbyPedUnloadSuspectsfromUtilityVanatTheSametime
+StandbyStationPedTakeSuspectfromVan
+IfPlayerAcceptanceConvoytoPrisonAcceptance
+Then
+ConvoyToPrisonMissionEventStart
+Else
+IfPlayerConvoytoPrisonDisagree
+Then
+PlayerDispatchMissionCompleted
+
+
+
+//ConvoyActivity
+
+//CrimeEventActivity
+
+//VanillaGangIntegration
+
+//GangModPoolIntegration
+
+
+
+
+
+
+
+
+
+//DataBase Animation Dictionary
+
+//Police Player
+
+PointGunLowerDowntoKneelSuspect
+PointGunLowerDowntoCoweringSuspect
+
+TouchHandBackoftheSuspectEscort
+WalkArrestedHandBackSuspectEscort
+
+LoadSuspectInsidetheCarAnimation
+UnloadtheSuspectinsideCarAnimation
+
+PoliceGreetingonCitizen
+PoliceInvestigationSuspect
+PoliceTouchingBodyofSuspectInvestigation
+
+     
+DocumentRequestonCitizen
+DocumentHandoffonCitizen
+NoteTakingonCitizen
+HandOffNoteonCitizen
+
+
+
+
+
+
+
+// Shared Police / NPC Interaction
+
+HandshakeOfficer
+    mp_ped_interaction
+    handshake_guy_a
+
+HandshakeCitizen
+    mp_ped_interaction
+    handshake_guy_b
+
+DocumentGiveOfficer
+    mp_common
+    givetake1_a
+
+DocumentReceiveCitizen
+    mp_common
+    givetake1_b
+
+ClipboardNoteTaking
+    missheistdockssetup1clipboard@base
+    base
+
+PoliceInvestigationIdle
+    amb@code_human_police_investigate@idle_a
+    idle_a
+
+PoliceInvestigationIdle_Alternate
+    amb@code_human_police_investigate@idle_b
+    idle_f
+
+PoliceIdle
+    amb@world_human_cop_idles@male@base
+    base
+
+PoliceIdle_Alternate
+    amb@world_human_cop_idles@male@idle_a
+    idle_b
+
+PoliceIdle_Female
+    amb@world_human_cop_idles@female@base
+    base
+
+PoliceIdle_Female_Alternate
+    amb@world_human_cop_idles@female@idle_a
+    idle_b
+
+HandsUp
+    random@arrests
+    idle_2_hands_up
+
+KneelingArrestIdle
+    random@arrests
+    kneeling_arrest_idle
+
+BustedEnter
+    random@arrests@busted
+    enter
+
+BustedIdleA
+    random@arrests@busted
+    idle_a
+
+BustedIdleB
+    random@arrests@busted
+    idle_b
+
+BustedIdleC
+    random@arrests@busted
+    idle_c
+
+BustedExit
+    random@arrests@busted
+    exit
+
+KneelingArrestGetUp
+    random@arrests
+    kneeling_arrest_get_up
+
+ArrestPairedOfficer
+    mp_arrest_paired
+    cop_p2_back_right
+
+ArrestPairedOfficer_Left
+    mp_arrest_paired
+    cop_p2_back_left
+
+ArrestPairedSuspect
+    mp_arrest_paired
+    crook_p2_back_right
+
+ArrestPairedSuspect_Left
+    mp_arrest_paired
+    crook_p2_back_left
+
+HandcuffedIdle
+    mp_arresting
+    idle
+
+HandcuffedUncuff
+    mp_arresting
+    a_uncuff
+
+HandcuffedMovement
+    anim@move_m@prisoner_cuffed
+    walk
+
+HandcuffedMovementStartLeft
+    anim@move_m@prisoner_cuffed
+    wstart_l_0
+
+HandcuffedMovementStartRight
+    anim@move_m@prisoner_cuffed
+    wstart_r_0
+
+HandcuffedMovementStopLeft
+    anim@move_m@prisoner_cuffed
+    wstop_l_0
+
+HandcuffedMovementStopRight
+    anim@move_m@prisoner_cuffed
+    wstop_r_0
+
+PoliceRadioEnter
+    random@arrests
+    generic_radio_enter
+
+PoliceRadioChatter
+    random@arrests
+    radio_chatter
+
+PoliceCrowdControl
+    amb@code_human_police_crowd_control@idle_a
+    idle_a
+
+PoliceCrowdControlAlternate
+    amb@code_human_police_crowd_control@idle_b
+    idle_d
+
+
+
+
+
+
+
+    
+// Vehicle / Native Police Actions
+
+LoadSuspectInsidetheCarAnimation
+    NATIVE VEHICLE TASK
+    TASK_ENTER_VEHICLE
+
+UnloadtheSuspectinsideCarAnimation
+    NATIVE VEHICLE TASK
+    TASK_LEAVE_VEHICLE
+
+PlayerEnterTransportVehicle
+    NATIVE VEHICLE TASK
+    TASK_ENTER_VEHICLE
+
+PlayerExitTransportVehicle
+    NATIVE VEHICLE TASK
+    TASK_LEAVE_VEHICLE
+
+EscortSuspectEnterTransportVehicle
+    NATIVE VEHICLE TASK
+    TASK_ENTER_VEHICLE
+
+EscortSuspectExitTransportVehicle
+    NATIVE VEHICLE TASK
+    TASK_LEAVE_VEHICLE
+
+
+
+
+// Stand By Ped
+
+StandbyPoliceIdle
+    amb@world_human_cop_idles@male@base
+    base
+
+StandbyPoliceIdle_Alternate
+    amb@world_human_cop_idles@male@idle_a
+    idle_b
+
+StandbyPoliceIdle_Alternate2
+    amb@world_human_cop_idles@male@idle_b
+    idle_e
+
+StandbyPoliceIdle_Female
+    amb@world_human_cop_idles@female@base
+    base
+
+StandbyPoliceIdle_Female_Alternate
+    amb@world_human_cop_idles@female@idle_a
+    idle_b
+
+StandbyPoliceIdle_Female_Alternate2
+    amb@world_human_cop_idles@female@idle_b
+    idle_e
+
+StandbyPoliceInvestigation
+    amb@code_human_police_investigate@idle_a
+    idle_a
+
+StandbyPoliceInvestigation_Alternate
+    amb@code_human_police_investigate@idle_b
+    idle_f
+
+StandbyPoliceRadio
+    random@arrests
+    generic_radio_enter
+
+StandbyPoliceRadioChatter
+    random@arrests
+    radio_chatter
+
+StandbyPoliceCrowdControl
+    amb@code_human_police_crowd_control@idle_a
+    idle_a
+
+StandbyPoliceCrowdControl_Alternate
+    amb@code_human_police_crowd_control@idle_b
+    idle_d
+
+
+
+
+
+
+
+
+
+// Back Up Ped
+
+BackupPoliceGreeting
+    mp_ped_interaction
+    handshake_guy_a
+
+BackupPoliceInvestigation
+    amb@code_human_police_investigate@idle_a
+    idle_a
+
+BackupPoliceInvestigation_Alternate
+    amb@code_human_police_investigate@idle_b
+    idle_f
+
+BackupPoliceStandby
+    amb@world_human_cop_idles@male@base
+    base
+
+BackupPoliceStandby_Alternate
+    amb@world_human_cop_idles@male@idle_a
+    idle_b
+
+BackupPoliceStandby_Female
+    amb@world_human_cop_idles@female@base
+    base
+
+BackupPoliceStandby_Female_Alternate
+    amb@world_human_cop_idles@female@idle_a
+    idle_b
+
+BackupPoliceCrowdControl
+    amb@code_human_police_crowd_control@idle_a
+    idle_a
+
+BackupPoliceCrowdControl_Alternate
+    amb@code_human_police_crowd_control@idle_a
+    idle_b
+
+BackupPoliceRadio
+    random@arrests
+    generic_radio_enter
+
+BackupPoliceRadioChatter
+    random@arrests
+    radio_chatter
+
+BackupArrestOfficer
+    mp_arrest_paired
+    cop_p2_back_right
+
+BackupArrestOfficer_Left
+    mp_arrest_paired
+    cop_p2_back_left
+
+BackupArrestSuspect
+    mp_arrest_paired
+    crook_p2_back_right
+
+BackupArrestSuspect_Left
+    mp_arrest_paired
+    crook_p2_back_left
+
+BackupSuspectHandcuffedIdle
+    mp_arresting
+    idle
+
+BackupSuspectHandcuffedMovement
+    anim@move_m@prisoner_cuffed
+    walk
+
+BackupSuspectMovementStartLeft
+    anim@move_m@prisoner_cuffed
+    wstart_l_0
+
+BackupSuspectMovementStartRight
+    anim@move_m@prisoner_cuffed
+    wstart_r_0
+
+BackupSuspectMovementStopLeft
+    anim@move_m@prisoner_cuffed
+    wstop_l_0
+
+BackupSuspectMovementStopRight
+    anim@move_m@prisoner_cuffed
+    wstop_r_0
+
+BackupSuspectKneeling
+    random@arrests
+    kneeling_arrest_idle
+
+BackupSuspectHandsUp
+    random@arrests
+    idle_2_hands_up
+
+BackupSuspectKneelingTransition
+    random@arrests@busted
+    enter
+
+BackupSuspectKneelingRestrained
+    random@arrests@busted
+    idle_a
+
+BackupSuspectKneelingRestrained_Alternate
+    random@arrests@busted
+    idle_b
+
+BackupSuspectKneelingRestrained_Alternate2
+    random@arrests@busted
+    idle_c
+
+BackupSuspectKneelingExit
+    random@arrests@busted
+    exit
+
+// Escort Ped
+
+EscortOfficerArrestSequence
+    mp_arrest_paired
+    cop_p2_back_right
+
+EscortOfficerArrestSequence_Left
+    mp_arrest_paired
+    cop_p2_back_left
+
+EscortSuspectArrestSequence
+    mp_arrest_paired
+    crook_p2_back_right
+
+EscortSuspectArrestSequence_Left
+    mp_arrest_paired
+    crook_p2_back_left
+
+EscortSuspectHandcuffedIdle
+    mp_arresting
+    idle
+
+EscortSuspectMovement
+    anim@move_m@prisoner_cuffed
+    walk
+
+EscortSuspectMovementStartLeft
+    anim@move_m@prisoner_cuffed
+    wstart_l_0
+
+EscortSuspectMovementStartRight
+    anim@move_m@prisoner_cuffed
+    wstart_r_0
+
+EscortSuspectMovementStopLeft
+    anim@move_m@prisoner_cuffed
+    wstop_l_0
+
+EscortSuspectMovementStopRight
+    anim@move_m@prisoner_cuffed
+    wstop_r_0
+
+EscortSuspectKneeling
+    random@arrests
+    kneeling_arrest_idle
+
+EscortSuspectRestrained
+    random@arrests@busted
+    idle_a
+
+EscortSuspectRestrained_Alternate
+    random@arrests@busted
+    idle_b
+
+EscortSuspectGetUp
+    random@arrests
+    kneeling_arrest_get_up
+
+EscortSuspectUncuff
+    mp_arresting
+    a_uncuff
+
+// Suspect Ped
+
+SuspectArrestPaired
+    mp_arrest_paired
+    crook_p2_back_right
+
+SuspectArrestPaired_Left
+    mp_arrest_paired
+    crook_p2_back_left
+
+SuspectHandcuffedIdle
+    mp_arresting
+    idle
+
+SuspectHandcuffedMovement
+    anim@move_m@prisoner_cuffed
+    walk
+
+SuspectHandcuffedMovementStartLeft
+    anim@move_m@prisoner_cuffed
+    wstart_l_0
+
+SuspectHandcuffedMovementStartRight
+    anim@move_m@prisoner_cuffed
+    wstart_r_0
+
+SuspectHandcuffedMovementStopLeft
+    anim@move_m@prisoner_cuffed
+    wstop_l_0
+
+SuspectHandcuffedMovementStopRight
+    anim@move_m@prisoner_cuffed
+    wstop_r_0
+
+SuspectKneelingSurrender
+    random@arrests
+    kneeling_arrest_idle
+
+SuspectKneelingHandsUp
+    random@arrests
+    idle_2_hands_up
+
+SuspectKneelingRestrained
+    random@arrests@busted
+    idle_a
+
+SuspectKneelingRestrained_Alternate
+    random@arrests@busted
+    idle_b
+
+SuspectKneelingRestrained_Alternate2
+    random@arrests@busted
+    idle_c
+
+SuspectKneelingTransition
+    random@arrests@busted
+    enter
+
+SuspectKneelingExit
+    random@arrests@busted
+    exit
+
+SuspectKneelingGetUp
+    random@arrests
+    kneeling_arrest_get_up
+
+SuspectPoliceInvestigation
+    amb@code_human_police_investigate@idle_a
+    idle_a
+
+SuspectPoliceInvestigation_Alternate
+    amb@code_human_police_investigate@idle_b
+    idle_f
+   
+
+
+// NPC Citizen
+
+CitizenGreetingtoPolice
+    mp_ped_interaction
+    handshake_guy_b
+
+CitizenDocumentHandoff
+    mp_common
+    givetake1_b
+
+CitizenWaitingDuringInvestigation
+    amb@code_human_police_investigate@idle_a
+    idle_a
+
+CitizenHandsUp
+    random@arrests
+    idle_2_hands_up
+
+CitizenKneelingHandsUp
+    random@arrests
+    kneeling_arrest_idle
+
+CitizenKneelingTransition
+    random@arrests@busted
+    enter
+
+CitizenKneelingRestrained
+    random@arrests@busted
+    idle_a
+
+CitizenKneelingRestrained_Alternate
+    random@arrests@busted
+    idle_b
+
+CitizenKneelingRestrained_Alternate2
+    random@arrests@busted
+    idle_c
+
+CitizenKneelingExit
+    random@arrests@busted
+    exit
+
+CitizenGetUpAfterCompliance
+    random@arrests
+    kneeling_arrest_get_up
+
+CitizenInvestigationIdle
+    amb@code_human_police_investigate@idle_a
+    idle_a
+
+CitizenInvestigationIdle_Alternate
+    amb@code_human_police_investigate@idle_b
+    idle_f
+Gameplay Branch Tests
+
+

@@ -37,6 +37,10 @@ namespace LSImmersiveLife
         private readonly List<Blip> _stationMarkers = new List<Blip>();
         private PlayerStateSnapshot _normalPlayerState;
         private Vehicle _managedPoliceVehicle;
+        private Blip _preferredPoliceVehicleBlip;
+        private int _preferredPoliceVehicleBlipTargetHandle;
+        private Vehicle _fadingPoliceVehicle;
+        private DateTime _preferredPoliceVehicleFadeStartedAt = DateTime.MinValue;
         private readonly LSPDGangAdapterResponse _gangResponse;
         private DateTime _nextGangScan = DateTime.MinValue;
         private Ped[] _nearbyGangPeds = new Ped[0];
@@ -48,12 +52,15 @@ namespace LSImmersiveLife
         // decision without turning every Core tick into another backup spawn.
         private string _automaticGroupBackupIncidentId = string.Empty;
         private bool _patrolKeyDown;
-        private bool _emergencyKeyDown;
         private bool _resetKeyDown;
         private bool _transportKeyDown;
         private bool _transportCompleteKeyDown;
         private bool _convoyAcceptKeyDown;
         private bool _convoyRejectKeyDown;
+        private bool _interiorAccessEnterKeyDown;
+        private string _pendingDispatchTransportIncidentId = string.Empty;
+        private Ped _pendingDispatchTransportPrisoner;
+        private Vehicle _pendingDispatchTransportVehicle;
         private bool _configurationRefreshPending = true;
         private bool _lastAppliedAudioEnabled;
         private int _lastAppliedAudioVolume = -1;
@@ -61,6 +68,7 @@ namespace LSImmersiveLife
         private Model _pendingRestoreModel;
         private DateTime _pendingRestoreDeadline = DateTime.MinValue;
         private bool _pendingWeaponsRestored;
+        private bool _stationSetupCompletionPending;
         // The selected Police profile may reference streamed addon assets. A
         // menu callback may request those assets but must not wait for them.
         // Keep the unfinished portions here and apply each one once from the
@@ -68,6 +76,8 @@ namespace LSImmersiveLife
         private bool _pendingProfilePedApply;
         private bool _pendingProfileVehicleApply;
         private bool _pendingProfileWeaponsApply;
+        private readonly HashSet<string> _profileRestoreAppliedWeaponIds =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private DateTime _nextPendingProfileApply = DateTime.MinValue;
         private DateTime _pendingProfileApplyDeadline = DateTime.MinValue;
         private long _radioTest;
@@ -103,16 +113,23 @@ namespace LSImmersiveLife
                 _config.Police.Dispatch,
                 _config.Police.Cleanup,
                 _config.Ui);
+            // AmbientWorld is the shared location/scene-preparation owner. It
+            // receives the same parsed location catalog as Dispatch; no second
+            // XML database or independent coordinate list is created.
+            AmbientWorld = new LSWorldAmbientBehavior(Dispatch.LocationCatalog, _log);
+            Dispatch.AttachAmbientWorld(AmbientWorld);
             Response = new LSPDPoliceResponse(
                 Audio,
                 _profile,
                 _log,
                 _config.Police.Response);
+            Response.AttachAmbientWorld(AmbientWorld);
             Backup = new LSPDBackUp(
                 Audio,
                 _profile,
                 _log,
                 _config.Police.Backup);
+            Backup.AttachAmbientWorld(AmbientWorld);
             _gangData = new LSPDGangDataIntegration(_paths, _log);
             _npcDatabase = new LSNPCDatabase(_paths, _log);
             _gangResponse = new LSPDGangAdapterResponse(Audio, _log, _gangData);
@@ -149,6 +166,7 @@ namespace LSImmersiveLife
         // Owners report confirmed transitions; audio never creates those facts.
         internal LSPDPatrol Patrol { get; private set; }
         internal LSPDDispatch Dispatch { get; private set; }
+        internal LSWorldAmbientBehavior AmbientWorld { get; private set; }
         internal LSPDPoliceResponse Response { get; private set; }
         internal LSPDBackUp Backup { get; private set; }
         internal LSPDGangDataIntegration GangData { get { return _gangData; } }
@@ -160,8 +178,13 @@ namespace LSImmersiveLife
         internal LSPDProfile Profile { get { return _profile; } }
         internal LSPDAuthority Authority { get { return _authority; } }
         internal LSIMMERSIVEPATH Paths { get { return _paths; } }
+        internal LSPDControlBindings PoliceControls { get { return _config.PoliceControls; } }
         internal bool IsPoliceAuthorityActive { get { return _authority.IsActive; } }
         internal string LastOperationMessage { get; private set; }
+        internal bool HasPendingPreferredUtilityTransportChoice
+        {
+            get { return IsPendingPreferredUtilityTransportChoiceCurrent(); }
+        }
         internal int NearbyCrimeActivityCount { get { return CrimeActivity.NearbyIntel.Count; } }
         internal string CrimeActivityStatus
         {
@@ -235,16 +258,6 @@ namespace LSImmersiveLife
                 + "; Station=" + (station == null ? "Unselected" : station.DisplayName)
                 + "; SavedProfile=" + _profile.LastProfileLoaded.ToString(CultureInfo.InvariantCulture));
 
-            bool pedApplied;
-            bool vehicleApplied;
-            bool weaponsApplied;
-            bool profileApplied = ApplySavedProfile(
-                false,
-                out pedApplied,
-                out vehicleApplied,
-                out weaponsApplied);
-            if (!profileApplied)
-                QueuePendingSavedProfileApply(pedApplied, vehicleApplied, weaponsApplied);
             if (catalogsLoaded)
                 ActivateStationMarkers();
             if (!catalogsLoaded)
@@ -253,9 +266,31 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            LastOperationMessage = profileApplied
-                ? "Police Authority activated. Saved Police profile applied."
-                : "Police Authority activated. Some saved assets could not be applied.";
+            bool profileApplied = true;
+            if (_profile.StationSetupComplete)
+            {
+                bool pedApplied;
+                bool vehicleApplied;
+                bool weaponsApplied;
+                profileApplied = ApplySavedProfile(
+                    false,
+                    out pedApplied,
+                    out vehicleApplied,
+                    out weaponsApplied);
+                if (!profileApplied)
+                    QueuePendingSavedProfileApply(pedApplied, vehicleApplied, weaponsApplied);
+            }
+            else
+            {
+                ClearPendingSavedProfileApply();
+                _stationSetupCompletionPending = false;
+            }
+
+            LastOperationMessage = !_profile.StationSetupComplete
+                ? "Go to a Preferred Station and Apply a Police Duty."
+                : profileApplied
+                    ? "Police Authority activated. Saved Police profile applied."
+                    : "Police Authority activated. Some saved assets could not be applied.";
             return true;
         }
 
@@ -264,6 +299,8 @@ namespace LSImmersiveLife
             if (!IsPoliceAuthorityActive)
                 return;
 
+            AmbientWorld.CancelAllInteriorAccessSessions("PoliceAuthorityDeactivated");
+            ClearPendingPreferredUtilityTransportChoice();
             Audio.SetActive(false);
             Patrol.Reset();
             Dispatch.Reset();
@@ -281,7 +318,6 @@ namespace LSImmersiveLife
             QueueNormalPlayerRestore();
             LastOperationMessage = "Police Authority deactivated.";
             _patrolKeyDown = false;
-            _emergencyKeyDown = false;
             _resetKeyDown = false;
             _transportKeyDown = false;
             _transportCompleteKeyDown = false;
@@ -292,6 +328,7 @@ namespace LSImmersiveLife
             _crimeActivityWasActive = false;
             _npcInteractionWasActive = false;
             ClearPendingSavedProfileApply();
+            _stationSetupCompletionPending = false;
             _log.Runtime(
                 "POLICE_AUTHORITY_DEACTIVATED",
                 "Normal player session restored where possible.");
@@ -310,19 +347,62 @@ namespace LSImmersiveLife
             ProcessPendingNormalPlayerRestore();
             ApplyPendingConfiguration();
 
+            Ped player = Game.Player.Character;
+
+            // Roleplay uses the same mapped physical threshold service as Police
+            // actors. Keep this Player input path outside Police Authority; only
+            // Police-specific duties and hotkeys remain behind that authority gate.
+            bool allowInteriorAccessInput = allowGameplayInput && !paused
+                && !Dispatch.HasOffer && !NpcResponse.HasActiveInteraction;
+            bool keyboardEnterPressed = false;
+            if (allowInteriorAccessInput)
+            {
+                keyboardEnterPressed = WasPoliceKey(
+                    Keys.Enter, ref _interiorAccessEnterKeyDown);
+            }
+            else
+            {
+                _interiorAccessEnterKeyDown = Game.IsKeyPressed(Keys.Enter);
+            }
+            bool interiorContextPressed = allowInteriorAccessInput
+                && (Game.IsControlJustPressed(GTA.Control.Context)
+                    || keyboardEnterPressed);
+            string interiorAccessMessage;
+            AmbientInteriorAccessStatus interiorAccessStatus =
+                AmbientWorld.ProcessPlayerInteriorAccess(
+                    player,
+                    allowInteriorAccessInput,
+                    interiorContextPressed,
+                    out interiorAccessMessage);
+            if (!string.IsNullOrWhiteSpace(interiorAccessMessage))
+            {
+                LastOperationMessage = interiorAccessMessage;
+                if (interiorAccessStatus != AmbientInteriorAccessStatus.DoorOpening)
+                    Notify(interiorAccessMessage);
+            }
+            bool interiorDoorOwnsInteractInput =
+                interiorAccessStatus == AmbientInteriorAccessStatus.Started
+                || interiorAccessStatus == AmbientInteriorAccessStatus.DoorOpening
+                || interiorAccessStatus == AmbientInteriorAccessStatus.ReadyToCross;
+            if (interiorDoorOwnsInteractInput)
+            {
+                Game.DisableControlThisFrame(GTA.Control.Context);
+                Game.DisableControlThisFrame(GTA.Control.Enter);
+            }
+
             if (!IsPoliceAuthorityActive)
             {
                 SynchronizePoliceKeyStates();
                 return;
             }
 
+            ProcessPreferredPoliceVehicleFade(paused);
+
             _authority.Process(paused);
             ProcessPendingSavedProfileApply(paused);
             bool profileAssetsPending = HasPendingSavedProfileAssets;
             if (allowGameplayInput && !paused)
                 ProcessPoliceHotkeys();
-
-            Ped player = Game.Player.Character;
 
             // Authority owns player-scoped vanilla protection. PoliceResponse
             // owns this separate local officer recognition/de-escalation pass;
@@ -440,7 +520,18 @@ namespace LSImmersiveLife
                 profileAssetsPending || npcInteractionActive || gangActive || Convoy.Active || crimeActivityActive,
                 paused,
                 allowDispatchDecisionInput,
-                gangActive || Convoy.Active || crimeActivityActive);
+                gangActive || Convoy.Active || crimeActivityActive,
+                interiorDoorOwnsInteractInput);
+
+            if (!paused)
+            {
+                string pendingTransportMessage = ProcessPendingPreferredUtilityTransportChoice();
+                if (!string.IsNullOrWhiteSpace(pendingTransportMessage))
+                {
+                    LastOperationMessage = pendingTransportMessage;
+                    Notify(pendingTransportMessage);
+                }
+            }
 
             if (!paused)
                 EnsureAutomaticGroupBackup(player);
@@ -465,30 +556,71 @@ namespace LSImmersiveLife
                 if (Dispatch.HasIncident && !Convoy.Active && !Backup.BlocksPlayerActivities)
                 {
                     LSPDDispatchEvent incident = Dispatch.Current;
-                    Vector3? responseDestination = incident == null
-                        ? (Vector3?)null
-                        : incident.Origin;
-                    if (incident != null
-                        && incident.Suspect != null
-                        && incident.Suspect.Exists()
-                        && (incident.State == LSPDDispatchState.SuspectFleeing
-                            || incident.State == LSPDDispatchState.SuspectResisting))
-                        responseDestination = incident.Suspect.Position;
-
-                    bool activePursuit = incident != null
-                        && (incident.State == LSPDDispatchState.SuspectFleeing
+                    bool responseSceneActive = incident != null
+                        && (incident.State == LSPDDispatchState.Accepted
+                            || incident.State == LSPDDispatchState.EnRoute
+                            || incident.State == LSPDDispatchState.OnScene
+                            || incident.State == LSPDDispatchState.Investigating
+                            || incident.State == LSPDDispatchState.SuspectFleeing
+                            || incident.State == LSPDDispatchState.SuspectCompliant
                             || incident.State == LSPDDispatchState.SuspectResisting);
-                    if (activePursuit
-                        && _config.Police.Response.AutomaticPursuitSupport
-                        && Response.ActiveUnitCount == 0
-                        && responseDestination.HasValue)
+                    if (responseSceneActive)
                     {
-                        // The response owner enforces its own configured cap;
-                        // this only asks for one restrained support unit during
-                        // a confirmed active pursuit.
-                        Response.EnsureResponseUnit(responseDestination.Value);
+                        Vector3 responseDestination;
+                        string responseMode;
+                        string routeFailure;
+                        if (AmbientWorld.TryResolvePoliceResponseRoute(
+                            incident,
+                            out responseDestination,
+                            out responseMode,
+                            out routeFailure))
+                        {
+                            bool activePursuit = incident.State == LSPDDispatchState.SuspectFleeing
+                                || incident.State == LSPDDispatchState.SuspectResisting;
+                            bool allowAutomaticPursuit = !activePursuit
+                                || _config.Police.Response.AutomaticPursuitSupport;
+                            bool urgentResponse = incident.Armed
+                                || incident.Severity >= 4
+                                || activePursuit;
+                            if (allowAutomaticPursuit)
+                            {
+                                if (Response.ActiveUnitCount == 0)
+                                {
+                                    Response.EnsureResponseUnit(
+                                        responseDestination,
+                                        incident.Id,
+                                        incident.IncidentType,
+                                        responseMode,
+                                        urgentResponse);
+                                }
+                                Response.Update(
+                                    responseDestination,
+                                    incident.Id,
+                                    incident.IncidentType,
+                                    responseMode,
+                                    urgentResponse,
+                                    incident,
+                                    player);
+                            }
+                            else
+                            {
+                                Response.ReleaseAll();
+                            }
+                        }
+                        else
+                        {
+                            Response.ReleaseAll();
+                            _log.Debug(
+                                "POLICE_RESPONSE_ROUTE_UNAVAILABLE",
+                                "Incident=" + incident.Id
+                                + "; Type=" + incident.IncidentType
+                                + "; Reason=" + routeFailure);
+                        }
                     }
-                    Response.Update(responseDestination);
+                    else
+                    {
+                        Response.ReleaseAll();
+                    }
                 }
                 else if (gangActive && !Convoy.Active && !crimeActivityActive)
                 {
@@ -513,6 +645,11 @@ namespace LSImmersiveLife
                 allowGameplayInput && !paused);
             if (!string.IsNullOrWhiteSpace(convoyMessage))
                 LastOperationMessage = convoyMessage;
+
+            Ped releasedDispatchSuspect = Convoy.ConsumeDispatchReleasedSuspect();
+            if (releasedDispatchSuspect != null)
+                LastOperationMessage = Dispatch.CompletePhysicalSuspectRelease(
+                    releasedDispatchSuspect);
 
             // Convoy owns the physical custody trip. Mirror only its terminal
             // transport states into Dispatch so the two owners remain separate
@@ -569,7 +706,7 @@ namespace LSImmersiveLife
                 return;
 
             // Record the attempted incident even if streaming fails. The
-            // officer can still request Backup manually with B, while the
+            // officer can still open Back Up Response with B, while the
             // automatic producer never retries every frame.
             _automaticGroupBackupIncidentId = incident.Id ?? string.Empty;
             string result = Backup.Request(Dispatch, player, true);
@@ -591,6 +728,14 @@ namespace LSImmersiveLife
         /// </summary>
         private void ReconcileConvoyTerminalState()
         {
+            if (Convoy.CompletedAfterDispatchRelease)
+            {
+                Convoy.ConsumeCompletedState();
+                Response.ReleaseAll();
+                Backup.BeginStandDown("Dispatch custody ended after the suspect was released.");
+                return;
+            }
+
             if (Convoy.Failed)
             {
                 if (Convoy.IsRequestedConvoyActivity)
@@ -793,11 +938,6 @@ namespace LSImmersiveLife
                     Notify(LastOperationMessage);
                 return;
             }
-            if (WasPoliceKey(controls.EmergencyKey, ref _emergencyKeyDown))
-            {
-                LastOperationMessage = CallBackup();
-                Notify(LastOperationMessage);
-            }
             if (WasPoliceKey(controls.ResetKey, ref _resetKeyDown))
             {
                 LastOperationMessage = ResetPoliceRuntime();
@@ -849,6 +989,25 @@ namespace LSImmersiveLife
                 && Game.IsControlJustPressed(GTA.Control.FrontendCancel);
             bool controllerReject = controllerInput
                 && Game.IsControlJustPressed(GTA.Control.FrontendAccept);
+
+            if (HasPendingPreferredUtilityTransportChoice)
+            {
+                if (paused || !allowGameplayInput)
+                    return string.Empty;
+                if (controllerAccept || acceptKeyPressed)
+                {
+                    string result = AcceptPreferredUtilityTransport();
+                    Notify(result);
+                    return result;
+                }
+                if (controllerReject || rejectKeyPressed)
+                {
+                    string result = RequestTransportVanForCurrentDispatch();
+                    Notify(result);
+                    return result;
+                }
+                return string.Empty;
+            }
 
             if (paused || !Convoy.HoldingAtStation || !decisionInputAllowed)
                 return string.Empty;
@@ -918,7 +1077,6 @@ namespace LSImmersiveLife
             if (_config == null || _config.PoliceControls == null)
                 return;
             _patrolKeyDown = Game.IsKeyPressed(_config.PoliceControls.PatrolKey);
-            _emergencyKeyDown = Game.IsKeyPressed(_config.PoliceControls.EmergencyKey);
             _resetKeyDown = Game.IsKeyPressed(_config.PoliceControls.ResetKey);
             _transportKeyDown = Game.IsKeyPressed(_config.PoliceControls.TransportKey);
             _transportCompleteKeyDown = Game.IsKeyPressed(
@@ -1001,6 +1159,10 @@ namespace LSImmersiveLife
         {
             if (!RequireActive())
                 return false;
+            if (!_profile.StationSetupComplete)
+                return Fail(
+                    "POLICE_STATION_SETUP_REQUIRED",
+                    "Finish the Police station setup before starting Patrol.");
             if (!_config.Police.Patrol.Enabled)
                 return Fail(
                     "POLICE_PATROL_DISABLED",
@@ -1037,18 +1199,18 @@ namespace LSImmersiveLife
             {
                 Patrol.Start();
                 bool vehicleReady = PreparePatrolVehicle();
-                string firstDispatch = Dispatch.RequestOfferNow(Game.Player.Character);
-                bool dispatchReady = Dispatch.HasOffer;
+                string dispatchStatus = "Automatic Dispatch is waiting for the initial quiet-patrol interval.";
                 _log.Runtime(
                     "POLICE_PATROL_INITIAL_ACTIVITY",
-                    "DispatchReady=" + dispatchReady + "; Result=" + firstDispatch);
+                    "DispatchReady=" + Dispatch.HasOffer
+                    + "; InitialOfferDelaySeconds=" + LSPDDispatch.InitialPatrolOfferDelaySeconds
+                    + "; Result=" + dispatchStatus);
                 return Succeed("POLICE_PATROL_AVAILABILITY",
                     (vehicleReady
                         ? "Patrol active. Your current Police vehicle was retained or prepared."
                         : "Patrol active. A Police vehicle could not be prepared; you may continue on foot.")
-                    + (dispatchReady
-                        ? " A Dispatch call is ready for your response."
-                        : " Dispatch is standing by for the next eligible XML activity."));
+                    + " " + dispatchStatus
+                    + " Use Request a Dispatch in Police Radio to request a call immediately.");
             }
             return Succeed("POLICE_PATROL_AVAILABILITY",
                 "Patrol availability ended.");
@@ -1058,6 +1220,10 @@ namespace LSImmersiveLife
         {
             if (!RequireActive())
                 return false;
+            if (!_profile.StationSetupComplete)
+                return Fail(
+                    "POLICE_STATION_SETUP_REQUIRED",
+                    "Finish the Police station setup before starting Patrol.");
             if (!_config.Police.Patrol.Enabled)
                 return Fail(
                     "POLICE_PATROL_DISABLED",
@@ -1162,6 +1328,48 @@ namespace LSImmersiveLife
             return message;
         }
 
+        internal bool CanReleaseCurrentDispatchSuspect
+        {
+            get
+            {
+                Ped suspect = Dispatch.CurrentSuspect;
+                return IsPoliceAuthorityActive && Patrol.IsPatrolling
+                    && suspect != null && suspect.Exists() && !suspect.IsDead
+                    && (Dispatch.CanReleaseCurrentSuspect
+                        || Convoy.CanReleaseDispatchSuspect(suspect));
+            }
+        }
+
+        internal string ReleaseDispatchSuspect()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+
+            Ped suspect = Dispatch.CurrentSuspect;
+            if (suspect != null && _pendingDispatchTransportPrisoner != null
+                && suspect.Handle == _pendingDispatchTransportPrisoner.Handle)
+                ClearPendingPreferredUtilityTransportChoice();
+            string message;
+            if (suspect != null && Convoy.CanReleaseDispatchSuspect(suspect))
+            {
+                message = Convoy.RequestDispatchSuspectRelease(suspect);
+                Ped released = Convoy.ConsumeDispatchReleasedSuspect();
+                if (released != null)
+                    message = Dispatch.CompletePhysicalSuspectRelease(released);
+            }
+            else if (Dispatch.CanReleaseCurrentSuspect)
+            {
+                message = Dispatch.ReleaseCurrentSuspect();
+            }
+            else
+            {
+                message = "The active Dispatch suspect is not ready for release. Keep the suspect in custody and finish the physical handoff.";
+            }
+
+            LastOperationMessage = message;
+            return message;
+        }
+
         internal string RequestPrisonerTransport()
         {
             if (!RequireActive())
@@ -1169,6 +1377,15 @@ namespace LSImmersiveLife
             if (!_config.Police.Convoy.Enabled)
             {
                 LastOperationMessage = "Prisoner transport is disabled in LS Immersive settings.";
+                return LastOperationMessage;
+            }
+
+            if (!string.IsNullOrWhiteSpace(_pendingDispatchTransportIncidentId)
+                && !IsPendingPreferredUtilityTransportChoiceCurrent())
+                ClearPendingPreferredUtilityTransportChoice();
+            if (HasPendingPreferredUtilityTransportChoice)
+            {
+                LastOperationMessage = "Choose whether to use your Police Utility or request a transport van in Dispatch Activity.";
                 return LastOperationMessage;
             }
 
@@ -1207,6 +1424,11 @@ namespace LSImmersiveLife
 
             List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
             Ped pickupPrisoner = arrestedSuspects.FirstOrDefault();
+            if (arrestedSuspects.Count == 0 || pickupPrisoner == null)
+            {
+                LastOperationMessage = "No living secured Dispatch suspect is ready for transport.";
+                return LastOperationMessage;
+            }
             Vector3 pickupPosition = pickupPrisoner != null && pickupPrisoner.Exists()
                 ? pickupPrisoner.Position
                 : Dispatch.Current == null
@@ -1214,26 +1436,313 @@ namespace LSImmersiveLife
                     : Dispatch.Current.Origin;
             Ped player = Game.Player.Character;
             Vehicle playerVehicle = player == null ? null : player.CurrentVehicle;
-            string custody = arrestedSuspects.Count == 1
-                && Convoy.CanUsePlayerVehicleCustody(player, playerVehicle)
-                ? Convoy.StartPlayerVehicleCustody(
-                    pickupPrisoner, pickupPosition, playerVehicle)
-                : Convoy.Start(arrestedSuspects, pickupPosition);
-            if (Convoy.Active)
+
+            if (arrestedSuspects.Count == 1)
             {
-                if (Dispatch.TransferCustodyOwnershipToConvoy())
+                VehicleSeat custodySeat;
+                string unavailableReason;
+                if (Convoy.CanUseDispatchPreferredPlayerVehicleCustody(
+                    player,
+                    playerVehicle,
+                    pickupPrisoner,
+                    out custodySeat,
+                    out unavailableReason))
                 {
-                    Dispatch.SetAwaitingTransport();
-                    Backup.BeginStandDown("Dispatch suspects entered Convoy custody.");
+                    _pendingDispatchTransportIncidentId = Dispatch.Current == null
+                        ? string.Empty : Dispatch.Current.Id;
+                    _pendingDispatchTransportPrisoner = pickupPrisoner;
+                    _pendingDispatchTransportVehicle = playerVehicle;
+                    Dispatch.ReportTransportAudio(
+                        "lsimmersivelife.police.transport.requested",
+                        "personal-utility-choice-requested");
+                    _log.Runtime(
+                        "POLICE_DISPATCH_PERSONAL_UTILITY_CHOICE_OFFERED",
+                        "Incident=" + _pendingDispatchTransportIncidentId
+                        + "; Prisoner=" + pickupPrisoner.Handle
+                        + "; Vehicle=" + playerVehicle.Handle
+                        + "; Seat=" + custodySeat);
+                    LastOperationMessage = "Your saved Police Utility can carry this suspect. Press Y to use it or N to request a transport van, or choose either action in Dispatch Activity.";
+                    return LastOperationMessage;
                 }
-                else
-                {
-                    Convoy.Reset();
-                    custody = "Prisoner custody could not be handed to Convoy safely.";
-                }
+
+                _log.Runtime(
+                    "POLICE_DISPATCH_PREFERRED_UTILITY_UNAVAILABLE",
+                    "Incident=" + (Dispatch.Current == null ? string.Empty : Dispatch.Current.Id)
+                    + "; Prisoner=" + pickupPrisoner.Handle
+                    + "; Reason=" + unavailableReason
+                    + "; Fallback=TransportVan");
+                return StartDispatchTransportVan(
+                    arrestedSuspects,
+                    pickupPosition,
+                    true,
+                    true,
+                    "Dispatcher: Your saved Police Utility cannot be used here. A transport van is responding. The suspect remains in custody.",
+                    "PreferredUtilityUnavailable:" + unavailableReason);
             }
+
+            return StartDispatchTransportVan(
+                arrestedSuspects,
+                pickupPosition,
+                true,
+                true,
+                "Dispatcher: A transport van is being sent for the secured group. All suspects remain in custody.",
+                "DispatchCustodyGroup");
+        }
+
+        internal string ApproveDispatchTransportAction()
+        {
+            return HasPendingPreferredUtilityTransportChoice
+                ? AcceptPreferredUtilityTransport()
+                : RequestPrisonerTransport();
+        }
+
+        internal string DeclineDispatchTransportAction()
+        {
+            return HasPendingPreferredUtilityTransportChoice
+                ? RequestTransportVanForCurrentDispatch()
+                : DeclinePrisonerTransport();
+        }
+
+        private string AcceptPreferredUtilityTransport()
+        {
+            if (!HasPendingPreferredUtilityTransportChoice)
+                return "There is no saved Police Utility choice waiting.";
+
+            Ped prisoner = _pendingDispatchTransportPrisoner;
+            Vehicle vehicle = _pendingDispatchTransportVehicle;
+            string incidentId = _pendingDispatchTransportIncidentId;
+            List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
+            if (arrestedSuspects.Count != 1 || arrestedSuspects[0].Handle != prisoner.Handle)
+            {
+                ClearPendingPreferredUtilityTransportChoice();
+                return "Dispatch custody changed. Request transport again for the secured suspect.";
+            }
+
+            VehicleSeat custodySeat;
+            string unavailableReason;
+            if (!Convoy.CanUseDispatchPreferredPlayerVehicleCustody(
+                Game.Player.Character,
+                vehicle,
+                prisoner,
+                out custodySeat,
+                out unavailableReason))
+            {
+                _log.Runtime(
+                    "POLICE_DISPATCH_PREFERRED_UTILITY_BECAME_UNAVAILABLE",
+                    "Incident=" + incidentId + "; Prisoner=" + prisoner.Handle
+                    + "; Reason=" + unavailableReason + "; Fallback=TransportVan");
+                return StartDispatchTransportVan(
+                    arrestedSuspects,
+                    prisoner.Position,
+                    false,
+                    true,
+                    "Dispatcher: Your Police Utility can no longer be used. A transport van is responding. The suspect remains in custody.",
+                    "PreferredUtilityBecameUnavailable:" + unavailableReason);
+            }
+
+            string custody = Convoy.StartDispatchPreferredPlayerVehicleCustody(
+                prisoner,
+                prisoner.Position,
+                vehicle);
+            if (!Convoy.Active)
+            {
+                VehicleSeat retrySeat;
+                string retryReason;
+                if (!Convoy.CanUseDispatchPreferredPlayerVehicleCustody(
+                    Game.Player.Character,
+                    vehicle,
+                    prisoner,
+                    out retrySeat,
+                    out retryReason))
+                {
+                    return StartDispatchTransportVan(
+                        arrestedSuspects,
+                        prisoner.Position,
+                        false,
+                        true,
+                        "Dispatcher: Your Police Utility can no longer be used. A transport van is responding. The suspect remains in custody.",
+                        "PreferredUtilityBecameUnavailable:" + retryReason);
+                }
+                LastOperationMessage = custody;
+                return custody;
+            }
+
+            if (!Dispatch.TransferCustodyOwnershipToConvoy())
+            {
+                Convoy.Reset();
+                ClearPendingPreferredUtilityTransportChoice();
+                LastOperationMessage = "Prisoner custody could not be handed to Convoy safely.";
+                return LastOperationMessage;
+            }
+
+            Dispatch.SetAwaitingTransport();
+            Dispatch.ReportTransportAudio(
+                "lsimmersivelife.police.transport.approved",
+                "personal-utility-approved");
+            Backup.BeginStandDown("Dispatch suspect entered personal Utility Convoy custody.");
+            ClearPendingPreferredUtilityTransportChoice();
             LastOperationMessage = custody;
             return custody;
+        }
+
+        private string RequestTransportVanForCurrentDispatch()
+        {
+            if (!HasPendingPreferredUtilityTransportChoice)
+                return "There is no personal Utility choice waiting.";
+
+            Ped prisoner = _pendingDispatchTransportPrisoner;
+            List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
+            if (arrestedSuspects.Count != 1 || prisoner == null
+                || !prisoner.Exists() || arrestedSuspects[0].Handle != prisoner.Handle)
+            {
+                ClearPendingPreferredUtilityTransportChoice();
+                return "Dispatch custody changed. Request transport again for the secured suspect.";
+            }
+
+            return StartDispatchTransportVan(
+                arrestedSuspects,
+                prisoner.Position,
+                false,
+                false,
+                "Dispatcher: A transport van is responding. The suspect remains in custody.",
+                "PlayerRequestedTransportVan");
+        }
+
+        private string StartDispatchTransportVan(
+            IList<Ped> arrestedSuspects,
+            Vector3 pickupPosition,
+            bool reportTransportRequest,
+            bool clearChoiceBeforeStart,
+            string dispatcherMessage,
+            string reason)
+        {
+            if (clearChoiceBeforeStart)
+                ClearPendingPreferredUtilityTransportChoice();
+
+            string custody = Convoy.Start(
+                arrestedSuspects,
+                pickupPosition,
+                reportTransportRequest);
+            if (!Convoy.Active)
+            {
+                LastOperationMessage = custody;
+                return custody;
+            }
+
+            if (!Dispatch.TransferCustodyOwnershipToConvoy())
+            {
+                Convoy.Reset();
+                ClearPendingPreferredUtilityTransportChoice();
+                LastOperationMessage = "Prisoner custody could not be handed to Convoy safely.";
+                return LastOperationMessage;
+            }
+
+            Dispatch.SetAwaitingTransport();
+            Dispatch.ReportTransportAudio(
+                "lsimmersivelife.police.transport.unit_assigned",
+                "transport-van-assigned-" + reason);
+            Backup.BeginStandDown("Dispatch suspects entered Convoy van custody.");
+            ClearPendingPreferredUtilityTransportChoice();
+            LastOperationMessage = string.IsNullOrWhiteSpace(dispatcherMessage)
+                ? custody
+                : dispatcherMessage + " " + custody;
+            return LastOperationMessage;
+        }
+
+        private string ProcessPendingPreferredUtilityTransportChoice()
+        {
+            if (string.IsNullOrWhiteSpace(_pendingDispatchTransportIncidentId))
+                return string.Empty;
+
+            LSPDDispatchEvent incident = Dispatch.Current;
+            if (incident == null
+                || Dispatch.State != LSPDDispatchState.Arrested
+                || !string.Equals(
+                    incident.Id,
+                    _pendingDispatchTransportIncidentId,
+                    StringComparison.Ordinal)
+                || Convoy.Active)
+            {
+                ClearPendingPreferredUtilityTransportChoice();
+                return string.Empty;
+            }
+
+            if (!_config.Police.Convoy.Enabled)
+            {
+                ClearPendingPreferredUtilityTransportChoice();
+                return "Prisoner transport was disabled in settings. The secured suspect remains under Dispatch custody.";
+            }
+
+            List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
+            if (arrestedSuspects.Count > 1)
+            {
+                ClearPendingPreferredUtilityTransportChoice();
+                return StartDispatchTransportVan(
+                    arrestedSuspects,
+                    arrestedSuspects[0].Position,
+                    false,
+                    true,
+                    "Dispatcher: A transport van is being sent for the secured group. All suspects remain in custody.",
+                    "DispatchCustodyGroup");
+            }
+            if (arrestedSuspects.Count != 1 || _pendingDispatchTransportPrisoner == null
+                || !arrestedSuspects[0].Exists()
+                || arrestedSuspects[0].Handle != _pendingDispatchTransportPrisoner.Handle)
+            {
+                ClearPendingPreferredUtilityTransportChoice();
+                return string.Empty;
+            }
+
+            VehicleSeat custodySeat;
+            string unavailableReason;
+            if (Convoy.CanUseDispatchPreferredPlayerVehicleCustody(
+                Game.Player.Character,
+                _pendingDispatchTransportVehicle,
+                _pendingDispatchTransportPrisoner,
+                out custodySeat,
+                out unavailableReason))
+                return string.Empty;
+
+            _log.Runtime(
+                "POLICE_DISPATCH_PREFERRED_UTILITY_BECAME_UNAVAILABLE",
+                "Incident=" + incident.Id
+                + "; Prisoner=" + _pendingDispatchTransportPrisoner.Handle
+                + "; Reason=" + unavailableReason
+                + "; Fallback=TransportVan");
+            return StartDispatchTransportVan(
+                arrestedSuspects,
+                _pendingDispatchTransportPrisoner.Position,
+                false,
+                true,
+                "Dispatcher: Your Police Utility can no longer be used. A transport van is responding. The suspect remains in custody.",
+                "PreferredUtilityBecameUnavailable:" + unavailableReason);
+        }
+
+        private bool IsPendingPreferredUtilityTransportChoiceCurrent()
+        {
+            if (string.IsNullOrWhiteSpace(_pendingDispatchTransportIncidentId)
+                || _pendingDispatchTransportPrisoner == null
+                || !_pendingDispatchTransportPrisoner.Exists()
+                || _pendingDispatchTransportPrisoner.IsDead
+                || Dispatch.Current == null
+                || Dispatch.State != LSPDDispatchState.Arrested
+                || !string.Equals(
+                    Dispatch.Current.Id,
+                    _pendingDispatchTransportIncidentId,
+                    StringComparison.Ordinal)
+                || Convoy.Active)
+                return false;
+
+            List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
+            return arrestedSuspects.Count == 1
+                && arrestedSuspects[0].Handle == _pendingDispatchTransportPrisoner.Handle;
+        }
+
+        private void ClearPendingPreferredUtilityTransportChoice()
+        {
+            _pendingDispatchTransportIncidentId = string.Empty;
+            _pendingDispatchTransportPrisoner = null;
+            _pendingDispatchTransportVehicle = null;
         }
 
         /// <summary>
@@ -1580,6 +2089,7 @@ namespace LSImmersiveLife
             Convoy.Reset();
             Backup.Reset();
             _gangResponse.Reset();
+            ClearPendingPreferredUtilityTransportChoice();
             string result = Dispatch.Cancel("Cancelled by officer recovery control.");
             _automaticGroupBackupIncidentId = string.Empty;
             Response.ReleaseAll();
@@ -1591,6 +2101,8 @@ namespace LSImmersiveLife
         {
             if (!RequireActive())
                 return LastOperationMessage;
+            AmbientWorld.CancelAllInteriorAccessSessions("PoliceRuntimeReset");
+            ClearPendingPreferredUtilityTransportChoice();
             Convoy.Reset();
             Dispatch.Reset();
             _automaticGroupBackupIncidentId = string.Empty;
@@ -1667,6 +2179,46 @@ namespace LSImmersiveLife
             if (!RequireActive())
                 return LastOperationMessage;
             LastOperationMessage = NpcResponse.RejectInteractionCommand();
+            return LastOperationMessage;
+        }
+
+        internal string RequestNpcDocuments()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            LastOperationMessage = NpcResponse.RequestCitizenDocumentsCommand();
+            return LastOperationMessage;
+        }
+
+        internal string RequestNpcValidation()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            LastOperationMessage = NpcResponse.RequestCitizenValidationCommand();
+            return LastOperationMessage;
+        }
+
+        internal string ArrestNpcCitizen()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            LastOperationMessage = NpcResponse.ArrestCitizenCommand();
+            return LastOperationMessage;
+        }
+
+        internal string ReleaseNpcCitizen()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            LastOperationMessage = NpcResponse.ReleaseCitizenCommand();
+            return LastOperationMessage;
+        }
+
+        internal string ReviewNpcFramework()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            LastOperationMessage = NpcResponse.ReviewCitizenFrameworkCommand();
             return LastOperationMessage;
         }
 
@@ -1945,6 +2497,7 @@ namespace LSImmersiveLife
                 return false;
             }
 
+            _profileRestoreAppliedWeaponIds.Clear();
             pedApplied = true;
             vehicleApplied = true;
             weaponsApplied = true;
@@ -1953,13 +2506,16 @@ namespace LSImmersiveLife
                 pedApplied = ApplyPedModel(_profile.SelectedPedModelName, false, false);
             if (!string.IsNullOrWhiteSpace(_profile.SelectedVehicleModelName))
                 vehicleApplied = SpawnPoliceVehicle(_profile.SelectedVehicleModelName, false);
-            // Startup/profile restoration only needs the selected duty weapon
-            // to become playable. The personal weapon collection can contain
-            // a large library (102 entries in the latest runtime); requesting
-            // every weapon asset at once creates unnecessary streaming pressure
-            // and can starve unrelated Police models such as Backup units.
-            // Explicit Apply Personal Loadout still restores the full collection.
-            weaponsApplied = ApplySelectedPoliceWeaponInternal(false);
+            // The preferred Profile's saved personal set is the Player's
+            // preferred roulette inventory. Restore that set only after the
+            // selected officer model is ready, so a later model change cannot
+            // clear weapons that were just applied. Track successful entries
+            // across streaming retries to avoid resetting their ammo each tick.
+            weaponsApplied = pedApplied
+                && ApplyPersonalLoadoutInternal(
+                    false,
+                    false,
+                    _profileRestoreAppliedWeaponIds);
 
             bool success = pedApplied && vehicleApplied && weaponsApplied;
             if (announce)
@@ -2034,9 +2590,9 @@ namespace LSImmersiveLife
             if (now < _nextPendingProfileApply)
                 return;
 
-            // Never change the player's model, force a saved vehicle, or walk
-            // a large weapon collection while another Police owner is already
-            // conducting gameplay. Resume the same pending restore after the
+            // Never change the player's model, force a saved vehicle, or
+            // restore saved weapons while another Police owner is conducting
+            // gameplay. Resume the same pending restore after the
             // scene/contact ends instead of allowing profile streaming to race
             // Dispatch, Convoy, Backup, Gang, Crime Activity, or NPC contact.
             if (HasActivePoliceGameplayOwner)
@@ -2048,6 +2604,7 @@ namespace LSImmersiveLife
 
             if (now >= _pendingProfileApplyDeadline)
             {
+                bool stationSetupPending = _stationSetupCompletionPending;
                 _log.Debug(
                     "POLICE_PROFILE_ASSETS_TIMEOUT",
                     "Saved Police assets did not finish streaming before the retry deadline. "
@@ -2057,6 +2614,12 @@ namespace LSImmersiveLife
                     + "; Weapons=" + _pendingProfileWeaponsApply
                     + "; PersonalWeapons=" + _profile.PersonalWeapons.Count() + ".");
                 ClearPendingSavedProfileApply();
+                if (stationSetupPending)
+                {
+                    _stationSetupCompletionPending = false;
+                    LastOperationMessage = "Station setup could not load a selected Police resource. Return to the station marker to try again.";
+                    Notification.PostTicker(LastOperationMessage, false, false);
+                }
                 return;
             }
 
@@ -2073,18 +2636,24 @@ namespace LSImmersiveLife
                 _pendingProfileVehicleApply = !SpawnPoliceVehicle(
                     _profile.SelectedVehicleModelName,
                     false);
-            if (_pendingProfileWeaponsApply)
-                _pendingProfileWeaponsApply = !ApplySelectedPoliceWeaponInternal(false);
+            if (_pendingProfileWeaponsApply && !_pendingProfilePedApply)
+                _pendingProfileWeaponsApply = !ApplyPersonalLoadoutInternal(
+                    false,
+                    false,
+                    _profileRestoreAppliedWeaponIds);
             LastOperationMessage = previousMessage;
 
             if (!_pendingProfilePedApply
                 && !_pendingProfileVehicleApply
                 && !_pendingProfileWeaponsApply)
             {
+                bool stationSetupPending = _stationSetupCompletionPending;
                 ClearPendingSavedProfileApply();
                 _log.Runtime(
                     "POLICE_PROFILE_ASSETS_APPLIED",
                     "Saved Police profile completed after streamed assets became available.");
+                if (stationSetupPending)
+                    PersistStationSetupComplete(true);
                 return;
             }
 
@@ -2096,6 +2665,7 @@ namespace LSImmersiveLife
             _pendingProfilePedApply = false;
             _pendingProfileVehicleApply = false;
             _pendingProfileWeaponsApply = false;
+            _profileRestoreAppliedWeaponIds.Clear();
             _nextPendingProfileApply = DateTime.MinValue;
             _pendingProfileApplyDeadline = DateTime.MinValue;
         }
@@ -2106,6 +2676,8 @@ namespace LSImmersiveLife
                 return false;
             if (!_profile.TrySelectAgency(agencyId))
                 return Fail("POLICE_AGENCY_INVALID", "That Police department is unavailable.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The Police department selection could not be saved.");
 
             LSPDPoliceAgencyDefinition value = _profile.FindAgency(agencyId);
             return Succeed(
@@ -2113,17 +2685,429 @@ namespace LSImmersiveLife
                 "Police department selected: " + value.DisplayName + ".");
         }
 
+        internal bool SelectStationSetupStation(string stationId)
+        {
+            if (!RequireStationSetupOpen())
+                return false;
+            LSPDPoliceStationDefinition station = _profile.FindStation(stationId);
+            if (station == null || !_profile.TrySelectStation(station.Id))
+                return Fail("POLICE_STATION_INVALID", "That Police station is unavailable.");
+            LSPDPoliceAgencyDefinition agency = _profile.FindAgency(station.AgencyId);
+            if (agency == null || !_profile.TrySelectAgency(agency.Id))
+                return Fail("POLICE_STATION_AGENCY_MISSING", "That station's Police department is unavailable.");
+            // The first Station Armory uses the system Police weapon catalog.
+            // Personal loadout roulette remains saved as a separate Profile
+            // preference and is available from Police Profile later.
+            if (!string.IsNullOrWhiteSpace(_profile.Selection.WeaponId))
+                _profile.TrySelectWeapon(_profile.Selection.WeaponId);
+            LastOperationMessage = "Station selected: " + station.DisplayName + ".";
+            return true;
+        }
+
+        internal bool SelectStationSetupAgency(string agencyId)
+        {
+            if (!RequireStationSetupOpen())
+                return false;
+            LSPDPoliceAgencyDefinition agency = _profile.FindAgency(agencyId);
+            if (agency == null || !_profile.TrySelectAgency(agency.Id))
+                return Fail("POLICE_AGENCY_INVALID", "That Police department is unavailable.");
+            LastOperationMessage = "Police department selected: " + agency.DisplayName + ".";
+            return true;
+        }
+
+        internal bool SelectStationSetupPed(string pedId)
+        {
+            if (!RequireStationSetupOpen())
+                return false;
+            LSPDPoliceModelDefinition ped = _profile.FindPed(pedId);
+            if (ped == null || !_profile.TrySelectPed(ped.Id))
+                return Fail("POLICE_PED_INVALID", "That Police character is unavailable.");
+            LastOperationMessage = "Police character selected: " + ped.DisplayName + ".";
+            return true;
+        }
+
+        internal bool SelectStationSetupVehicle(string vehicleId)
+        {
+            if (!RequireStationSetupOpen())
+                return false;
+            LSPDPoliceVehicleDefinition vehicle = _profile.FindVehicle(vehicleId);
+            if (vehicle == null || !_profile.TrySelectVehicle(vehicle.Id))
+                return Fail("POLICE_VEHICLE_INVALID", "That Police vehicle is unavailable.");
+            LastOperationMessage = "Police vehicle selected: " + vehicle.DisplayName + ".";
+            return true;
+        }
+
+        internal bool SelectStationSetupWeapon(string weaponId)
+        {
+            if (!RequireStationSetupOpen())
+                return false;
+            LSPDPoliceWeaponDefinition weapon = _profile.FindWeapon(weaponId);
+            if (weapon == null || !_profile.TrySelectWeapon(weapon.Id))
+                return Fail("POLICE_WEAPON_INVALID", "That Police weapon is unavailable.");
+            LastOperationMessage = "Police armory selection: " + weapon.DisplayName + ".";
+            return true;
+        }
+
+        internal bool CompleteInitialStationSetup()
+        {
+            if (!RequireActive())
+                return false;
+            if (_profile.StationSetupComplete)
+            {
+                LastOperationMessage = "Police station setup is already complete.";
+                return true;
+            }
+            LSPDPoliceStationDefinition station = _profile.FindStation(
+                _profile.Selection.StationId);
+            if (station == null)
+                return Fail("POLICE_STATION_SETUP_STATION_MISSING", "Choose a Police station before finishing setup.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "Police setup choices could not be saved.");
+
+            // The Wardrobe and Garage are camera previews. When the Player
+            // closes setup, return them to the selected Station entrance
+            // before searching for the parked Police vehicle. In particular,
+            // do not search for the vehicle from the interior preview room.
+            if (!MovePlayerToStationExterior(station))
+                return false;
+
+            // Keep the initial Police vehicle close to the station doorway.
+            // The pending flag is also used by the streaming retry path, so a
+            // late-loaded vehicle observes the same 20-metre parking limit.
+            _stationSetupCompletionPending = true;
+            bool pedApplied;
+            bool vehicleApplied;
+            bool weaponsApplied;
+            bool profileApplied = ApplySavedProfile(
+                false,
+                out pedApplied,
+                out vehicleApplied,
+                out weaponsApplied);
+            if (profileApplied)
+                return PersistStationSetupComplete(false);
+
+            QueuePendingSavedProfileApply(pedApplied, vehicleApplied, weaponsApplied);
+            _stationSetupCompletionPending = _pendingProfilePedApply
+                || _pendingProfileVehicleApply
+                || _pendingProfileWeaponsApply;
+            LastOperationMessage = _stationSetupCompletionPending
+                ? "Your choices are saved. Police resources are loading; stay near the station."
+                : "Station setup could not prepare the selected Police resources. Return to the station marker to try again.";
+            return false;
+        }
+
+        private bool MovePlayerToStationExterior(LSPDPoliceStationDefinition station)
+        {
+            if (station == null)
+                return Fail("POLICE_STATION_EXIT_MISSING", "The selected Police station could not be found.");
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+                return Fail("POLICE_STATION_EXIT_PLAYER_MISSING", "The Player could not be returned to the Station entrance.");
+
+            Vector3 exterior;
+            float heading;
+            string source;
+            string failure;
+            if (!TryResolveSafeStationExteriorPosition(
+                player,
+                station,
+                out exterior,
+                out heading,
+                out source,
+                out failure))
+            {
+                _log.Debug(
+                    "POLICE_STATION_SETUP_PLAYER_SAFE_SPOT_UNAVAILABLE",
+                    "Station=" + station.Id + "; " + failure);
+                return Fail(
+                    "POLICE_STATION_SETUP_SAFE_EXTERIOR_UNAVAILABLE",
+                    "I couldn't find safe outdoor ground near your station. Move outside and try setup again.");
+            }
+
+            try
+            {
+                player.Position = exterior;
+                player.Heading = heading;
+                _log.Runtime(
+                    "POLICE_STATION_SETUP_PLAYER_EXITED",
+                    "Station=" + station.Id + "; Source=" + source
+                    + "; Position=" + exterior.X.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "," + exterior.Y.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "," + exterior.Z.ToString("0.00", CultureInfo.InvariantCulture));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                return Fail(
+                    "POLICE_STATION_EXIT_FAILED",
+                    "The Player could not be moved outside the selected Police station.",
+                    ex);
+            }
+        }
+
+        private bool TryResolveSafeStationExteriorPosition(
+            Ped player,
+            LSPDPoliceStationDefinition station,
+            out Vector3 position,
+            out float heading,
+            out string source,
+            out string failure)
+        {
+            position = Vector3.Zero;
+            heading = 0f;
+            source = string.Empty;
+            failure = string.Empty;
+            if (player == null || !player.Exists())
+            {
+                failure = "The Player is not available to find safe outdoor ground.";
+                return false;
+            }
+            if (station == null)
+            {
+                failure = "The selected Police station could not be found.";
+                return false;
+            }
+
+            Vector3 stationPosition = new Vector3(
+                station.ExteriorX,
+                station.ExteriorY,
+                station.ExteriorZ);
+            if (stationPosition == Vector3.Zero
+                || float.IsNaN(stationPosition.X) || float.IsInfinity(stationPosition.X)
+                || float.IsNaN(stationPosition.Y) || float.IsInfinity(stationPosition.Y)
+                || float.IsNaN(stationPosition.Z) || float.IsInfinity(stationPosition.Z))
+            {
+                failure = "The saved Police station coordinates are invalid.";
+                return false;
+            }
+
+            LSPDPoliceLocationDefinition exteriorLocation =
+                _profile.FindLocation(station.LocationId);
+            if (exteriorLocation == null || !exteriorLocation.ExteriorSafe)
+            {
+                failure = "The selected Station has no authored safe outside entrance point.";
+                return false;
+            }
+
+            Vector3 authoredEntrance = new Vector3(
+                exteriorLocation.X,
+                exteriorLocation.Y,
+                exteriorLocation.Z);
+            if (authoredEntrance == Vector3.Zero
+                || float.IsNaN(authoredEntrance.X) || float.IsInfinity(authoredEntrance.X)
+                || float.IsNaN(authoredEntrance.Y) || float.IsInfinity(authoredEntrance.Y)
+                || float.IsNaN(authoredEntrance.Z) || float.IsInfinity(authoredEntrance.Z))
+            {
+                failure = "The selected Station entrance coordinates are invalid.";
+                return false;
+            }
+
+            heading = float.IsNaN(station.ExteriorHeading)
+                || float.IsInfinity(station.ExteriorHeading)
+                ? 0f
+                : station.ExteriorHeading;
+
+            // Station setup can only open while the Player is on foot at the
+            // authored doorway marker. Keep that exact position on completion
+            // across every station. GTA can report a building interior for an
+            // exterior doorway coordinate, so that native must not reject the
+            // live position that already activated the station marker.
+            string lastReason = string.Empty;
+            try
+            {
+                if (!player.IsInVehicle()
+                    && Distance2D(player.Position, authoredEntrance) <= 8f)
+                {
+                    position = player.Position;
+                    source = "StationEntranceAlreadyReached";
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                lastReason = "GTA could not check the Player's current entrance position: "
+                    + ex.GetType().Name + ".";
+            }
+
+            float[] ringRadii = { 0f, 2f, 4f, 6f };
+            for (int ring = 0; ring < ringRadii.Length; ring++)
+            {
+                float radius = ringRadii[ring];
+                int probes = ring == 0 ? 1 : 8;
+                for (int probe = 0; probe < probes; probe++)
+                {
+                    double radians = probe * (Math.PI / 4.0);
+                    Vector3 candidate = authoredEntrance;
+                    candidate.X += (float)Math.Cos(radians) * radius;
+                    candidate.Y += (float)Math.Sin(radians) * radius;
+                    if (Distance2D(candidate, authoredEntrance) > 6f)
+                        continue;
+
+                    try
+                    {
+                        if (Function.Call<int>(
+                            Hash.GET_INTERIOR_AT_COORDS,
+                            candidate.X,
+                            candidate.Y,
+                            candidate.Z) != 0)
+                        {
+                            lastReason = "The authored entrance candidate is inside a building.";
+                            continue;
+                        }
+
+                        float groundZ;
+                        Vector3 groundNormal;
+                        if (!World.GetGroundHeightAndNormal(
+                            candidate,
+                            out groundZ,
+                            out groundNormal)
+                            || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                            || groundNormal.Z < 0.55f
+                            || Math.Abs(candidate.Z - groundZ) > 4f
+                            || Math.Abs(groundZ - station.ExteriorZ) > 8f)
+                        {
+                            lastReason = "GTA could not confirm level outdoor ground at the entrance.";
+                            continue;
+                        }
+
+                        candidate.Z = groundZ;
+                        position = candidate;
+                        source = radius == 0f
+                            ? "AuthoredStationEntrance"
+                            : "NearbyStationEntrance";
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastReason = "GTA could not validate outdoor ground at the entrance: "
+                            + ex.GetType().Name + ".";
+                        continue;
+                    }
+                }
+            }
+
+            failure = "No clear outdoor ground was found at the Station entrance or within 6 metres."
+                + (string.IsNullOrWhiteSpace(lastReason) ? string.Empty : " Last check: " + lastReason);
+            return false;
+        }
+
+        private bool RequireStationSetupOpen()
+        {
+            if (!RequireActive())
+                return false;
+            if (_profile.StationSetupComplete)
+            {
+                LastOperationMessage = "The beginning Police station setup is already complete.";
+                return false;
+            }
+            return true;
+        }
+
+        private bool PersistStationSetupComplete(bool notify)
+        {
+            _profile.SetStationSetupComplete(true);
+            if (!_profile.Save())
+            {
+                _profile.SetStationSetupComplete(false);
+                _stationSetupCompletionPending = false;
+                LastOperationMessage = "Your Police choices were applied, but setup could not be saved. Return to the station marker to try again.";
+                if (notify)
+                    Notification.PostTicker(LastOperationMessage, false, false);
+                _log.Debug("POLICE_STATION_SETUP_SAVE_FAILED", LastOperationMessage);
+                return false;
+            }
+
+            _stationSetupCompletionPending = false;
+            bool vehicleWaypointSet = SetStationSetupVehicleWaypoint();
+            LastOperationMessage = vehicleWaypointSet
+                ? "Police Roleplay is active. Follow the waypoint to your Police Utility. Get inside, then press P or choose Start Patrol in Police Gameplay."
+                : "Police Roleplay is active. Go to your Police Utility, get inside, then press P or choose Start Patrol in Police Gameplay.";
+            Vehicle setupVehicle = _managedPoliceVehicle;
+            _log.Runtime(
+                "POLICE_STATION_SETUP_COMPLETED",
+                "Station=" + _profile.Selection.StationId
+                + "; VehicleWaypointSet=" + vehicleWaypointSet
+                + "; VehicleHandle=" + (setupVehicle != null && setupVehicle.Exists()
+                    ? setupVehicle.Handle.ToString(CultureInfo.InvariantCulture)
+                    : "none"));
+            if (notify)
+                Notification.PostTicker(LastOperationMessage, false, false);
+            return true;
+        }
+
+        private bool SetStationSetupVehicleWaypoint()
+        {
+            Vehicle vehicle = _managedPoliceVehicle;
+            if (vehicle == null || !vehicle.Exists())
+                return false;
+
+            try
+            {
+                World.WaypointPosition = vehicle.Position;
+                _log.Runtime(
+                    "POLICE_STATION_SETUP_UTILITY_WAYPOINT_SET",
+                    "VehicleHandle=" + vehicle.Handle
+                    + "; Position=" + vehicle.Position.X.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "," + vehicle.Position.Y.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "," + vehicle.Position.Z.ToString("0.00", CultureInfo.InvariantCulture));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_STATION_SETUP_UTILITY_WAYPOINT_FAILED", ex);
+                return false;
+            }
+        }
+
         internal bool SelectStation(string stationId)
         {
             if (!RequireActive())
                 return false;
-            if (!_profile.TrySelectStation(stationId))
+            if (Dispatch.HasIncident || Convoy.Active)
+                return Fail(
+                    "POLICE_STATION_CHANGE_ASSIGNMENT_ACTIVE",
+                    "Finish the active Dispatch or custody handoff before changing stations.");
+
+            LSPDPoliceStationDefinition station = _profile.FindStation(stationId);
+            LSPDPoliceAgencyDefinition agency = station == null
+                ? null : _profile.FindAgency(station.AgencyId);
+            if (station == null || agency == null)
                 return Fail("POLICE_STATION_INVALID", "That Police station is unavailable.");
 
-            LSPDPoliceStationDefinition value = _profile.FindStation(stationId);
+            string previousStationId = _profile.Selection.StationId;
+            string previousAgencyId = _profile.Selection.AgencyId;
+            bool previousSetupComplete = _profile.StationSetupComplete;
+            bool stationChanged = !string.Equals(
+                previousStationId,
+                station.Id,
+                StringComparison.OrdinalIgnoreCase);
+            if (!_profile.TrySelectStation(station.Id)
+                || !_profile.TrySelectAgency(agency.Id))
+                return Fail("POLICE_STATION_INVALID", "That Police station is unavailable.");
+
+            if (stationChanged)
+                _profile.SetStationSetupComplete(false);
+            if (!_profile.Save())
+            {
+                if (!string.IsNullOrWhiteSpace(previousStationId))
+                    _profile.TrySelectStation(previousStationId);
+                if (!string.IsNullOrWhiteSpace(previousAgencyId))
+                    _profile.TrySelectAgency(previousAgencyId);
+                _profile.SetStationSetupComplete(previousSetupComplete);
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The Police station selection could not be saved.");
+            }
+
+            string selectionMessage = "Police station selected: " + station.DisplayName
+                + ". Department: " + agency.DisplayName + ".";
+            if (stationChanged || !_profile.StationSetupComplete)
+                selectionMessage += " Go there and use the station marker to set up your Police resources.";
+            else
+                selectionMessage += " Your Player and current car stay where they are.";
+
             return Succeed(
                 "POLICE_STATION_SELECTED",
-                "Police station selected: " + value.DisplayName + ".");
+                selectionMessage);
         }
 
         internal string SetSelectedStationWaypoint()
@@ -2162,6 +3146,8 @@ namespace LSImmersiveLife
                 return false;
             if (!_profile.TrySelectPed(value.Id))
                 return Fail("POLICE_PED_SELECTION_FAILED", "The Police character could not be selected.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The Police character selection could not be saved.");
 
             return Succeed(
                 "POLICE_PED_SELECTED",
@@ -2179,6 +3165,8 @@ namespace LSImmersiveLife
                 return false;
             if (!_profile.TrySelectVehicle(value.Id))
                 return Fail("POLICE_VEHICLE_SELECTION_FAILED", "The Police vehicle could not be selected.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The Police vehicle selection could not be saved.");
 
             return Succeed(
                 "POLICE_VEHICLE_SELECTED",
@@ -2196,6 +3184,8 @@ namespace LSImmersiveLife
                 return false;
             if (!_profile.TrySelectWeapon(value.Id))
                 return Fail("POLICE_WEAPON_SELECTION_FAILED", "The Police weapon could not be selected.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The Police weapon selection could not be saved.");
 
             return Succeed(
                 "POLICE_WEAPON_SELECTED",
@@ -2245,6 +3235,26 @@ namespace LSImmersiveLife
             return SaveFavouriteBackupPed(model);
         }
 
+        internal bool SetSelectedPedAsCitizenBackupFavourite()
+        {
+            if (!RequireActive())
+                return false;
+            string model = _profile.SelectedPedModelName;
+            if (string.IsNullOrWhiteSpace(model))
+                return Fail("BACKUP_PED_EMPTY", "Select a Police character before choosing Citizen Backup.");
+            return SaveFavouriteBackupPed(model, true);
+        }
+
+        internal bool SetSelectedPedAsDispatchBackupFavourite()
+        {
+            if (!RequireActive())
+                return false;
+            string model = _profile.SelectedPedModelName;
+            if (string.IsNullOrWhiteSpace(model))
+                return Fail("BACKUP_PED_EMPTY", "Select a Police character before choosing Dispatch Backup.");
+            return SaveFavouriteBackupPed(model, false);
+        }
+
         internal bool SetCustomBackupFavourite(string modelName)
         {
             if (!RequireActive())
@@ -2252,25 +3262,19 @@ namespace LSImmersiveLife
             string normalized = NormalizeModelName(modelName);
             if (string.IsNullOrEmpty(normalized))
                 return Fail("BACKUP_PED_EMPTY", "No addon Backup officer model was entered.");
-
-            Model model = new Model(normalized);
-            try
-            {
-                // Saving a support favorite must not change the player model.
-                // Validate only the model type here; the Backup owner streams it
-                // asynchronously when the player actually requests support.
-                if (!model.IsValid || !model.IsPed)
-                    return Fail("BACKUP_PED_INVALID", "Backup officer model is not available in this game build: " + normalized + ".");
-            }
-            catch (Exception ex)
-            {
-                return Fail("BACKUP_PED_INVALID", "Backup officer model could not be checked: " + normalized + ".", ex);
-            }
-            finally
-            {
-                try { model.MarkAsNoLongerNeeded(); } catch { }
-            }
+            if (!ValidateBackupPedModel(normalized))
+                return false;
             return SaveFavouriteBackupPed(normalized);
+        }
+
+        internal bool SetCustomCitizenBackupFavourite(string modelName)
+        {
+            return SetCustomBackupFavourite(modelName, true);
+        }
+
+        internal bool SetCustomDispatchBackupFavourite(string modelName)
+        {
+            return SetCustomBackupFavourite(modelName, false);
         }
 
         internal bool SelectBackupFavourite(string idOrModel)
@@ -2287,6 +3291,71 @@ namespace LSImmersiveLife
                 "Preferred Backup officer: " + (favorite == null ? "None" : favorite.DisplayName) + ".");
         }
 
+        internal bool SelectCitizenBackupFavourite(string idOrModel)
+        {
+            return SelectBackupFavourite(idOrModel, true);
+        }
+
+        internal bool SelectDispatchBackupFavourite(string idOrModel)
+        {
+            return SelectBackupFavourite(idOrModel, false);
+        }
+
+        private bool SelectBackupFavourite(string idOrModel, bool citizenInteraction)
+        {
+            if (!RequireActive())
+                return false;
+            bool selected = citizenInteraction
+                ? _profile.SelectFavouriteCitizenBackupPed(idOrModel)
+                : _profile.SelectFavouriteDispatchBackupPed(idOrModel);
+            if (!selected)
+                return Fail("BACKUP_PED_SELECTION_FAILED", "That saved Backup officer is unavailable.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The selected Backup officer could not be saved.");
+            LSPDPoliceFavoriteModel favorite = citizenInteraction
+                ? _profile.ActiveFavoriteCitizenBackupPed
+                : _profile.ActiveFavoriteDispatchBackupPed;
+            string kind = citizenInteraction ? "Citizen Interaction" : "Dispatch";
+            return Succeed(
+                "BACKUP_PED_SELECTED",
+                "Preferred " + kind + " Backup officer: "
+                + (favorite == null ? "None" : favorite.DisplayName) + ".");
+        }
+
+        private bool SetCustomBackupFavourite(string modelName, bool citizenInteraction)
+        {
+            if (!RequireActive())
+                return false;
+            string normalized = NormalizeModelName(modelName);
+            if (string.IsNullOrEmpty(normalized))
+                return Fail("BACKUP_PED_EMPTY", "No addon Backup officer model was entered.");
+            if (!ValidateBackupPedModel(normalized))
+                return false;
+            return SaveFavouriteBackupPed(normalized, citizenInteraction);
+        }
+
+        private bool ValidateBackupPedModel(string modelName)
+        {
+            Model model = new Model(modelName);
+            try
+            {
+                // Saving a support favorite must not change the player model.
+                // Validate only the model type here; the Backup owner streams it
+                // asynchronously when the player actually requests support.
+                if (!model.IsValid || !model.IsPed)
+                    return Fail("BACKUP_PED_INVALID", "Backup officer model is not available in this game build: " + modelName + ".");
+            }
+            catch (Exception ex)
+            {
+                return Fail("BACKUP_PED_INVALID", "Backup officer model could not be checked: " + modelName + ".", ex);
+            }
+            finally
+            {
+                try { model.MarkAsNoLongerNeeded(); } catch { }
+            }
+            return true;
+        }
+
         private bool SaveFavouriteBackupPed(string modelName)
         {
             if (!_profile.SetFavouriteBackupPed(modelName))
@@ -2297,6 +3366,24 @@ namespace LSImmersiveLife
             return Succeed(
                 "BACKUP_PED_SAVED",
                 "Backup officer saved: " + (favorite == null ? modelName : favorite.DisplayName) + ".");
+        }
+
+        private bool SaveFavouriteBackupPed(string modelName, bool citizenInteraction)
+        {
+            bool saved = citizenInteraction
+                ? _profile.SetFavouriteCitizenBackupPed(modelName)
+                : _profile.SetFavouriteDispatchBackupPed(modelName);
+            if (!saved)
+                return Fail("BACKUP_PED_INVALID", "The Backup officer was not accepted.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The Backup officer could not be saved.");
+            LSPDPoliceFavoriteModel favorite = citizenInteraction
+                ? _profile.ActiveFavoriteCitizenBackupPed
+                : _profile.ActiveFavoriteDispatchBackupPed;
+            string kind = citizenInteraction ? "Citizen Interaction" : "Dispatch";
+            return Succeed(
+                "BACKUP_PED_SAVED",
+                kind + " Backup officer saved: " + (favorite == null ? modelName : favorite.DisplayName) + ".");
         }
 
         internal bool SetSelectedVehicleAsFavourite()
@@ -2360,7 +3447,8 @@ namespace LSImmersiveLife
                 return Fail("PERSONAL_WEAPON_INVALID", "That personal Police weapon is unavailable.");
             if (!GiveWeapon(value.WeaponName, value.Ammo, true, value))
                 return false;
-            _profile.SelectPersonalWeapon(value.Id);
+            if (!_profile.SelectPersonalWeapon(value.Id))
+                return Fail("PERSONAL_WEAPON_SELECTION_FAILED", "The personal Police weapon could not be selected.");
             if (!_profile.Save())
                 return Fail("POLICE_PROFILE_SAVE_FAILED", "The active Police weapon could not be saved.");
             return Succeed(
@@ -2391,7 +3479,10 @@ namespace LSImmersiveLife
                 return Fail("PERSONAL_WEAPON_EMPTY", "Personal Police Weapons is empty.");
 
             int current = values.FindIndex(value =>
-                string.Equals(value.Id, _profile.Selection.WeaponId, StringComparison.OrdinalIgnoreCase));
+                string.Equals(
+                    value.Id,
+                    _profile.Selection.PersonalActiveWeaponId,
+                    StringComparison.OrdinalIgnoreCase));
             LSPDPoliceFavoriteWeapon next = values[(current + 1 + values.Count) % values.Count];
             return SelectPersonalWeapon(next.Id);
         }
@@ -2415,66 +3506,35 @@ namespace LSImmersiveLife
         {
             if (!RequireActive())
                 return false;
+            if (!_profile.SelectPersonalLoadout())
+                return Fail("PERSONAL_WEAPON_EMPTY", "Personal Police Weapons is empty.");
+            if (!_profile.Save())
+                return Fail("POLICE_PROFILE_SAVE_FAILED", "The preferred personal weapon loadout could not be saved.");
             bool applied = ApplyPersonalLoadoutInternal(true);
             if (applied)
                 Succeed("PERSONAL_LOADOUT_APPLIED", "Personal Police weapon collection applied.");
             return applied;
         }
 
-        /// <summary>
-        /// Restores only the currently selected Police weapon during automatic
-        /// profile activation. The full personal collection remains persisted
-        /// and can still be applied explicitly from the Profile UI. Keeping the
-        /// automatic path to one asset prevents a large saved collection from
-        /// monopolizing GTA streaming while Patrol/Backup are starting.
-        /// </summary>
-        private bool ApplySelectedPoliceWeaponInternal(bool reportPendingFailure)
-        {
-            LSPDPoliceFavoriteWeapon personal = _profile.SelectedPersonalWeapon;
-            if (personal != null)
-            {
-                bool applied = GiveWeapon(
-                    personal.WeaponName,
-                    personal.Ammo,
-                    true,
-                    personal,
-                    false);
-                if (!applied && reportPendingFailure)
-                    return Fail(
-                        "POLICE_LOADOUT_ASSETS_PENDING",
-                        "The selected Police weapon is still loading or unavailable. Retry after GTA finishes streaming it.");
-                return applied;
-            }
-
-            string selected = _profile.SelectedWeaponName;
-            if (string.IsNullOrWhiteSpace(selected))
-                return true;
-
-            bool selectedApplied = GiveWeapon(
-                selected,
-                _profile.SelectedWeaponAmmo,
-                true,
-                null,
-                false);
-            if (!selectedApplied && reportPendingFailure)
-                return Fail(
-                    "POLICE_LOADOUT_ASSETS_PENDING",
-                    "The selected Police weapon is still loading or unavailable. Retry after GTA finishes streaming it.");
-            return selectedApplied;
-        }
-
         private bool ApplyPersonalLoadoutInternal(
             bool requirePersonalSet,
-            bool reportPendingFailure = true)
+            bool reportPendingFailure = true,
+            ISet<string> alreadyAppliedWeaponIds = null)
         {
             List<LSPDPoliceFavoriteWeapon> personal = _profile.PersonalWeapons.ToList();
-            if (personal.Count == 0)
+            bool usePersonalLoadout = _profile.Selection.UsePersonalLoadout;
+            if (!usePersonalLoadout)
             {
-                if (requirePersonalSet)
-                    return Fail("PERSONAL_WEAPON_EMPTY", "Personal Police Weapons is empty.");
-
+                // The Station Armory and the Police Profile's personal weapon
+                // roulette are separate saved choices. When the system catalog
+                // is selected, apply only that weapon; a large personal set
+                // must not block first Station setup.
                 string selected = _profile.SelectedWeaponName;
                 if (string.IsNullOrWhiteSpace(selected))
+                    return true;
+                string selectedKey = "selected:" + selected;
+                if (alreadyAppliedWeaponIds != null
+                    && alreadyAppliedWeaponIds.Contains(selectedKey))
                     return true;
                 bool selectedApplied = GiveWeapon(
                     selected,
@@ -2482,6 +3542,8 @@ namespace LSImmersiveLife
                     true,
                     null,
                     false);
+                if (selectedApplied && alreadyAppliedWeaponIds != null)
+                    alreadyAppliedWeaponIds.Add(selectedKey);
                 if (!selectedApplied && reportPendingFailure)
                     return Fail(
                         "POLICE_LOADOUT_ASSETS_PENDING",
@@ -2489,39 +3551,43 @@ namespace LSImmersiveLife
                 return selectedApplied;
             }
 
+            if (personal.Count == 0)
+            {
+                if (requirePersonalSet)
+                    return Fail("PERSONAL_WEAPON_EMPTY", "Personal Police Weapons is empty.");
+                return true;
+            }
+
             bool allApplied = true;
-            bool activeWeaponFound = false;
+            bool activeWeaponFound = personal.Any(weapon => string.Equals(
+                weapon.Id,
+                _profile.Selection.PersonalActiveWeaponId,
+                StringComparison.OrdinalIgnoreCase));
             foreach (LSPDPoliceFavoriteWeapon weapon in personal)
             {
                 bool equip = string.Equals(
                     weapon.Id,
-                    _profile.Selection.WeaponId,
+                    _profile.Selection.PersonalActiveWeaponId,
                     StringComparison.OrdinalIgnoreCase);
-                if (equip)
-                    activeWeaponFound = true;
+                equip = usePersonalLoadout && equip;
+                if (alreadyAppliedWeaponIds != null
+                    && alreadyAppliedWeaponIds.Contains(weapon.Id))
+                    continue;
                 if (!GiveWeapon(weapon.WeaponName, weapon.Ammo, equip, weapon, false))
                     allApplied = false;
+                else if (alreadyAppliedWeaponIds != null)
+                    alreadyAppliedWeaponIds.Add(weapon.Id);
             }
 
-            // A player may select a weapon from the main library without adding
-            // it to the personal collection. Keep that valid profile choice as
-            // the active weapon while still restoring every personal entry.
-            if (!activeWeaponFound)
-            {
-                string selected = _profile.SelectedWeaponName;
-                if (!string.IsNullOrWhiteSpace(selected))
-                {
-                    activeWeaponFound = true;
-                    if (!GiveWeapon(selected, _profile.SelectedWeaponAmmo, true, null, false))
-                        allApplied = false;
-                }
-            }
-
-            if (!activeWeaponFound && personal.Count > 0)
+            // Preserve a valid personal set even when the active weapon id is
+            // missing from it. Select its first saved weapon as the fallback.
+            if (!activeWeaponFound && usePersonalLoadout && personal.Count > 0)
             {
                 _profile.SelectPersonalWeapon(personal[0].Id);
                 if (!GiveWeapon(personal[0].WeaponName, personal[0].Ammo, true, personal[0], false))
                     allApplied = false;
+                else if (alreadyAppliedWeaponIds != null)
+                    alreadyAppliedWeaponIds.Add(personal[0].Id);
             }
             if (!allApplied && reportPendingFailure)
                 return Fail(
@@ -2577,20 +3643,34 @@ namespace LSImmersiveLife
                 Ped current = Game.Player.Character;
                 if (current == null || !current.Exists())
                     return Fail("POLICE_PLAYER_UNAVAILABLE", "The player character is unavailable.");
-                if (current.Model.Hash != model.Hash && !Game.Player.ChangeModel(model))
+                bool changedModel = current.Model.Hash != model.Hash;
+                if (changedModel && !Game.Player.ChangeModel(model))
                     return Fail("POLICE_PED_MODEL_APPLY_FAILED", "Ped model could not be applied: " + modelName + ".");
 
-                // Model changes clear weapons in GTA. Restore the selected duty
-                // weapon immediately; the complete personal collection remains
-                // saved and can still be applied explicitly from Profile. This
-                // avoids requesting a large weapon library simply because the
-                // officer changed character model.
+                if (changedModel)
+                    _profileRestoreAppliedWeaponIds.Clear();
+
+                // GTA clears inventory when the officer model changes. Restore
+                // the saved personal set and retry only unfinished weapon
+                // assets from the normal Authority tick.
                 if (restoreLoadout
                     && IsPoliceAuthorityActive
-                    && !ApplySelectedPoliceWeaponInternal(false))
+                    && !ApplyPersonalLoadoutInternal(
+                        false,
+                        false,
+                        _profileRestoreAppliedWeaponIds))
+                {
+                    _pendingProfileWeaponsApply = true;
+                    if (_pendingProfileApplyDeadline == DateTime.MinValue)
+                    {
+                        DateTime now = DateTime.UtcNow;
+                        _nextPendingProfileApply = now.AddMilliseconds(250);
+                        _pendingProfileApplyDeadline = now.AddSeconds(20);
+                    }
                     _log.Debug(
                         "POLICE_LOADOUT_RESTORE_PARTIAL",
-                        "The Police character changed, but the selected duty weapon could not yet be restored.");
+                        "The Police character changed, and unfinished saved weapons are queued for retry.");
+                }
                 return true;
             }
             catch (Exception ex)
@@ -2655,6 +3735,7 @@ namespace LSImmersiveLife
                         && previousManaged.Handle != currentVehicle.Handle)
                         RetireOwnedVehicle(previousManaged, currentVehicle);
                     _managedPoliceVehicle = currentVehicle;
+                    EnsurePreferredPoliceVehicleBlip(currentVehicle);
                     _log.Runtime(
                         "POLICE_PATROL_VEHICLE_REUSED",
                         "Existing Police vehicle retained; Handle=" + currentVehicle.Handle);
@@ -2675,15 +3756,17 @@ namespace LSImmersiveLife
                     && (reportFailure
                         || _config.Police.Patrol.ReuseCurrentPoliceVehicle
                         || _config.Police.Patrol.PreventDuplicatePersonalVehicle))
+                {
+                    EnsurePreferredPoliceVehicleBlip(currentVehicle);
                     return true;
+                }
 
                 if (_managedPoliceVehicle != null && _managedPoliceVehicle.Exists()
                     && _managedPoliceVehicle.Model.Hash == model.Hash
                     && (reportFailure
                         || _config.Police.Patrol.PreventDuplicatePersonalVehicle))
                 {
-                    try { player.SetIntoVehicle(_managedPoliceVehicle, VehicleSeat.Driver); }
-                    catch (Exception ex) { _log.Exception("POLICE_MANAGED_VEHICLE_REUSE_FAILED", ex); }
+                    EnsurePreferredPoliceVehicleBlip(_managedPoliceVehicle);
                     return true;
                 }
 
@@ -2701,18 +3784,50 @@ namespace LSImmersiveLife
                 }
 
                 releaseModel = true;
-                Vector3 spawn = player.GetOffsetPosition(new Vector3(0f, 5f, 0f));
-                Vehicle created = World.CreateVehicle(model, spawn, player.Heading);
+                Vector3 spawn;
+                float spawnHeading;
+                string spawnSource;
+                string placementFailure;
+                LSPDPoliceStationDefinition station = _profile.FindStation(
+                    _profile.Selection.StationId);
+                if (!TryResolvePreferredPoliceVehicleSpawn(
+                    player,
+                    station,
+                    out spawn,
+                    out spawnHeading,
+                    out spawnSource,
+                    out placementFailure))
+                {
+                    string message = "No safe parking place was found for "
+                        + _profile.SelectedVehicleDisplayName + ". " + placementFailure;
+                    if (reportFailure)
+                        Fail("POLICE_VEHICLE_SAFE_SPAWN_UNAVAILABLE", message);
+                    else
+                        _log.Debug("POLICE_VEHICLE_SAFE_SPAWN_UNAVAILABLE", message);
+                    return false;
+                }
+
+                Vehicle created = World.CreateVehicle(model, spawn, spawnHeading);
                 if (created == null || !created.Exists())
                     return Fail("POLICE_VEHICLE_SPAWN_FAILED", "Police vehicle could not be created: " + modelName + ".");
 
                 created.IsPersistent = true;
+                created.PlaceOnGround();
                 Vehicle previous = _managedPoliceVehicle;
                 _managedPoliceVehicle = created;
-                player.SetIntoVehicle(created, VehicleSeat.Driver);
+                EnsurePreferredPoliceVehicleBlip(created);
+                BeginPreferredPoliceVehicleFade(created);
 
                 if (previous != null && previous.Exists() && previous.Handle != created.Handle)
                     RetireOwnedVehicle(previous, player.CurrentVehicle);
+
+                _log.Runtime(
+                    "POLICE_PREFERRED_VEHICLE_PARKED",
+                    "Model=" + modelName
+                    + "; Source=" + spawnSource
+                    + "; Station=" + (station == null ? string.Empty : station.Id)
+                    + "; DistanceFromPlayer=" + player.Position.DistanceTo(created.Position).ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Handle=" + created.Handle);
                 return true;
             }
             catch (Exception ex)
@@ -2823,6 +3938,704 @@ namespace LSImmersiveLife
                     try { asset.MarkAsNoLongerNeeded(); } catch { }
                 }
             }
+        }
+
+        private bool TryResolvePreferredPoliceVehicleSpawn(
+            Ped player,
+            LSPDPoliceStationDefinition station,
+            out Vector3 position,
+            out float heading,
+            out string source,
+            out string failure)
+        {
+            position = Vector3.Zero;
+            heading = 0f;
+            source = string.Empty;
+            failure = string.Empty;
+            if (player == null || !player.Exists())
+            {
+                failure = "The Player is not available to find a nearby safe spot.";
+                return false;
+            }
+
+            if (_stationSetupCompletionPending)
+            {
+                string setupParkingFailure;
+                if (TryResolveNearbyParkedGroundPosition(
+                    player,
+                    20f,
+                    out position,
+                    out heading,
+                    out setupParkingFailure))
+                {
+                    source = "StationSetupNearbyParkedGround";
+                    return true;
+                }
+
+                string setupFallbackFailure;
+                if (TryResolveNearbyParkedGroundPosition(
+                    player,
+                    99f,
+                    out position,
+                    out heading,
+                    out setupFallbackFailure))
+                {
+                    source = Distance2D(position, player.Position) <= 20f
+                        ? "StationSetupNearbyParkedGround"
+                        : "StationSetupNearbyParkedGroundUnder100m";
+                    return true;
+                }
+
+                failure = "Station setup could not find safe parked ground within 20 metres or a safe fallback under 100 metres of the Station entrance. "
+                    + setupParkingFailure
+                    + (string.IsNullOrWhiteSpace(setupFallbackFailure)
+                        ? string.Empty
+                        : " " + setupFallbackFailure);
+                return false;
+            }
+
+            const float stationSetupRadius = 125f;
+            if (station != null
+                && Distance2D(
+                    player.Position,
+                    new Vector3(station.ExteriorX, station.ExteriorY, station.ExteriorZ))
+                    <= stationSetupRadius)
+            {
+                if (TryResolveStationParkingPosition(
+                    player, station, out position, out heading, out failure))
+                {
+                    source = "StationParking";
+                    return true;
+                }
+
+                string stationParkingFailure = failure;
+                string stationExteriorFailure;
+                if (TryResolveStationExteriorParkingPosition(
+                    player, station, out position, out heading, out stationExteriorFailure))
+                {
+                    source = "StationExteriorParking";
+                    failure = string.Empty;
+                    return true;
+                }
+
+                string roadsideFailure;
+                if (TryResolveNearbyRoadsidePosition(
+                    player, out position, out heading, out roadsideFailure))
+                {
+                    source = "NearbySafeRoadside";
+                    failure = string.Empty;
+                    return true;
+                }
+
+                string parkedGroundFailure;
+                if (TryResolveNearbyParkedGroundPosition(
+                    player, out position, out heading, out parkedGroundFailure))
+                {
+                    source = "NearbyParkedGround";
+                    failure = string.Empty;
+                    return true;
+                }
+
+                failure = "No safe Station parking place was available. "
+                    + stationParkingFailure
+                    + (string.IsNullOrWhiteSpace(stationExteriorFailure)
+                        ? string.Empty
+                        : " " + stationExteriorFailure)
+                    + (string.IsNullOrWhiteSpace(roadsideFailure)
+                        ? string.Empty
+                        : " " + roadsideFailure)
+                    + (string.IsNullOrWhiteSpace(parkedGroundFailure)
+                        ? string.Empty
+                        : " " + parkedGroundFailure);
+                return false;
+            }
+
+            string nearbyRoadsideFailure;
+            if (TryResolveNearbyRoadsidePosition(
+                player, out position, out heading, out nearbyRoadsideFailure))
+            {
+                source = "NearbySafeRoadside";
+                failure = string.Empty;
+                return true;
+            }
+
+            string nearbyParkedGroundFailure;
+            if (TryResolveNearbyParkedGroundPosition(
+                player, out position, out heading, out nearbyParkedGroundFailure))
+            {
+                source = "NearbyParkedGround";
+                failure = string.Empty;
+                return true;
+            }
+
+            if (station == null)
+                failure = "The selected Station is missing, and no nearby safe roadside or parked-ground spot was found."
+                    + (string.IsNullOrWhiteSpace(nearbyRoadsideFailure)
+                        ? string.Empty
+                        : " " + nearbyRoadsideFailure)
+                    + (string.IsNullOrWhiteSpace(nearbyParkedGroundFailure)
+                        ? string.Empty
+                        : " " + nearbyParkedGroundFailure);
+            else
+                failure = "No nearby safe roadside or parked-ground spot was found."
+                    + (string.IsNullOrWhiteSpace(nearbyRoadsideFailure)
+                        ? string.Empty
+                        : " " + nearbyRoadsideFailure)
+                    + (string.IsNullOrWhiteSpace(nearbyParkedGroundFailure)
+                        ? string.Empty
+                        : " " + nearbyParkedGroundFailure);
+            return false;
+        }
+
+        private bool TryResolveStationExteriorParkingPosition(
+            Ped player,
+            LSPDPoliceStationDefinition station,
+            out Vector3 position,
+            out float heading,
+            out string failure)
+        {
+            position = Vector3.Zero;
+            heading = 0f;
+            failure = string.Empty;
+            if (player == null || !player.Exists() || station == null || _profile == null)
+            {
+                failure = "The Player, selected Station, or Police catalog is unavailable.";
+                return false;
+            }
+
+            LSPDPoliceLocationDefinition exterior = _profile.FindLocation(station.LocationId);
+            if (exterior == null || !exterior.ExteriorSafe)
+            {
+                failure = "The selected Station has no authored safe outside Location.";
+                return false;
+            }
+
+            Vector3 center = new Vector3(exterior.X, exterior.Y, exterior.Z);
+            if (center == Vector3.Zero
+                || float.IsNaN(center.X) || float.IsInfinity(center.X)
+                || float.IsNaN(center.Y) || float.IsInfinity(center.Y)
+                || float.IsNaN(center.Z) || float.IsInfinity(center.Z))
+            {
+                failure = "The selected Station outside Location is invalid.";
+                return false;
+            }
+
+            const float minimumPlayerSeparation = 8f;
+            const float maximumStationSearchDistance = 48f;
+            float[] ringRadii = { 12f, 24f, 36f, 48f };
+            string lastReason = string.Empty;
+            for (int ring = 0; ring < ringRadii.Length; ring++)
+            {
+                float radius = ringRadii[ring];
+                for (int probe = 0; probe < 8; probe++)
+                {
+                    double radians = probe * (Math.PI / 4.0);
+                    Vector3 candidate = center;
+                    candidate.X += (float)Math.Cos(radians) * radius;
+                    candidate.Y += (float)Math.Sin(radians) * radius;
+                    if (Distance2D(candidate, center) > maximumStationSearchDistance
+                        || Distance2D(candidate, player.Position) < minimumPlayerSeparation)
+                        continue;
+
+                    Vector3 safe;
+                    string reason;
+                    if (!TryValidatePreferredVehicleSpawnPoint(
+                        candidate, exterior.Z, player, false, out safe, out reason))
+                    {
+                        if (!string.IsNullOrWhiteSpace(reason))
+                            lastReason = reason;
+                        continue;
+                    }
+
+                    float roadHeading;
+                    Vector3 roadNode;
+                    try
+                    {
+                        roadNode = World.GetNextPositionOnStreetWithHeading(
+                            safe, out roadHeading);
+                    }
+                    catch (Exception ex)
+                    {
+                        lastReason = "GTA could not check the nearby road direction: "
+                            + ex.GetType().Name + ".";
+                        continue;
+                    }
+
+                    float roadSeparation = roadNode == Vector3.Zero
+                        ? float.MaxValue : Distance2D(safe, roadNode);
+                    if (roadNode == Vector3.Zero
+                        || float.IsNaN(roadHeading) || float.IsInfinity(roadHeading)
+                        || roadSeparation < 1.5f || roadSeparation > 18f)
+                    {
+                        lastReason = "The candidate is not clear parked ground beside a usable road.";
+                        continue;
+                    }
+
+                    position = safe;
+                    heading = roadHeading;
+                    return true;
+                }
+            }
+
+            failure = "No clear parked ground was found within 48 metres of the Station outside Location and 8 metres from the Player."
+                + (string.IsNullOrWhiteSpace(lastReason) ? string.Empty : " Last check: " + lastReason);
+            return false;
+        }
+
+        private bool TryResolveStationParkingPosition(
+            Ped player,
+            LSPDPoliceStationDefinition station,
+            out Vector3 position,
+            out float heading,
+            out string failure)
+        {
+            position = Vector3.Zero;
+            heading = 0f;
+            failure = string.Empty;
+            if (station == null || !station.ExteriorSafe)
+            {
+                failure = "The selected Station does not have a verified safe exterior parking area.";
+                return false;
+            }
+
+            Vector3 authored = new Vector3(
+                station.VehicleX, station.VehicleY, station.VehicleZ);
+            if (authored == Vector3.Zero)
+            {
+                failure = "The selected Station has no authored vehicle parking coordinates.";
+                return false;
+            }
+
+            // The station's authored parking point is preferred. A short,
+            // bounded ring keeps an occupied parking place from putting a car
+            // into a pedestrian or a parked vehicle elsewhere on the lot.
+            for (int ring = 0; ring <= 3; ring++)
+            {
+                float radius = ring * 3f;
+                int probes = ring == 0 ? 1 : 8;
+                for (int probe = 0; probe < probes; probe++)
+                {
+                    double radians = probe * (Math.PI / 4.0);
+                    Vector3 candidate = authored;
+                    candidate.X += (float)Math.Cos(radians) * radius;
+                    candidate.Y += (float)Math.Sin(radians) * radius;
+                    Vector3 safe;
+                    string reason;
+                    if (!TryValidatePreferredVehicleSpawnPoint(
+                        candidate,
+                        authored.Z,
+                        player,
+                        true,
+                        out safe,
+                        out reason))
+                    {
+                        failure = reason;
+                        continue;
+                    }
+
+                    position = safe;
+                    heading = station.VehicleHeading;
+                    return true;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(failure))
+                failure = "The Station parking area is blocked or could not be checked safely.";
+            else
+                failure = "The Station parking area has no clear checked spot. " + failure;
+            return false;
+        }
+
+        private bool TryResolveNearbyRoadsidePosition(
+            Ped player,
+            out Vector3 position,
+            out float heading,
+            out string failure)
+        {
+            position = Vector3.Zero;
+            heading = 0f;
+            failure = string.Empty;
+            Vector3 playerPosition = player.Position;
+            const float maximumDistanceFromPlayer = 48f;
+            float[] ringRadii = { 0f, 14f, 28f, 42f };
+
+            for (int ring = 0; ring < ringRadii.Length; ring++)
+            {
+                float radius = ringRadii[ring];
+                int probes = ring == 0 ? 1 : 8;
+                for (int probe = 0; probe < probes; probe++)
+                {
+                    double radians = probe * (Math.PI / 4.0);
+                    Vector3 query = playerPosition;
+                    query.X += (float)Math.Cos(radians) * radius;
+                    query.Y += (float)Math.Sin(radians) * radius;
+
+                    Vector3 roadside;
+                    try
+                    {
+                        if (!World.GetPositionOnRoadside(query, Direction.Any, out roadside))
+                            continue;
+                    }
+                    catch (Exception ex)
+                    {
+                        failure = "GTA could not find a roadside parking place: " + ex.GetType().Name + ".";
+                        return false;
+                    }
+
+                    if (roadside == Vector3.Zero
+                        || Distance2D(roadside, playerPosition) > maximumDistanceFromPlayer)
+                        continue;
+
+                    float roadHeading;
+                    Vector3 roadNode;
+                    try
+                    {
+                        roadNode = World.GetNextPositionOnStreetWithHeading(
+                            roadside, out roadHeading);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
+
+                    if (roadNode == Vector3.Zero
+                        || float.IsNaN(roadHeading)
+                        || float.IsInfinity(roadHeading))
+                        continue;
+
+                    Vector3 safe;
+                    string reason;
+                    if (!TryValidatePreferredVehicleSpawnPoint(
+                        roadside,
+                        query.Z,
+                        player,
+                        false,
+                        out safe,
+                        out reason))
+                    {
+                        failure = reason;
+                        continue;
+                    }
+
+                    float roadSeparation = Distance2D(safe, roadNode);
+                    if (roadSeparation < 1.5f || roadSeparation > 18f)
+                    {
+                        failure = "GTA returned a spot too close to the traffic lane or too far from its road.";
+                        continue;
+                    }
+
+                    position = safe;
+                    heading = roadHeading;
+                    return true;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(failure))
+                failure = "No nearby clear roadside or parked-ground spot was found.";
+            return false;
+        }
+
+        private bool TryResolveNearbyParkedGroundPosition(
+            Ped player,
+            out Vector3 position,
+            out float heading,
+            out string failure)
+        {
+            return TryResolveNearbyParkedGroundPosition(
+                player,
+                48f,
+                out position,
+                out heading,
+                out failure);
+        }
+
+        private bool TryResolveNearbyParkedGroundPosition(
+            Ped player,
+            float maximumDistanceFromPlayer,
+            out Vector3 position,
+            out float heading,
+            out string failure)
+        {
+            position = Vector3.Zero;
+            heading = 0f;
+            failure = string.Empty;
+            if (player == null || !player.Exists())
+            {
+                failure = "The Player is not available to find nearby parked ground.";
+                return false;
+            }
+
+            Vector3 playerPosition = player.Position;
+            float searchLimit = Math.Max(0f, Math.Min(99f, maximumDistanceFromPlayer));
+            const float minimumPlayerSeparation = 8f;
+            float[] ringRadii = searchLimit <= 20f
+                ? new[] { 10f, 18f, 20f }
+                : searchLimit <= 48f
+                    ? new[] { 10f, 18f, 26f, 34f, 42f, 48f }
+                    : new[] { 10f, 18f, 26f, 34f, 42f, 48f, 60f, 72f, 84f, 96f };
+            string lastReason = string.Empty;
+
+            for (int ring = 0; ring < ringRadii.Length; ring++)
+            {
+                float radius = ringRadii[ring];
+                for (int probe = 0; probe < 8; probe++)
+                {
+                    double radians = probe * (Math.PI / 4.0);
+                    Vector3 candidate = playerPosition;
+                    candidate.X += (float)Math.Cos(radians) * radius;
+                    candidate.Y += (float)Math.Sin(radians) * radius;
+                    if (radius > searchLimit)
+                        continue;
+                    if (Distance2D(candidate, playerPosition) < minimumPlayerSeparation
+                        || Distance2D(candidate, playerPosition) > searchLimit)
+                        continue;
+
+                    Vector3 safe;
+                    string reason;
+                    if (!TryValidatePreferredVehicleSpawnPoint(
+                        candidate,
+                        playerPosition.Z,
+                        player,
+                        true,
+                        out safe,
+                        out reason))
+                    {
+                        if (!string.IsNullOrWhiteSpace(reason))
+                            lastReason = reason;
+                        continue;
+                    }
+
+                    float candidateHeading = player.Heading;
+                    try
+                    {
+                        float roadHeading;
+                        Vector3 roadNode = World.GetNextPositionOnStreetWithHeading(
+                            safe, out roadHeading);
+                        float roadSeparation = roadNode == Vector3.Zero
+                            ? float.MaxValue
+                            : Distance2D(safe, roadNode);
+                        if (!float.IsNaN(roadHeading)
+                            && !float.IsInfinity(roadHeading)
+                            && roadSeparation >= 1.5f
+                            && roadSeparation <= 18f)
+                            candidateHeading = roadHeading;
+                    }
+                    catch
+                    {
+                        // A clear parking area can still be used when GTA has
+                        // no usable road heading nearby; face the vehicle with
+                        // the Player's current direction in that case.
+                    }
+
+                    position = safe;
+                    heading = candidateHeading;
+                    return true;
+                }
+            }
+
+            failure = "No clear parked ground was found within "
+                + searchLimit.ToString("0", CultureInfo.InvariantCulture)
+                + " metres of the Player and at least 8 metres away."
+                + (string.IsNullOrWhiteSpace(lastReason)
+                    ? string.Empty
+                    : " Last check: " + lastReason);
+            return false;
+        }
+
+        private bool TryValidatePreferredVehicleSpawnPoint(
+            Vector3 candidate,
+            float referenceHeight,
+            Ped player,
+            bool parkedGround,
+            out Vector3 safe,
+            out string failure)
+        {
+            safe = Vector3.Zero;
+            failure = string.Empty;
+            if (candidate == Vector3.Zero
+                || float.IsNaN(candidate.X) || float.IsInfinity(candidate.X)
+                || float.IsNaN(candidate.Y) || float.IsInfinity(candidate.Y)
+                || float.IsNaN(candidate.Z) || float.IsInfinity(candidate.Z))
+            {
+                failure = "The parking coordinates are invalid.";
+                return false;
+            }
+
+            try
+            {
+                if (Function.Call<int>(
+                    Hash.GET_INTERIOR_AT_COORDS,
+                    candidate.X, candidate.Y, candidate.Z) != 0)
+                {
+                    failure = "The candidate is inside a building.";
+                    return false;
+                }
+
+                float groundZ;
+                Vector3 groundNormal;
+                if (!World.GetGroundHeightAndNormal(candidate, out groundZ, out groundNormal)
+                    || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                    || groundNormal.Z < 0.55f
+                    || Math.Abs(candidate.Z - groundZ) > 4f
+                    || Math.Abs(candidate.Z - referenceHeight) > 8f)
+                {
+                    failure = "GTA could not confirm level ground at the candidate.";
+                    return false;
+                }
+
+                Vector3 resolved = candidate;
+                resolved.Z = groundZ;
+                float roadHeading;
+                Vector3 roadNode = World.GetNextPositionOnStreetWithHeading(
+                    resolved, out roadHeading);
+                if (roadNode != Vector3.Zero && Distance2D(resolved, roadNode) < 1.5f)
+                {
+                    failure = "The candidate is in the traffic lane.";
+                    return false;
+                }
+
+                foreach (Vehicle nearby in World.GetNearbyVehicles(resolved, 5f))
+                {
+                    if (nearby != null && nearby.Exists()
+                        && Distance2D(nearby.Position, resolved) < 4.5f)
+                    {
+                        failure = "Another vehicle occupies the candidate.";
+                        return false;
+                    }
+                }
+
+                foreach (Ped nearby in World.GetNearbyPeds(resolved, 3.5f))
+                {
+                    if (nearby == null || !nearby.Exists()
+                        || (player != null && nearby.Handle == player.Handle))
+                        continue;
+                    if (Distance2D(nearby.Position, resolved) < 2.75f)
+                    {
+                        failure = "Another person occupies the candidate.";
+                        return false;
+                    }
+                }
+
+                safe = resolved;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = "GTA could not validate this "
+                    + (parkedGround ? "parked-ground" : "roadside")
+                    + " spot: " + ex.GetType().Name + ".";
+                return false;
+            }
+        }
+
+        private static float Distance2D(Vector3 first, Vector3 second)
+        {
+            float x = first.X - second.X;
+            float y = first.Y - second.Y;
+            return (float)Math.Sqrt(x * x + y * y);
+        }
+
+        private void EnsurePreferredPoliceVehicleBlip(Vehicle vehicle)
+        {
+            if (vehicle == null || !vehicle.Exists())
+                return;
+            if (_preferredPoliceVehicleBlip != null
+                && _preferredPoliceVehicleBlip.Exists()
+                && _preferredPoliceVehicleBlipTargetHandle == vehicle.Handle)
+                return;
+
+            ResetPreferredPoliceVehicleBlip();
+            try
+            {
+                Blip blip = vehicle.AddBlip();
+                if (blip == null || !blip.Exists())
+                    return;
+                blip.Name = "Preferred Police Vehicle";
+                blip.Sprite = BlipSprite.PoliceCar;
+                blip.Color = BlipColor.Blue;
+                blip.IsShortRange = false;
+                _preferredPoliceVehicleBlip = blip;
+                _preferredPoliceVehicleBlipTargetHandle = vehicle.Handle;
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_PREFERRED_VEHICLE_BLIP_FAILED", ex);
+            }
+        }
+
+        private void ResetPreferredPoliceVehicleBlip()
+        {
+            try
+            {
+                if (_preferredPoliceVehicleBlip != null
+                    && _preferredPoliceVehicleBlip.Exists())
+                    _preferredPoliceVehicleBlip.Delete();
+            }
+            catch { }
+            _preferredPoliceVehicleBlip = null;
+            _preferredPoliceVehicleBlipTargetHandle = 0;
+        }
+
+        private void BeginPreferredPoliceVehicleFade(Vehicle vehicle)
+        {
+            ResetPreferredPoliceVehicleFade();
+            if (vehicle == null || !vehicle.Exists())
+                return;
+            try
+            {
+                Function.Call(Hash.SET_ENTITY_ALPHA, vehicle.Handle, 0, false);
+                _fadingPoliceVehicle = vehicle;
+                _preferredPoliceVehicleFadeStartedAt = DateTime.UtcNow;
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_PREFERRED_VEHICLE_FADE_START_FAILED", ex);
+            }
+        }
+
+        private void ProcessPreferredPoliceVehicleFade(bool paused)
+        {
+            if (paused || _fadingPoliceVehicle == null)
+                return;
+            if (!_fadingPoliceVehicle.Exists())
+            {
+                ResetPreferredPoliceVehicleFade();
+                return;
+            }
+
+            const double fadeMilliseconds = 900.0;
+            double elapsed = (DateTime.UtcNow - _preferredPoliceVehicleFadeStartedAt).TotalMilliseconds;
+            int alpha = (int)Math.Max(0.0, Math.Min(255.0, elapsed * 255.0 / fadeMilliseconds));
+            try
+            {
+                if (alpha >= 255)
+                {
+                    Function.Call(Hash.RESET_ENTITY_ALPHA, _fadingPoliceVehicle.Handle);
+                    _fadingPoliceVehicle = null;
+                    _preferredPoliceVehicleFadeStartedAt = DateTime.MinValue;
+                }
+                else
+                {
+                    Function.Call(Hash.SET_ENTITY_ALPHA, _fadingPoliceVehicle.Handle, alpha, false);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_PREFERRED_VEHICLE_FADE_FAILED", ex);
+                ResetPreferredPoliceVehicleFade();
+            }
+        }
+
+        private void ResetPreferredPoliceVehicleFade()
+        {
+            try
+            {
+                if (_fadingPoliceVehicle != null && _fadingPoliceVehicle.Exists())
+                    Function.Call(Hash.RESET_ENTITY_ALPHA, _fadingPoliceVehicle.Handle);
+            }
+            catch { }
+            _fadingPoliceVehicle = null;
+            _preferredPoliceVehicleFadeStartedAt = DateTime.MinValue;
         }
 
         private void CaptureNormalPlayerState()
@@ -2981,6 +4794,8 @@ namespace LSImmersiveLife
             }
             finally
             {
+                ResetPreferredPoliceVehicleBlip();
+                ResetPreferredPoliceVehicleFade();
                 _managedPoliceVehicle = null;
             }
         }

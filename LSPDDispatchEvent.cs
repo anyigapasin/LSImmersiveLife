@@ -651,6 +651,7 @@ namespace LSImmersiveLife
         internal Vector3 Position { get; private set; }
         internal float MinimumPlayerDistance { get; private set; }
         internal float MaximumPlayerDistance { get; private set; }
+        internal List<string> Contexts { get; private set; }
 
         internal static LSPDDispatchLocationDefinition FromXml(
             XElement node,
@@ -673,7 +674,8 @@ namespace LSImmersiveLife
                 Id = id,
                 Position = point.Position,
                 MinimumPlayerDistance = minimum,
-                MaximumPlayerDistance = maximum
+                MaximumPlayerDistance = maximum,
+                Contexts = Tokens(node, "contexts")
             };
         }
 
@@ -681,6 +683,26 @@ namespace LSImmersiveLife
         {
             float distance = Position.DistanceTo(playerPosition);
             return distance >= MinimumPlayerDistance && distance <= MaximumPlayerDistance;
+        }
+
+        internal bool SupportsContext(string context)
+        {
+            return string.IsNullOrWhiteSpace(context)
+                || string.Equals(context, "any", StringComparison.OrdinalIgnoreCase)
+                || (Contexts != null && Contexts.Contains(
+                    context.Trim(), StringComparer.OrdinalIgnoreCase));
+        }
+
+        private static List<string> Tokens(XElement node, string attribute)
+        {
+            string source = node == null ? null : (string)node.Attribute(attribute);
+            return string.IsNullOrWhiteSpace(source)
+                ? new List<string>()
+                : source.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(value => value.Trim())
+                    .Where(value => value.Length > 0)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
         }
 
         private static string Required(XElement node, string attribute, string owner)
@@ -704,6 +726,45 @@ namespace LSImmersiveLife
     }
 
     /// <summary>
+    /// A reference to an official Dispatch response or scene branch. Custody
+    /// continuation branches are cataloged here but cannot start a new callout.
+    /// </summary>
+    internal sealed class LSPDDispatchBranchDefinition
+    {
+        private static readonly HashSet<string> ValidPhases = new HashSet<string>(
+            new[] { "response_outcome", "scene_callout", "custody_continuation" },
+            StringComparer.OrdinalIgnoreCase);
+
+        internal string Id { get; private set; }
+        internal string Title { get; private set; }
+        internal string Phase { get; private set; }
+
+        internal static LSPDDispatchBranchDefinition FromXml(XElement node)
+        {
+            if (node == null)
+                throw new InvalidDataException("Dispatch branch reference is missing.");
+            string id = (string)node.Attribute("id");
+            string title = (string)node.Attribute("title");
+            string phase = (string)node.Attribute("phase");
+            if (string.IsNullOrWhiteSpace(id)
+                || string.IsNullOrWhiteSpace(title)
+                || string.IsNullOrWhiteSpace(phase))
+                throw new InvalidDataException(
+                    "Dispatch branch reference requires id, title, and phase.");
+            if (!ValidPhases.Contains(phase.Trim()))
+                throw new InvalidDataException(
+                    "Dispatch branch reference has an unsupported phase: " + id);
+
+            return new LSPDDispatchBranchDefinition
+            {
+                Id = id.Trim(),
+                Title = title.Trim(),
+                Phase = phase.Trim()
+            };
+        }
+    }
+
+    /// <summary>
     /// A data-driven universal callout definition. It describes a type of
     /// urgent dispatch; it does not create a scene while the player is off duty.
     /// </summary>
@@ -714,11 +775,15 @@ namespace LSImmersiveLife
         internal string Briefing { get; private set; }
         internal string IncidentType { get; private set; }
         internal string AudioIncidentType { get; private set; }
-        internal string SuspectModel { get; private set; }
-        internal string VehicleModel { get; private set; }
-        internal string WeaponName { get; private set; }
         internal List<string> CriminalProfileIds { get; private set; }
         internal List<string> LocationIds { get; private set; }
+        internal List<string> BranchIds { get; private set; }
+        internal string LocationContext { get; private set; }
+        internal string SceneBehavior { get; private set; }
+        internal string SceneAnimationDictionary { get; private set; }
+        internal string SceneAnimationPrimaryClip { get; private set; }
+        internal string SceneAnimationSecondaryClip { get; private set; }
+        internal bool Enabled { get; private set; }
         internal bool RequiresVehicle { get; private set; }
         internal bool Mobile { get; private set; }
         internal bool Armed { get; private set; }
@@ -732,6 +797,53 @@ namespace LSImmersiveLife
 
         internal static LSPDDispatchEventDefinition FromXml(XElement node)
         {
+            string locationContext = Optional(node, "locationContext", "any");
+            if (!new[] { "any", "commercial", "financial", "alley", "road_foot", "road_vehicle" }
+                .Contains(locationContext, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported locationContext: " + locationContext);
+
+            string sceneBehavior = Optional(node, "sceneBehavior", "standard");
+            if (!new[] { "standard", "paired_meeting", "paired_exchange" }
+                .Contains(sceneBehavior, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported sceneBehavior: " + sceneBehavior);
+
+            string sceneAnimationDictionary = Optional(node, "sceneAnimationDictionary", string.Empty);
+            string sceneAnimationPrimaryClip = Optional(node, "sceneAnimationPrimaryClip", string.Empty);
+            string sceneAnimationSecondaryClip = Optional(node, "sceneAnimationSecondaryClip", string.Empty);
+            bool hasSceneAnimation = !string.IsNullOrWhiteSpace(sceneAnimationDictionary)
+                || !string.IsNullOrWhiteSpace(sceneAnimationPrimaryClip)
+                || !string.IsNullOrWhiteSpace(sceneAnimationSecondaryClip);
+            if (string.Equals(sceneBehavior, "standard", StringComparison.OrdinalIgnoreCase)
+                && hasSceneAnimation)
+                throw new InvalidDataException(
+                    "Standard Dispatch scenes cannot declare a paired ambient animation.");
+            if (!string.Equals(sceneBehavior, "standard", StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(sceneAnimationDictionary)
+                    || string.IsNullOrWhiteSpace(sceneAnimationPrimaryClip)
+                    || string.IsNullOrWhiteSpace(sceneAnimationSecondaryClip)))
+                throw new InvalidDataException(
+                    "Paired Dispatch scenes require a dictionary and both actor clips.");
+            if (string.Equals(sceneBehavior, "paired_meeting", StringComparison.OrdinalIgnoreCase)
+                && (!string.Equals(sceneAnimationDictionary, "mp_ped_interaction", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(sceneAnimationPrimaryClip, "handshake_guy_a", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(sceneAnimationSecondaryClip, "handshake_guy_b", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    "The documented paired meeting animation must use the authored handshake clip pair.");
+            if (string.Equals(sceneBehavior, "paired_exchange", StringComparison.OrdinalIgnoreCase)
+                && (!string.Equals(sceneAnimationDictionary, "mp_common", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(sceneAnimationPrimaryClip, "givetake1_a", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(sceneAnimationSecondaryClip, "givetake1_b", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    "The documented paired exchange animation must use the authored giver/receiver clip pair.");
+
+            int suspectCount = Math.Max(1, Integer(node, "suspectCount", 1));
+            if (!string.Equals(sceneBehavior, "standard", StringComparison.OrdinalIgnoreCase)
+                && suspectCount < 2)
+                throw new InvalidDataException(
+                    "A paired Dispatch scene requires at least two tracked suspects.");
+
             return new LSPDDispatchEventDefinition
             {
                 Id = Required(node, "id"),
@@ -739,19 +851,34 @@ namespace LSImmersiveLife
                 Briefing = Required(node, "briefing"),
                 IncidentType = Required(node, "type"),
                 AudioIncidentType = Optional(node, "audioIncidentType", "unknown_emergency"),
-                SuspectModel = Optional(node, "suspectModel", "a_m_m_business_01"),
-                VehicleModel = Optional(node, "vehicleModel", "buffalo"),
-                WeaponName = Optional(node, "weapon", string.Empty),
                 CriminalProfileIds = IdList(node, "criminalProfileIds"),
                 LocationIds = IdList(node, "locationIds"),
+                BranchIds = IdList(node, "branchIds"),
+                LocationContext = locationContext,
+                SceneBehavior = sceneBehavior,
+                SceneAnimationDictionary = sceneAnimationDictionary,
+                SceneAnimationPrimaryClip = sceneAnimationPrimaryClip,
+                SceneAnimationSecondaryClip = sceneAnimationSecondaryClip,
+                Enabled = Bool(node, "enabled", true),
                 RequiresVehicle = Bool(node, "requiresVehicle", false),
                 Mobile = Bool(node, "mobile", false),
                 Armed = Bool(node, "armed", false),
-                SuspectCount = Math.Max(1, Integer(node, "suspectCount", 1)),
+                SuspectCount = suspectCount,
                 Severity = Integer(node, "severity", 1),
                 MinimumCooldownSeconds = Integer(node, "minimumCooldownSeconds", 90),
                 SpawnDistance = Float(node, "spawnDistance", 90f)
             };
+        }
+
+        internal bool CanUseArea(
+            LSPDDispatchLocationDefinition area,
+            Vector3 playerPosition)
+        {
+            return area != null
+                && LocationIds != null
+                && LocationIds.Contains(area.Id, StringComparer.OrdinalIgnoreCase)
+                && area.SupportsContext(LocationContext)
+                && area.IsEligibleFor(playerPosition);
         }
 
         internal LSPDCriminalProfileDefinition ChooseCriminalProfile(
@@ -849,6 +976,12 @@ namespace LSImmersiveLife
         internal string Briefing { get; set; }
         internal string IncidentType { get; set; }
         internal string AudioIncidentType { get; set; }
+        internal List<string> BranchIds { get; set; }
+        internal string LocationContext { get; set; }
+        internal string SceneBehavior { get; set; }
+        internal string SceneAnimationDictionary { get; set; }
+        internal string SceneAnimationPrimaryClip { get; set; }
+        internal string SceneAnimationSecondaryClip { get; set; }
         internal string CriminalProfileId { get; set; }
         internal string CriminalDisposition { get; set; }
         internal string SuspectModel { get; set; }
@@ -863,6 +996,7 @@ namespace LSImmersiveLife
         internal int Severity { get; set; }
         internal int SuspectCount { get; set; }
         internal Vector3 Origin { get; set; }
+        internal AmbientDispatchSceneResolution SceneResolution { get; set; }
         internal Ped Suspect { get; set; }
         // Suspect remains the primary target for legacy UI/status access.
         // Suspects contains every live criminal owned by this Dispatch event,
@@ -883,6 +1017,8 @@ namespace LSImmersiveLife
         internal bool ScenePreparationCompleted { get; set; }
         internal DateTime ScenePreparationDeadline { get; set; }
         internal bool SceneBehaviorInitialized { get; set; }
+        internal bool SceneAnimationRequested { get; set; }
+        internal DateTime SceneAnimationDeadline { get; set; }
         // Robbery and kidnapping scenes use a short task sequence so a
         // leave-vehicle task is allowed to finish before movement or threat
         // animation is assigned. This keeps the authored scene physical.
@@ -907,6 +1043,18 @@ namespace LSImmersiveLife
         internal Vector3 LastSuspectPosition { get; set; }
         internal DateTime LastMovementSampleAt { get; set; }
         internal bool SuspectMovementConfirmed { get; set; }
+        // Dispatch owns a suspect's interior pursuit until the suspect has
+        // physically crossed its mapped door. Each phase is retained here so
+        // maintenance cannot replace the navigation/door task with ReactAndFlee.
+        internal AmbientInteriorAccessRoute InteriorExitRoute { get; set; }
+        internal int InteriorExitActorHandle { get; set; }
+        internal int InteriorExitPhase { get; set; }
+        internal int InteriorExitRecoveryCount { get; set; }
+        internal DateTime InteriorExitStartedAt { get; set; }
+        internal DateTime InteriorExitNextTaskAt { get; set; }
+        internal DateTime InteriorExitVehicleEntryStartedAt { get; set; }
+        internal HashSet<int> InteriorExitCompletedHandles { get; private set; }
+        internal HashSet<int> InteriorExitFailedHandles { get; private set; }
 
         internal static LSPDDispatchEvent FromDefinition(
             LSPDDispatchEventDefinition definition,
@@ -928,6 +1076,13 @@ namespace LSImmersiveLife
                 Briefing = definition.Briefing,
                 IncidentType = definition.IncidentType,
                 AudioIncidentType = definition.AudioIncidentType,
+                BranchIds = definition.BranchIds == null
+                    ? new List<string>() : new List<string>(definition.BranchIds),
+                LocationContext = definition.LocationContext,
+                SceneBehavior = definition.SceneBehavior,
+                SceneAnimationDictionary = definition.SceneAnimationDictionary,
+                SceneAnimationPrimaryClip = definition.SceneAnimationPrimaryClip,
+                SceneAnimationSecondaryClip = definition.SceneAnimationSecondaryClip,
                 CriminalProfileId = criminalProfile.Id,
                 CriminalDisposition = criminalProfile.Disposition,
                 SuspectModel = criminalProfile.ModelName,
@@ -954,11 +1109,19 @@ namespace LSImmersiveLife
                 CreatedAt = now,
                 StateChangedAt = now,
                 ScenePreparationDeadline = DateTime.MinValue,
+                SceneAnimationRequested = false,
+                SceneAnimationDeadline = DateTime.MinValue,
                 SceneBehaviorStage = 0,
                 SceneBehaviorNextStepAt = DateTime.MinValue,
                 SurrenderRequestedAt = DateTime.MinValue,
                 LastMovementSampleAt = now,
                 LastSuspectPosition = origin,
+                InteriorExitPhase = 0,
+                InteriorExitStartedAt = DateTime.MinValue,
+                InteriorExitNextTaskAt = DateTime.MinValue,
+                InteriorExitVehicleEntryStartedAt = DateTime.MinValue,
+                InteriorExitCompletedHandles = new HashSet<int>(),
+                InteriorExitFailedHandles = new HashSet<int>(),
                 AdditionalParticipants = new List<Ped>(),
                 Suspects = new List<Ped>(),
                 ArrestedSuspects = new List<Ped>(),

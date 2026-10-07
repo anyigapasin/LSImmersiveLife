@@ -101,8 +101,8 @@ namespace LSImmersiveLife
         private void BuildMenus()
         {
             _root = LSImmersiveMenuFactory.Create(
-                "LS Immersive Life",
-                "Immersive Los Santos Life");
+                "LSIMMERSIVELIFE",
+                "Immersive Life in Los Santos");
 
             Add(_root);
             Add(_roleplay.Menu);
@@ -118,15 +118,19 @@ namespace LSImmersiveLife
                 Add(policeMenu);
 
             _root.AddSubMenu(_roleplay.Menu);
-            _root.AddSubMenu(_authority.Menu);
+            LSImmersiveMenuFactory.AddAction(
+                _root,
+                "Authority",
+                _authority.OpenActiveRole);
             _root.AddSubMenu(_hotkeys.Menu);
             _root.AddSubMenu(_settings.Menu);
             _root.AddSubMenu(_developer.Menu);
 
-            // Police Authority is reached through Authority, never as a second
-            // root menu item. The parent gives Back a clear route to the
-            // selected role's Authority screen.
-            _policeUi.Menu.Parent = _authority.Menu;
+            // Authority shows its empty-state screen when no role is chosen.
+            // With Police selected, the Police UI sits directly under Main UI
+            // so Back returns to the five documented main choices.
+            _authority.Menu.Parent = _root;
+            _policeUi.Menu.Parent = _root;
         }
 
         private void SelectRoleplayMode(LSRoleplayMode mode)
@@ -143,8 +147,8 @@ namespace LSImmersiveLife
                 // Authority retains lifecycle ownership and delegates active
                 // Police work to PoliceCore. This gateway never polls Police
                 // incidents, spawns entities, or changes the world itself.
-                _authority.Process(Game.IsPaused);
                 _developer.Process();
+                _authority.Process(Game.IsPaused, !HasNonPoliceMenuVisible());
 
                 bool menuToggleDown =
                     (GetAsyncKeyState((int)_config.MenuToggleKey) & 0x8000) != 0;
@@ -202,6 +206,16 @@ namespace LSImmersiveLife
         {
             foreach (NativeMenu menu in _menus)
                 menu.Visible = false;
+        }
+
+        private bool HasNonPoliceMenuVisible()
+        {
+            return (_root != null && _root.Visible)
+                || (_roleplay != null && _roleplay.Menu.Visible)
+                || (_authority != null && _authority.Menu.Visible)
+                || (_hotkeys != null && _hotkeys.Menu.Visible)
+                || (_settings != null && _settings.Menu.Visible)
+                || (_developer != null && _developer.Menu.Visible);
         }
 
         private void LogConfigurationFallback(string text)

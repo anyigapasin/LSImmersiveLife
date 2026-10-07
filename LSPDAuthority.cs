@@ -26,6 +26,11 @@ namespace LSImmersiveLife
         private int _previousMaximumWantedLevel;
         private bool _changedPoliceIgnore;
         private bool _changedDispatchCops;
+        private bool _hasPoliceRelationshipSnapshot;
+        private int _policePlayerRelationshipGroup;
+        private int _policeCopRelationshipGroup;
+        private int _previousPlayerToCopRelationship;
+        private int _previousCopToPlayerRelationship;
         private bool _changedMaximumWantedLevel;
         private bool _clearedWantedLevel;
         private bool _controlFaulted;
@@ -173,6 +178,7 @@ namespace LSImmersiveLife
                 || Settings.SuppressAmbientPoliceHostility;
             if (protectFromPolice)
             {
+                EnsurePoliceAllyRelationship(player.Character);
                 if (!_changedPoliceIgnore)
                 {
                     Function.Call(Hash.SET_POLICE_IGNORE_PLAYER, player.Handle, true);
@@ -294,6 +300,7 @@ namespace LSImmersiveLife
 
         private void RestorePoliceProtection(Player player)
         {
+            RestorePoliceAllyRelationship();
             if (_changedPoliceIgnore)
             {
                 Function.Call(Hash.SET_POLICE_IGNORE_PLAYER, player.Handle, false);
@@ -303,6 +310,80 @@ namespace LSImmersiveLife
             {
                 Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER, player.Handle, true);
                 _changedDispatchCops = false;
+            }
+        }
+
+        private void EnsurePoliceAllyRelationship(Ped playerPed)
+        {
+            if (playerPed == null || !playerPed.Exists())
+                return;
+            try
+            {
+                int playerGroup = Function.Call<int>(
+                    Hash.GET_PED_RELATIONSHIP_GROUP_HASH, playerPed);
+                int copGroup = unchecked((int)StringHash.AtStringHash("COP", 0));
+                if (copGroup == 0)
+                    return;
+                if (_hasPoliceRelationshipSnapshot
+                    && _policePlayerRelationshipGroup == playerGroup
+                    && _policeCopRelationshipGroup == copGroup)
+                    return;
+
+                RestorePoliceAllyRelationship();
+                _policePlayerRelationshipGroup = playerGroup;
+                _policeCopRelationshipGroup = copGroup;
+                _previousPlayerToCopRelationship = Function.Call<int>(
+                    Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                    playerGroup, copGroup);
+                _previousCopToPlayerRelationship = Function.Call<int>(
+                    Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                    copGroup, playerGroup);
+                _hasPoliceRelationshipSnapshot = true;
+                Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                    1, playerGroup, copGroup);
+                Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                    1, copGroup, playerGroup);
+                _log.Runtime("POLICE_AUTHORITY_POLICE_ALLY_RELATIONSHIP",
+                    "PlayerGroup=" + playerGroup + "; CopGroup=" + copGroup
+                    + "; Relation=Respect; PreviousPlayerToCop="
+                    + _previousPlayerToCopRelationship
+                    + "; PreviousCopToPlayer=" + _previousCopToPlayerRelationship);
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_AUTHORITY_POLICE_ALLY_RELATIONSHIP_FAILED", ex);
+            }
+        }
+
+        private void RestorePoliceAllyRelationship()
+        {
+            if (!_hasPoliceRelationshipSnapshot)
+                return;
+            try
+            {
+                Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                    _previousPlayerToCopRelationship,
+                    _policePlayerRelationshipGroup,
+                    _policeCopRelationshipGroup);
+                Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                    _previousCopToPlayerRelationship,
+                    _policeCopRelationshipGroup,
+                    _policePlayerRelationshipGroup);
+                _log.Runtime("POLICE_AUTHORITY_POLICE_ALLY_RELATIONSHIP_RESTORED",
+                    "PlayerGroup=" + _policePlayerRelationshipGroup
+                    + "; CopGroup=" + _policeCopRelationshipGroup);
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_AUTHORITY_POLICE_ALLY_RELATIONSHIP_RESTORE_FAILED", ex);
+            }
+            finally
+            {
+                _hasPoliceRelationshipSnapshot = false;
+                _policePlayerRelationshipGroup = 0;
+                _policeCopRelationshipGroup = 0;
+                _previousPlayerToCopRelationship = 0;
+                _previousCopToPlayerRelationship = 0;
             }
         }
 

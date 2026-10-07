@@ -191,6 +191,7 @@ namespace LSImmersiveLife
 
             XElement firstName = WeightedElement(IdentityNames(gender));
             XElement lastName = WeightedElement(IdentityPool("LastNames"));
+            XElement ageBand = WeightedElement(Pool("LifeContextPools", "AgeBands", null));
             XElement region = WeightedElement(Pool("LifeContextPools", "Regions", null));
             XElement occupation = WeightedElement(Pool("LifeContextPools", "Occupations", null));
             XElement behavior = WeightedElement(Pool("FactPools", "Behaviors", null));
@@ -246,6 +247,8 @@ namespace LSImmersiveLife
                 CitizenId = citizenId,
                 PedModelHash = ped.Model.Hash,
                 PedModelName = modelName,
+                Gender = Humanize(gender),
+                AgeRange = DisplayAgeRange(ageBand),
                 FullName = Attribute(firstName, "value", "Unknown") + " "
                     + Attribute(lastName, "value", "Citizen"),
                 Occupation = Attribute(occupation, "name", Humanize(Attribute(occupation, "id", "unavailable"))),
@@ -461,6 +464,31 @@ namespace LSImmersiveLife
             return id.Length <= 3 ? id : id.Substring(0, 3);
         }
 
+        private static string DisplayAgeRange(XElement ageBand)
+        {
+            string years = Attribute(ageBand, "years", string.Empty);
+            int separator = years.IndexOf('-');
+            int firstBirthYear;
+            int lastBirthYear;
+            if (separator > 0
+                && int.TryParse(years.Substring(0, separator), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out firstBirthYear)
+                && int.TryParse(years.Substring(separator + 1), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out lastBirthYear)
+                && firstBirthYear <= lastBirthYear)
+            {
+                int currentYear = DateTime.UtcNow.Year;
+                int youngest = Math.Max(0, currentYear - lastBirthYear - 1);
+                int oldest = Math.Max(youngest, currentYear - firstBirthYear);
+                return youngest == oldest
+                    ? youngest.ToString(CultureInfo.InvariantCulture)
+                    : youngest.ToString(CultureInfo.InvariantCulture) + "-"
+                        + oldest.ToString(CultureInfo.InvariantCulture);
+            }
+
+            return Humanize(Attribute(ageBand, "id", "unavailable"));
+        }
+
         private void LogRuntime(string category, string message)
         {
             if (_log != null)
@@ -474,6 +502,8 @@ namespace LSImmersiveLife
         internal string CitizenId { get; set; }
         internal int PedModelHash { get; set; }
         internal string PedModelName { get; set; }
+        internal string Gender { get; set; }
+        internal string AgeRange { get; set; }
         internal string FullName { get; set; }
         internal string Occupation { get; set; }
         internal string Region { get; set; }
@@ -497,6 +527,7 @@ namespace LSImmersiveLife
             {
                 return "~b~LSPD CITIZEN CHECK~s~\n"
                     + FullName + " | " + CitizenId + "\n"
+                    + Gender + ", age " + AgeRange + "\n"
                     + DocumentName + ": " + DocumentStatus + "\n"
                     + "Status: " + Humanize(StatusId) + "\n"
                     + "Warrant: " + (WarrantActive ? WarrantLabel : "None");
@@ -508,6 +539,7 @@ namespace LSImmersiveLife
             get
             {
                 return FullName + " | " + CitizenId
+                    + " | Gender=" + Gender + "; Age=" + AgeRange
                     + " | Document=" + DocumentName + " (" + DocumentStatus + ")"
                     + " | Status=" + Humanize(StatusId)
                     + " | Warrant=" + (WarrantActive ? WarrantLabel : "None")
