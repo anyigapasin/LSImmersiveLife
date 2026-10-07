@@ -1037,6 +1037,9 @@ namespace LSImmersiveLife
         internal bool GroupComplianceRequested { get; set; }
         internal string ActiveAudioScope { get; set; }
         internal string LastAudioStage { get; set; }
+        internal bool SceneApproachReported { get; set; }
+        internal bool SceneArrivalReported { get; set; }
+        internal bool InvestigationReported { get; set; }
         internal LSPDDispatchState State { get; set; }
         internal DateTime CreatedAt { get; set; }
         internal DateTime StateChangedAt { get; set; }

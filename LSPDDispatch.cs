@@ -30,6 +30,7 @@ namespace LSImmersiveLife
         // Keep the player within the authored area while allowing a practical
         // approach radius before the officer reaches the exact blip position.
         private const int SceneArrivalRadius = 100;
+        private const float SceneApproachAudioRadius = 50f;
         internal const int InitialPatrolOfferDelaySeconds = 30;
         private const int ArrestRadius = 5;
         private const int SurrenderSettleSeconds = 2;
@@ -866,7 +867,7 @@ namespace LSImmersiveLife
             CaptureAndSetWaypoint(_incident.Origin);
             SetSceneBlip(_incident.Origin, _incident.Title);
             LSPDAudioResult accepted = ReportAudioStage(
-                "lsimmersivelife.police.dispatch.accepted",
+                "lsimmersivelife.police.player.accept_dispatch",
                 _incident,
                 "accepted");
             Notify("~b~POLICE DISPATCH~s~\nAssignment accepted. Proceed to the marked scene.");
@@ -883,7 +884,7 @@ namespace LSImmersiveLife
                 incident,
                 LSPDDispatchState.Cancelled,
                 "Declined by officer.",
-                "lsimmersivelife.police.dispatch.declined",
+                "lsimmersivelife.police.player.decline_dispatch",
                 "declined",
                 false);
             Notify("~b~POLICE DISPATCH~s~\nCall declined. You remain available for patrol.");
@@ -896,6 +897,8 @@ namespace LSImmersiveLife
                 return "No active dispatch is waiting for investigation.";
             if (_incident.State == LSPDDispatchState.Offered)
                 return "Accept the dispatch before investigating the scene.";
+            if (_incident.HasConvoyCustodyHandoff || !_incident.OwnedByDispatch)
+                return "Prisoner transport currently owns this dispatch custody.";
             if (player == null || !player.Exists())
                 return "Player character unavailable.";
 
@@ -903,6 +906,8 @@ namespace LSImmersiveLife
             {
                 if (!EnsureScene(player))
                 {
+                    if (_incident == null)
+                        return "The dispatch scene could not be prepared and the assignment has ended.";
                     if (_incident.ScenePreparationRequested
                         && !_incident.ScenePreparationCompleted)
                         return "Dispatch is preparing the scene. Keep the assignment active for a moment.";
@@ -937,14 +942,19 @@ namespace LSImmersiveLife
             }
 
             if (_incident.State == LSPDDispatchState.EnRoute)
-            {
                 SetState(LSPDDispatchState.OnScene);
-                ReportAudioStage("lsimmersivelife.police.dispatch.arrived", _incident, "arrived");
-            }
 
             StartSceneBehavior(player);
+            if (_incident == null || !_incident.OwnedByDispatch)
+                return "The dispatch scene is no longer available for investigation.";
             if (_incident.State == LSPDDispatchState.OnScene)
                 SetState(LSPDDispatchState.Investigating);
+
+            if (!_incident.SceneArrivalReported)
+            {
+                _incident.SceneArrivalReported = true;
+                ReportAudioStage("lsimmersivelife.police.scene.on_scene", _incident, "arrived", true);
+            }
 
             if (_incident.Suspect.IsInCombatAgainst(player) || _incident.Suspect.IsShooting)
             {
@@ -957,6 +967,12 @@ namespace LSImmersiveLife
             {
                 SetState(LSPDDispatchState.SuspectFleeing);
                 return "Suspect is fleeing. Follow the active suspect marker.";
+            }
+
+            if (!_incident.InvestigationReported)
+            {
+                _incident.InvestigationReported = true;
+                ReportAudioStage("lsimmersivelife.police.investigation.started", _incident, "investigation", true);
             }
 
             Notify("~b~POLICE DISPATCH~s~\nScene reached. Suspect is present. Use Secure & Comply.");
@@ -2081,6 +2097,8 @@ namespace LSImmersiveLife
             {
                 if (!EnsureScene(player))
                 {
+                    if (_incident == null)
+                        return;
                     if (_incident.ScenePreparationRequested
                         && _incident.ScenePreparationDeadline != DateTime.MinValue
                         && now >= _incident.ScenePreparationDeadline)
@@ -2108,6 +2126,8 @@ namespace LSImmersiveLife
                 if (_incident == null || !_incident.OwnedByDispatch)
                     return;
             }
+
+            ReportSceneApproach(player);
 
             Ped suspect = _incident.Suspect;
             if (suspect != null && suspect.Exists())
@@ -2865,8 +2885,8 @@ namespace LSImmersiveLife
 
         private void StartSceneBehavior(Ped player)
         {
-            if (_incident == null || _incident.Suspect == null ||
-                !_incident.Suspect.Exists() || _incident.Suspect.IsDead ||
+            if (_incident == null || _incident.HasConvoyCustodyHandoff || !_incident.OwnedByDispatch
+                || _incident.Suspect == null || !_incident.Suspect.Exists() || _incident.Suspect.IsDead ||
                 _incident.SceneBehaviorInitialized)
                 return;
 
@@ -2992,7 +3012,8 @@ namespace LSImmersiveLife
                     ReportAudioStage(
                         "lsimmersivelife.police.scene.active",
                         _incident,
-                        "robbery-active");
+                        "robbery-active",
+                        true);
                 }
                 else if (type == "kidnapping")
                 {
@@ -3011,7 +3032,8 @@ namespace LSImmersiveLife
                     ReportAudioStage(
                         "lsimmersivelife.police.pursuit.continuing",
                         _incident,
-                        "kidnapping-pursuit");
+                        "kidnapping-pursuit",
+                        true);
                 }
                 else if (type == "carjacking")
                 {
@@ -3030,7 +3052,8 @@ namespace LSImmersiveLife
                     ReportAudioStage(
                         "lsimmersivelife.police.pursuit.continuing",
                         _incident,
-                        "carjacking-pursuit");
+                        "carjacking-pursuit",
+                        true);
                 }
                 else if (_incident.Mobile)
                 {
@@ -3049,7 +3072,8 @@ namespace LSImmersiveLife
                     ReportAudioStage(
                         "lsimmersivelife.police.pursuit.continuing",
                         _incident,
-                        "pursuit");
+                        "pursuit",
+                        true);
                 }
                 else if (_incident.Armed || _incident.Severity >= 4)
                 {
@@ -3059,7 +3083,8 @@ namespace LSImmersiveLife
                     ReportAudioStage(
                         "lsimmersivelife.police.resistance.resisting",
                         _incident,
-                        "resisting");
+                        "resisting",
+                        true);
                 }
                 else
                 {
@@ -3246,6 +3271,8 @@ namespace LSImmersiveLife
                 SetSuspectBlip(_incident.Suspect);
                 _incident.ScenePreparationCompleted = true;
                 StartSceneBehavior(player);
+                if (_incident == null || !_incident.OwnedByDispatch)
+                    return false;
                 LogRuntime(
                     "POLICE_DISPATCH_SCENE_ENTITIES_CREATED",
                     "Ped=" + _incident.Suspect.Handle
@@ -3929,19 +3956,54 @@ namespace LSImmersiveLife
                 "transport-" + stage);
         }
 
+        private void ReportSceneApproach(Ped player)
+        {
+            if (_incident == null || _incident.SceneApproachReported || _incident.SceneArrivalReported
+                || _incident.HasConvoyCustodyHandoff || !_incident.OwnedByDispatch
+                || player == null || !player.Exists())
+                return;
+            switch (_incident.State)
+            {
+                case LSPDDispatchState.Accepted:
+                case LSPDDispatchState.EnRoute:
+                case LSPDDispatchState.OnScene:
+                case LSPDDispatchState.Investigating:
+                case LSPDDispatchState.SuspectFleeing:
+                case LSPDDispatchState.SuspectResisting:
+                    break;
+                default:
+                    return;
+            }
+            if (player.Position.DistanceTo(_incident.Origin) > SceneApproachAudioRadius)
+                return;
+
+            // Scene AI may already have changed the state during travel. This
+            // physical, incident-level guard also covers accepting a nearby call.
+            _incident.SceneApproachReported = true;
+            ReportAudioStage("lsimmersivelife.police.scene.approaching", _incident, "approaching", true);
+            ReportAudioStage("lsimmersivelife.police.detail.safety_warning", _incident, "approach-caution", true);
+        }
+
         private LSPDAudioResult ReportAudioStage(
             string eventId,
             LSPDDispatchEvent incident,
-            string stage)
+            string stage,
+            bool retainCurrentScope = false)
         {
             if (incident == null || string.IsNullOrWhiteSpace(stage))
                 return LSPDAudioResult.Inactive;
             if (string.Equals(incident.LastAudioStage, stage, StringComparison.Ordinal))
                 return LSPDAudioResult.Duplicate;
 
-            CloseActiveAudio(incident);
-            string scope = "police-dispatch-" + incident.Id + "-" + stage;
-            incident.ActiveAudioScope = scope;
+            // The accepted/approach/investigation conversation shares a scope:
+            // scene AI must not cancel the Player's acceptance, and paired lines
+            // must remain FIFO. Later custody/outcome stages still replace it.
+            if (!retainCurrentScope || string.IsNullOrWhiteSpace(incident.ActiveAudioScope))
+            {
+                CloseActiveAudio(incident);
+                incident.ActiveAudioScope = "police-dispatch-" + incident.Id + "-" + stage;
+            }
+            string scope = incident.ActiveAudioScope;
             incident.LastAudioStage = stage;
             return _audio.Report(
                 eventId,
