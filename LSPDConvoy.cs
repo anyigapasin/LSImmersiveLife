@@ -13,14 +13,20 @@ namespace LSImmersiveLife
     /// suspect or a group. Convoy never fakes custody by creating a van at the
     /// player or inserting prisoners into it: a staged transport first drives
     /// to the location, prisoners walk and enter through GTA's task system,
-    /// the player drives to station, and a second prison unit repeats that
-    /// physical handoff before booking at Bolingbroke.
+    /// the Player or transport crew completes the station leg, and a second
+    /// prison unit repeats that physical handoff before booking at Bolingbroke.
     /// </summary>
     internal sealed class LSPDConvoy
     {
+        private const int HandcuffedPedConfigFlag = 120;
         private const int ModelPreparationTimeoutSeconds = 20;
         private const int DriverTaskRefreshMilliseconds = 5000;
         private const int DriverReleaseTimeoutSeconds = 12;
+        private const int DispatchCrewDriverSeatCheckMilliseconds = 500;
+        private const int DispatchCrewDriverEntryTaskRefreshMilliseconds = 5000;
+        private const int DispatchCrewDriverEntryTimeoutSeconds = 30;
+        private const int DispatchCrewRouteRecoveryCheckMilliseconds = 1000;
+        private const int DispatchCrewArrivalCheckMilliseconds = 500;
         private const int DispatchReleaseTaskRefreshMilliseconds = 2500;
         private const int DispatchReleaseTimeoutSeconds = 15;
         private const float DispatchReleaseStoppedSpeed = 0.5f;
@@ -31,10 +37,19 @@ namespace LSImmersiveLife
         // task owned by the escort for its full bounded window, then permit a
         // controlled retry if the game genuinely failed to complete it.
         private const int PrisonerVehicleEntryRefreshMilliseconds = 15000;
+        private const int DispatchCustodyDoorOpenTaskTimeoutMilliseconds = 12000;
+        private const int DispatchCustodyDoorOpenRetryMilliseconds = 15000;
+        private const int DispatchSceneDoorAnimationFallbackGraceMilliseconds = 4000;
+        // Match the bounded physical-entry task window. Reissuing an exit
+        // task at the general 900 ms prisoner-task cadence interrupts GTA's
+        // door/seat exit animation and leaves the prisoner inside the van.
+        private const int PrisonerVehicleExitRefreshMilliseconds = 15000;
+        private const int PrisonerAssignedSeatCheckRefreshMilliseconds = 500;
         private const int PrisonerMaintenanceRefreshMilliseconds = 1000;
         private const int TransportOfficerReleaseTimeoutSeconds = 12;
         private const int TransportOfficerTaskRefreshMilliseconds = 2500;
         private const int GroundedPrisonerFollowRefreshMilliseconds = 6000;
+        private const int DispatchMovementClipsetRequestRefreshMilliseconds = 1000;
         private const int PrisonerEscortSettleMilliseconds = 1600;
         private const int PrisonerArrestTaskMilliseconds = 6500;
         private const int PrisonerEscortAlignmentMilliseconds = 650;
@@ -51,7 +66,9 @@ namespace LSImmersiveLife
         private const int PlayerEscortTimeoutSeconds = 150;
         private const int PlayerEscortReleaseGraceSeconds = 10;
         private const float PlayerEscortMaximumDistance = 35.0f;
+        private const float MaximumDispatchPreferredUtilityDistance = 150.0f;
         private const float PlayerEscortFollowDistance = 2.0f;
+        private const float DispatchEscortOfficerTrailingOffset = -1.15f;
         private const float PlayerCustodyInteractionRadius = 4.0f;
         private const float PlayerCustodyVehicleRadius = 3.2f;
         private const float PlayerCustodyLoadInteractionRadius = 8.0f;
@@ -69,6 +86,24 @@ namespace LSImmersiveLife
         // follows the normal recoverable-failure path.
         private const float MinimumNearbyTransportCustodyRadius = 60.0f;
         private const float MaximumNearbyTransportCustodyRadius = 95.0f;
+        private const float MaximumDispatchSceneVehicleDistance = 100.0f;
+        // A transport is parked at the verified road access point and its
+        // officers walk into the scene. Requiring the van to hit a four-metre
+        // centre around that node made GTA circle kerbs and alley obstacles
+        // even though the unit had already reached usable roadside ground.
+        private const float DispatchSceneVehicleArrivalRadius = 10.0f;
+        // A roadside pickup often starts from a sidewalk, store frontage, or
+        // alley mouth. GTA's direct closest-node query can reject its one
+        // closest result even when a normal road is nearby. Four fixed,
+        // horizontal query offsets give the Dispatch-only resolver alternate
+        // bounded samples without searching the map or changing Convoy routes.
+        private static readonly Vector3[] DispatchSceneRoadNodeQueryOffsets =
+        {
+            new Vector3(24f, 0f, 0f),
+            new Vector3(-24f, 0f, 0f),
+            new Vector3(0f, 24f, 0f),
+            new Vector3(0f, -24f, 0f)
+        };
         private const int EscortStallTimeoutSeconds = 8;
         private const int EscortRecoveryCooldownSeconds = 8;
         private const float EscortProgressDistance = 0.75f;
@@ -77,10 +112,14 @@ namespace LSImmersiveLife
         private const int ArrivalRadius = 18;
         private const float StationHandoffArrivalRadius = 6.0f;
         private const float StationHandoffStoppedSpeed = 0.25f;
+        private const float StationHandoffPreparationRadius = 100.0f;
         private const int DefaultDeferredCleanupGraceSeconds = 8;
         private const int DefaultDeferredCleanupMaximumSeconds = 60;
         private const int DeferredCleanupCheckMilliseconds = 1000;
         private const float DefaultCleanupDistance = 200f;
+        private const float DispatchCrewDepartureConfirmationDistance = 25.0f;
+        private const int DispatchCrewDepartureConfirmationMinimumSeconds = 2;
+        private const int DispatchCrewDepartureConfirmationMaximumSeconds = 45;
         private const float MaximumRoadElevationDifference = 8f;
 
         private enum CustodyPhase
@@ -90,6 +129,9 @@ namespace LSImmersiveLife
             PreparingSceneTransport,
             SceneTransportEnRoute,
             SceneLoading,
+            DispatchStationTransportDecision,
+            DispatchCrewDriverBoarding,
+            DispatchCrewDriveToStation,
             DriveToStation,
             StationUnloading,
             HoldingAtStation,
@@ -149,6 +191,11 @@ namespace LSImmersiveLife
         // prisoners and interrupted animations in the earlier implementation.
         private readonly Dictionary<int, DateTime> _lastPrisonerTaskAt = new Dictionary<int, DateTime>();
         private readonly Dictionary<int, DateTime> _lastPrisonerVehicleEntryAt = new Dictionary<int, DateTime>();
+        private readonly Dictionary<int, DateTime> _lastPrisonerVehicleExitAt = new Dictionary<int, DateTime>();
+        private readonly Dictionary<int, DateTime> _lastAssignedSeatCheckAt = new Dictionary<int, DateTime>();
+        private readonly Dictionary<int, bool> _lastAssignedSeatCheckResult = new Dictionary<int, bool>();
+        private readonly Dictionary<int, LSPDSuspectInjuryState> _prisonerInjuryStates =
+            new Dictionary<int, LSPDSuspectInjuryState>();
         private readonly Dictionary<int, Ped> _prisonerEscortOfficers = new Dictionary<int, Ped>();
         private readonly Dictionary<int, DateTime> _prisonerEscortStartedAt = new Dictionary<int, DateTime>();
         private readonly Dictionary<int, DateTime> _lastEscortOfficerTaskAt = new Dictionary<int, DateTime>();
@@ -174,6 +221,8 @@ namespace LSImmersiveLife
         private readonly HashSet<int> _prisonerVehicleDoorsOpened = new HashSet<int>();
         private readonly Dictionary<int, DateTime> _prisonerDoorOpenTaskIssuedAt =
             new Dictionary<int, DateTime>();
+        private readonly HashSet<int> _dispatchSceneDoorAnimationFallbackIssued =
+            new HashSet<int>(16);
         private readonly HashSet<int> _prisonerEntryTasksIssued = new HashSet<int>();
         private readonly HashSet<int> _prisonerLoadedLogIssued = new HashSet<int>();
         // The player is not added to an owned officer collection because the
@@ -194,9 +243,13 @@ namespace LSImmersiveLife
         private readonly HashSet<int> _playerUnloadingDoorInteractions = new HashSet<int>();
         private readonly HashSet<int> _playerUnloadingTasksIssued = new HashSet<int>();
         private readonly Dictionary<int, bool> _custodyInvincibilityStates = new Dictionary<int, bool>();
+        private readonly HashSet<int> _dispatchCustodyMovementStyleApplied = new HashSet<int>();
+        private readonly Dictionary<int, DateTime> _dispatchCustodyMovementStyleRequestedAt =
+            new Dictionary<int, DateTime>();
 
         private Vehicle _transport;
         private Ped _transportDriver;
+        private Ped _dispatchSceneTransportDriver;
         private Blip _transportBlip;
         private Blip _custodyOfficerBlip;
         private Blip _custodyPrisonerBlip;
@@ -207,6 +260,8 @@ namespace LSImmersiveLife
         private LSPDDispatchState _state = LSPDDispatchState.None;
         private CustodyPhase _phase = CustodyPhase.None;
         private Vector3 _pickupTarget;
+        private Vector3 _dispatchSceneVehicleAccessTarget;
+        private float _dispatchSceneWalkInDistanceMeters;
         private Vector3 _stationDestination;
         private Vector3 _stationHandoffGroundPosition;
         private Vector3 _prisonDestination;
@@ -229,6 +284,23 @@ namespace LSImmersiveLife
         private DateTime _lastDeferredCleanupAt = DateTime.MinValue;
         private DateTime _driverReleaseRequestedAt = DateTime.MinValue;
         private bool _driverReleaseRequested;
+        private DateTime _lastDispatchCrewDriverSeatCheckAt = DateTime.MinValue;
+        private DateTime _lastDispatchCrewDriverEntryTaskAt = DateTime.MinValue;
+        private DateTime _dispatchCrewDriverEntryStartedAt = DateTime.MinValue;
+        private DateTime _lastDispatchCrewRouteRecoveryCheckAt = DateTime.MinValue;
+        private DateTime _lastDispatchCrewArrivalCheckAt = DateTime.MinValue;
+        private DateTime _lastDispatchCrewStationRouteProgressAt = DateTime.MinValue;
+        private float _lastDispatchCrewStationGoalDistance = float.MaxValue;
+        private Vector3 _dispatchCrewRouteRecoveryTarget = Vector3.Zero;
+        private Vector3 _dispatchCrewDepartureOrigin = Vector3.Zero;
+        private DateTime _dispatchCrewDepartureStartedAt = DateTime.MinValue;
+        private int _dispatchCrewDriverSeatOccupantHandle;
+        private bool _dispatchCrewStationTransport;
+        private bool _dispatchCrewCustodyHandoffReady;
+        private bool _dispatchClosedAfterCrewCustodyHandoff;
+        private bool _dispatchCrewDriverSeatConflictLogged;
+        private bool _dispatchCrewPlayerRecoveryPending;
+        private string _dispatchCrewPlayerRecoveryReason = string.Empty;
         private DateTime _transportOfficerReleaseRequestedAt = DateTime.MinValue;
         private DateTime _nextTransportOfficerReleaseTaskAt = DateTime.MinValue;
         private DateTime _lastActiveCustodyMaintenanceAt = DateTime.MinValue;
@@ -262,6 +334,7 @@ namespace LSImmersiveLife
         private bool _failedIsRecoverable;
         private bool _failedAfterStationHandoff;
         private bool _isRequestedConvoyActivity;
+        private bool _dispatchCustodyOperation;
         private RouteThreatState _routeThreatState = RouteThreatState.None;
         private DateTime _routeThreatPreparationDeadline = DateTime.MinValue;
         private DateTime _lastRouteThreatCombatTaskAt = DateTime.MinValue;
@@ -331,8 +404,37 @@ namespace LSImmersiveLife
         {
             get { return Active && _phase == CustodyPhase.HoldingAtStation; }
         }
+        internal bool DispatchStationTransportDecisionPending
+        {
+            get
+            {
+                return Active
+                    && _dispatchCustodyOperation
+                    && !_isRequestedConvoyActivity
+                    && !_playerOwnedTransport
+                    && _phase == CustodyPhase.DispatchStationTransportDecision;
+            }
+        }
+        internal bool PlayerOwnsPhysicalCustodyInteraction
+        {
+            get
+            {
+                return Active
+                    && (_playerEscortPrisoners.Count > 0
+                        || _playerHandcuffAnimationUntil.Count > 0
+                        || _playerDoorInteractions.Count > 0
+                        || _playerEntryInteractions.Count > 0
+                        || _playerUnloadingStartedAt.Count > 0
+                        || _playerUnloadingDoorInteractions.Count > 0
+                        || _playerUnloadingTasksIssued.Count > 0);
+            }
+        }
         internal bool Completed { get { return _phase == CustodyPhase.Completed; } }
         internal bool CompletedAfterDispatchRelease { get { return Completed && _completedAfterDispatchRelease; } }
+        internal bool DispatchClosedAfterCrewCustodyHandoff
+        {
+            get { return _dispatchClosedAfterCrewCustodyHandoff; }
+        }
         internal bool Failed { get { return _phase == CustodyPhase.Failed; } }
         internal bool FailedAfterStationHandoff
         {
@@ -441,6 +543,12 @@ namespace LSImmersiveLife
                             + (_playerEscortPrisoners.Count > 0
                                 ? PlayerLoadingStatusText()
                                 : "transport officer is escorting the handcuffed prisoner to the rear door.");
+                    case CustodyPhase.DispatchStationTransportDecision:
+                        return owner + ": press Y to drive the loaded transport to the station or N to let the transport crew finish the station handoff.";
+                    case CustodyPhase.DispatchCrewDriverBoarding:
+                        return owner + ": transport crew is taking the driver seat for the station run.";
+                    case CustodyPhase.DispatchCrewDriveToStation:
+                        return owner + ": transport crew is driving secured suspects to " + _stationDisplayName + ".";
                     case CustodyPhase.PrisonLoading:
                         return owner + ": "
                             + (_playerEscortPrisoners.Count > 0
@@ -565,16 +673,35 @@ namespace LSImmersiveLife
             if (stationHandoff == Vector3.Zero)
                 return "No safe outside custody point is configured for " + station.DisplayName + ".";
 
+            Vector3 dispatchVehicleAccessTarget;
+            float roadWalkInDistance;
+            float maximumRoadNodeDistance = MaximumDispatchSceneVehicleDistance;
+            if (!TryGetDispatchSceneVehicleRoadNode(
+                    pickupTarget, maximumRoadNodeDistance,
+                    out dispatchVehicleAccessTarget, out roadWalkInDistance))
+            {
+                LogRuntime(
+                    "POLICE_CONVOY_DISPATCH_ROADSIDE_PICKUP_UNAVAILABLE",
+                    "ScenePickup=" + pickupTarget
+                    + "; MaximumVehicleDistance=" + MaximumDispatchSceneVehicleDistance
+                    + "; Reason=NoVerifiedVehicleRoadNodeWithinBound"
+                    + "; CustodyOwnershipTransferred=false");
+                return "No drivable road access was found within 100 metres of the scene. The suspect remains in Dispatch custody.";
+            }
+
             ResetOperationFields();
             _operationId = Guid.NewGuid().ToString("N");
             _prisoners.AddRange(valid);
             _pickupTarget = pickupTarget;
+            _dispatchSceneVehicleAccessTarget = dispatchVehicleAccessTarget;
+            _dispatchSceneWalkInDistanceMeters = roadWalkInDistance;
             _stationDestination = stationHandoff;
             _prisonDestination = new Vector3(prison.ExteriorX, prison.ExteriorY, prison.ExteriorZ);
             _stationDisplayName = station.DisplayName;
             _prisonDisplayName = prison.DisplayName;
             _state = LSPDDispatchState.AwaitingTransport;
             _failedIsRecoverable = true;
+            _dispatchCustodyOperation = true;
             foreach (Ped prisoner in _prisoners)
                 // Dispatch has already completed the player's physical
                 // handcuff interaction. Do not replace that secured pose with
@@ -586,7 +713,10 @@ namespace LSImmersiveLife
                 ReportStage("lsimmersivelife.police.transport.requested", "requested");
             BeginTransportPreparation(CustodyPhase.PreparingSceneTransport, VehicleName("policet", "fbi2"));
             LogRuntime("POLICE_CUSTODY_STARTED",
-                "Prisoners=" + DescribePrisoners() + "; Pickup=" + _pickupTarget
+                "Prisoners=" + DescribePrisoners() + "; ScenePickup=" + _pickupTarget
+                + "; VehicleRoadTarget=" + _dispatchSceneVehicleAccessTarget
+                + "; RoadNodeDistance=" + roadWalkInDistance.ToString("0.0")
+                + "; RequiredTransportEscorts=" + Math.Min(2, valid.Count)
                 + "; Station=" + _stationDisplayName + "; Prison=" + _prisonDisplayName);
             return valid.Count == 1
                 ? "Prisoner secured. A transport unit is staging and will drive to the scene."
@@ -612,9 +742,9 @@ namespace LSImmersiveLife
 
         /// <summary>
         /// Dispatch may offer the saved Preferred Utility only for a single
-        /// suspect when the Player is driving that exact Police vehicle, it is
-        /// stopped and driveable, the suspect is within the existing physical
-        /// escort limit, and a real rear custody seat is free.
+        /// suspect when it is the exact selected Police vehicle, stopped and
+        /// driveable, within the bounded walk-to-vehicle distance, and has a
+        /// real free rear custody seat. The Player may be on foot beside it.
         /// </summary>
         internal bool CanUseDispatchPreferredPlayerVehicleCustody(
             Ped player,
@@ -641,11 +771,16 @@ namespace LSImmersiveLife
                 unavailableReason = "the saved Preferred Utility is not the Police vehicle at the scene";
                 return false;
             }
-            if (player.CurrentVehicle == null || !player.CurrentVehicle.Exists()
-                || player.CurrentVehicle.Handle != playerVehicle.Handle
-                || !player.IsInPoliceVehicle || playerVehicle.Model.IsBike)
+            Vehicle currentVehicle = player.CurrentVehicle;
+            bool playerInPreferredVehicle = currentVehicle != null
+                && currentVehicle.Exists()
+                && currentVehicle.Handle == playerVehicle.Handle;
+            if ((player.IsInVehicle() && !playerInPreferredVehicle)
+                || (playerInPreferredVehicle
+                    && (!player.IsInPoliceVehicle || playerVehicle.Model.IsBike))
+                || playerVehicle.Model.IsBike)
             {
-                unavailableReason = "the Player is not in the saved Police Utility";
+                unavailableReason = "the Player must be on foot or in the saved Police Utility";
                 return false;
             }
 
@@ -656,7 +791,14 @@ namespace LSImmersiveLife
                     playerVehicle,
                     (int)VehicleSeat.Driver,
                     false);
-                if (driver == null || !driver.Exists() || driver.Handle != player.Handle)
+                if (driver != null && driver.Exists()
+                    && driver.Handle != player.Handle)
+                {
+                    unavailableReason = "another Ped is occupying the saved Police Utility driver's seat";
+                    return false;
+                }
+                if (playerInPreferredVehicle
+                    && (driver == null || !driver.Exists() || driver.Handle != player.Handle))
                 {
                     unavailableReason = "the Player is not driving the saved Police Utility";
                     return false;
@@ -678,10 +820,12 @@ namespace LSImmersiveLife
                 unavailableReason = "the saved Police Utility has no supported rear custody seat";
                 return false;
             }
-            if (playerVehicle.Position.DistanceTo(prisoner.Position)
-                > PlayerEscortMaximumDistance)
+            float distanceFromPlayer = playerVehicle.Position.DistanceTo(player.Position);
+            float distanceFromPrisoner = playerVehicle.Position.DistanceTo(prisoner.Position);
+            if (distanceFromPlayer > MaximumDispatchPreferredUtilityDistance
+                || distanceFromPrisoner > MaximumDispatchPreferredUtilityDistance)
             {
-                unavailableReason = "the saved Police Utility is too far from the suspect";
+                unavailableReason = "the saved Police Utility is more than 150 metres from the Player or suspect";
                 return false;
             }
             if (!TryGetFreeRearCustodySeat(playerVehicle, out custodySeat))
@@ -711,9 +855,10 @@ namespace LSImmersiveLife
                 prisoner,
                 pickupTarget,
                 playerVehicle,
+                true,
                 false,
-                false,
-                custodySeat);
+                custodySeat,
+                true);
         }
 
         private bool TryGetFreeRearCustodySeat(
@@ -858,7 +1003,8 @@ namespace LSImmersiveLife
             Vehicle playerVehicle,
             bool allowPlayerOnFoot,
             bool prisonerAlreadySecuredByPlayer,
-            VehicleSeat? requestedCustodySeat = null)
+            VehicleSeat? requestedCustodySeat = null,
+            bool dispatchCustodyOperation = false)
         {
             if (!_settings.Enabled)
                 return "Prisoner transport is disabled in LS Immersive settings.";
@@ -872,13 +1018,31 @@ namespace LSImmersiveLife
                 return "No living arrested suspect is available for player custody.";
 
             Ped player = Game.Player.Character;
-            bool validPlayerVehicle = allowPlayerOnFoot
-                ? CanUsePlayerVehicleCustodyForNpc(player, playerVehicle)
-                : CanUsePlayerVehicleCustody(player, playerVehicle);
+            VehicleSeat custodySeat;
+            bool validPlayerVehicle;
+            if (dispatchCustodyOperation)
+            {
+                string dispatchUnavailableReason;
+                validPlayerVehicle = CanUseDispatchPreferredPlayerVehicleCustody(
+                    player,
+                    playerVehicle,
+                    prisoner,
+                    out custodySeat,
+                    out dispatchUnavailableReason);
+                if (!validPlayerVehicle)
+                    LogRuntime(
+                        "POLICE_CONVOY_DISPATCH_PREFERRED_UTILITY_RECHECK_FAILED",
+                        "Prisoner=" + prisoner.Handle
+                        + "; Vehicle=" + (playerVehicle == null ? "none" : playerVehicle.Handle.ToString())
+                        + "; Reason=" + dispatchUnavailableReason);
+            }
+            else
+                validPlayerVehicle = allowPlayerOnFoot
+                    ? CanUsePlayerVehicleCustodyForNpc(player, playerVehicle)
+                    : CanUsePlayerVehicleCustody(player, playerVehicle);
             if (!validPlayerVehicle)
                 return "Player custody transport requires one living suspect and a Police car; Police motorcycles use a staged transport unit.";
 
-            VehicleSeat custodySeat;
             if (requestedCustodySeat.HasValue
                 && IsRearCustodySeatFree(playerVehicle, requestedCustodySeat.Value))
                 custodySeat = requestedCustodySeat.Value;
@@ -906,6 +1070,7 @@ namespace LSImmersiveLife
             _transport = playerVehicle;
             _playerOwnedTransport = true;
             _playerVehicleCustodySeat = custodySeat;
+            _dispatchCustodyOperation = dispatchCustodyOperation;
             _state = LSPDDispatchState.AwaitingTransport;
             _failedIsRecoverable = true;
             PreparePrisoner(prisoner, false);
@@ -1034,6 +1199,385 @@ namespace LSImmersiveLife
             return "Prison transfer declined. Custody completed at the station.";
         }
 
+        internal string AcceptDispatchStationTransport()
+        {
+            if (!DispatchStationTransportDecisionPending)
+                return "No Dispatch station transport choice is waiting.";
+            if (!AllDispatchPrisonersPhysicallyLoaded())
+                return "Every secured suspect must be confirmed in a rear custody seat before the station transport choice.";
+
+            if (!ReleaseDriverForPlayer(DateTime.UtcNow))
+                return "The transport officer is exiting the van. The station drive will continue when the driver's seat is clear.";
+
+            _dispatchCrewStationTransport = false;
+            CaptureAndSetWaypoint(_stationDestination);
+            ReportStage("lsimmersivelife.police.transport.departing", "station-departing");
+            SetPhase(CustodyPhase.DriveToStation);
+            LogRuntime("POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_ACCEPTED",
+                "Operation=" + _operationId + "; Vehicle="
+                + (_transport == null || !_transport.Exists() ? "none" : _transport.Handle.ToString())
+                + "; Prisoners=" + DescribePrisoners()
+                + "; Driver=Player; PhysicalSeatChecks=true");
+            Notify("~b~POLICE CUSTODY~s~\nTake the transport and drive the secured suspects to " + _stationDisplayName + ".");
+            return "Station transport accepted. Take the transport and drive to " + _stationDisplayName + ".";
+        }
+
+        internal string DeclineDispatchStationTransport()
+        {
+            if (!DispatchStationTransportDecisionPending)
+                return "No Dispatch station transport choice is waiting.";
+            if (!AllDispatchPrisonersPhysicallyLoaded())
+                return "Every secured suspect must be confirmed in a rear custody seat before the station transport choice.";
+            if (_transport == null || !_transport.Exists())
+                return "The transport van is unavailable. Dispatch custody remains active.";
+
+            Ped crewDriver = _dispatchSceneTransportDriver;
+            if (crewDriver == null || !crewDriver.Exists() || crewDriver.IsDead)
+            {
+                crewDriver = TryReassignDispatchCrewDriver("DriverUnavailableAtStationChoice");
+                if (crewDriver == null)
+                    return ContinueDispatchStationTransportWithPlayer(
+                        "No live Convoy crew officer remained for the declined station drive.");
+            }
+
+            Ped currentDriver = null;
+            try
+            {
+                currentDriver = Function.Call<Ped>(
+                    Hash.GET_PED_IN_VEHICLE_SEAT,
+                    _transport,
+                    (int)VehicleSeat.Driver,
+                    false);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_DISPATCH_CREW_DRIVER_SEAT_CHECK_FAILED", ex);
+                return "The transport driver seat could not be checked. Custody remains active; choose again when safe.";
+            }
+            if (currentDriver != null && currentDriver.Exists()
+                && currentDriver.Handle != crewDriver.Handle)
+                return "The transport driver's seat is occupied. Exit the seat or accept the station drive; custody remains active.";
+
+            _transportDriver = crewDriver;
+            _dispatchCrewStationTransport = true;
+            _dispatchCrewDriverSeatOccupantHandle = 0;
+            _lastDispatchCrewDriverSeatCheckAt = DateTime.MinValue;
+            _lastDispatchCrewDriverEntryTaskAt = DateTime.MinValue;
+            _dispatchCrewDriverEntryStartedAt = DateTime.UtcNow;
+            _lastDispatchCrewRouteRecoveryCheckAt = DateTime.MinValue;
+            _lastDispatchCrewArrivalCheckAt = DateTime.MinValue;
+            _lastDispatchCrewStationRouteProgressAt = DateTime.MinValue;
+            _lastDispatchCrewStationGoalDistance = float.MaxValue;
+            _dispatchCrewRouteRecoveryTarget = Vector3.Zero;
+            _dispatchCrewDepartureOrigin = _transport.Position;
+            _dispatchCrewDepartureStartedAt = DateTime.MinValue;
+            _transportRouteRecoveryCount = 0;
+            _dispatchCrewDriverSeatConflictLogged = false;
+            _dispatchCrewPlayerRecoveryPending = false;
+            _dispatchCrewPlayerRecoveryReason = string.Empty;
+            CleanupWaypoint();
+            ReportStage("lsimmersivelife.police.transport.departing", "station-departing");
+            SetPhase(CustodyPhase.DispatchCrewDriverBoarding);
+            _dispatchCrewCustodyHandoffReady = true;
+            _dispatchClosedAfterCrewCustodyHandoff = true;
+            LogRuntime("POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_DECLINED",
+                "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                + "; Prisoners=" + DescribePrisoners()
+                + "; Driver=" + crewDriver.Handle
+                + "; PlayerChoice=DeclinedStationTransport"
+                + "; CustodyRetained=true; PhysicalDriverEntryRequired=true"
+                + "; PlayerDispatchEndsNow=true");
+            LogRuntime("POLICE_CONVOY_DISPATCH_CREW_CUSTODY_HANDOFF_CONFIRMED",
+                "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                + "; Prisoners=" + DescribePrisoners()
+                + "; AllAssignedRearSeatsConfirmed=true"
+                + "; ConvoyOfficerAndVehicleOwnerConfirmed=true"
+                + "; PlayerChoice=DeclinedStationTransport"
+                + "; PlayerDispatchEndsNow=true");
+            Notify("~b~POLICE CUSTODY~s~\nTransport crew owns the secured suspects and will leave for " + _stationDisplayName + ". The Player Dispatch assignment is ending now.");
+            return "Station transport declined. The transport crew is taking custody to the station.";
+        }
+
+        internal bool ConsumeDispatchCrewCustodyHandoffReady()
+        {
+            if (!_dispatchCrewCustodyHandoffReady)
+                return false;
+            _dispatchCrewCustodyHandoffReady = false;
+            return true;
+        }
+
+        internal void ConsumeFailedCrewBackgroundState()
+        {
+            if (Failed && _dispatchClosedAfterCrewCustodyHandoff)
+                ClearTerminalState();
+        }
+
+        private bool AllDispatchPrisonersPhysicallyLoaded()
+        {
+            if (_transport == null || !_transport.Exists())
+                return false;
+            List<Ped> prisoners = ValidPrisoners().ToList();
+            return prisoners.Count > 0
+                && prisoners.All(prisoner => IsPrisonerInAssignedTransportSeat(
+                    prisoner, PrisonerSeat(prisoner, prisoners)));
+        }
+
+        private Ped TryReassignDispatchCrewDriver(string reason, int excludedHandle = 0)
+        {
+            Ped previousDriver = _dispatchSceneTransportDriver;
+            int previousHandle = previousDriver != null && previousDriver.Exists()
+                ? previousDriver.Handle : 0;
+            Ped replacement = _sceneEscortOfficers
+                .Where(officer => officer != null && officer.Exists() && !officer.IsDead
+                    && officer.Handle != excludedHandle
+                    && (previousHandle == 0 || officer.Handle != previousHandle))
+                // Prefer an officer who is already outside, but retain the
+                // surviving front passenger as a real crew fallback. The
+                // boarding state releases that owned officer before assigning
+                // the driver's seat; no new actor or forced seat insertion is
+                // required when the original driver became unavailable.
+                .OrderBy(officer => IsOfficerInTransport(officer) ? 1 : 0)
+                .ThenBy(officer => _transport == null || !_transport.Exists()
+                    ? 0f : officer.Position.DistanceTo(_transport.Position))
+                .FirstOrDefault();
+            if (replacement == null)
+                return null;
+
+            _dispatchSceneTransportDriver = replacement;
+            _transportDriver = replacement;
+            _dispatchCrewDriverSeatOccupantHandle = 0;
+            _lastDispatchCrewDriverSeatCheckAt = DateTime.MinValue;
+            _lastDispatchCrewDriverEntryTaskAt = DateTime.MinValue;
+            _dispatchCrewDriverEntryStartedAt = DateTime.UtcNow;
+            _dispatchCrewDriverSeatConflictLogged = false;
+            LogRuntime("POLICE_CONVOY_DISPATCH_CREW_DRIVER_REASSIGNED",
+                "Operation=" + _operationId
+                + "; PreviousDriver=" + (previousHandle == 0 ? "unavailable" : previousHandle.ToString())
+                + "; NewDriver=" + replacement.Handle
+                + "; Vehicle=" + (_transport == null || !_transport.Exists()
+                    ? "unavailable" : _transport.Handle.ToString())
+                + "; Reason=" + reason
+                + "; Owner=ConvoySceneEscort");
+            return replacement;
+        }
+
+        private string ContinueDispatchStationTransportWithPlayer(string reason)
+        {
+            if (_transport == null || !_transport.Exists()
+                || !AllDispatchPrisonersPhysicallyLoaded()
+                || _stationDestination == Vector3.Zero)
+                return "The transport crew is unavailable. Convoy custody remains active; the station drive cannot start until the loaded van and destination are verified.";
+
+            _dispatchCrewStationTransport = false;
+            _dispatchCrewPlayerRecoveryPending = false;
+            _dispatchCrewPlayerRecoveryReason = string.Empty;
+            _dispatchSceneTransportDriver = null;
+            _transportDriver = null;
+            _dispatchCrewRouteRecoveryTarget = Vector3.Zero;
+            CaptureAndSetWaypoint(_stationDestination);
+            ReportStage("lsimmersivelife.police.transport.departing", "station-departing");
+            SetPhase(CustodyPhase.DriveToStation);
+            LogRuntime("POLICE_CONVOY_DISPATCH_STATION_PLAYER_RECOVERY",
+                "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                + "; Prisoners=" + DescribePrisoners()
+                + "; Driver=Player; CustodyRetained=true; Reason=" + reason);
+            Notify("~b~POLICE CUSTODY~s~\nThe transport crew could not continue safely. Take the loaded van and drive the secured suspects to " + _stationDisplayName + ".");
+            return "Convoy custody is retained. The transport crew could not continue safely; take the loaded van and drive to " + _stationDisplayName + ".";
+        }
+
+        private void BeginDispatchCrewPlayerDriveRecovery(string reason)
+        {
+            if (_dispatchCrewPlayerRecoveryPending)
+                return;
+
+            _dispatchCrewPlayerRecoveryPending = true;
+            _dispatchCrewPlayerRecoveryReason = reason;
+            _driverReleaseRequested = false;
+            _driverReleaseRequestedAt = DateTime.MinValue;
+            try
+            {
+                SetEmergencySignals(_transport, false);
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _transport, true);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_DISPATCH_CREW_PLAYER_RECOVERY_BRAKE_FAILED", ex);
+            }
+            LogRuntime("POLICE_CONVOY_DISPATCH_CREW_PLAYER_RECOVERY_STARTED",
+                "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                + "; Prisoners=" + DescribePrisoners()
+                + "; CustodyRetained=true; Reason=" + reason
+                + "; Action=StopVanAndReleaseDriverForPlayer");
+            Notify("~b~POLICE CUSTODY~s~\nThe transport route is blocked. The van is stopping; take over and drive the secured suspects to the station.");
+        }
+
+        private string ProcessDispatchCrewPlayerDriveRecovery(DateTime now)
+        {
+            if (_transport == null || !_transport.Exists()
+                || !AllDispatchPrisonersPhysicallyLoaded())
+                return "Convoy custody remains active, but the van or loaded-prisoner check is unavailable. Recovery is waiting for a valid vehicle and confirmed seats.";
+
+            if (Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+            {
+                try { Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _transport, true); }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_CONVOY_DISPATCH_CREW_PLAYER_RECOVERY_BRAKE_FAILED", ex);
+                }
+                return string.Empty;
+            }
+
+            if (!ReleaseDriverForPlayer(now))
+                return string.Empty;
+
+            string reason = _dispatchCrewPlayerRecoveryReason;
+            try { Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _transport, false); }
+            catch { }
+            return ContinueDispatchStationTransportWithPlayer(reason);
+        }
+
+        private string RecoverOrRelinquishClosedCrewRun(string reason, DateTime now)
+        {
+            if (_dispatchClosedAfterCrewCustodyHandoff)
+                return RelinquishDeclinedCrewRun(reason);
+
+            BeginDispatchCrewPlayerDriveRecovery(reason);
+            return ProcessDispatchCrewPlayerDriveRecovery(now);
+        }
+
+        private string FailOrRelinquishClosedCrewRun(string reason, bool recoverable)
+        {
+            if (_dispatchClosedAfterCrewCustodyHandoff)
+                return RelinquishDeclinedCrewRun(reason);
+
+            return Fail(reason, recoverable);
+        }
+
+        private string RelinquishDeclinedCrewRun(string reason)
+        {
+            int vehicleHandle = _transport != null && _transport.Exists()
+                ? _transport.Handle : 0;
+            int driverHandle = _dispatchSceneTransportDriver != null
+                && _dispatchSceneTransportDriver.Exists()
+                ? _dispatchSceneTransportDriver.Handle : 0;
+            bool allPrisonersLoaded = AllDispatchPrisonersPhysicallyLoaded();
+            LogRuntime("POLICE_CONVOY_DISPATCH_DECLINED_CREW_RUN_RELINQUISHED",
+                "Operation=" + _operationId
+                + "; Vehicle=" + vehicleHandle
+                + "; Driver=" + driverHandle
+                + "; AllAssignedRearSeatsConfirmed=" + allPrisonersLoaded
+                + "; PlayerDispatchAlreadyEnded=true"
+                + "; PlayerStationRouteStarted=false"
+                + "; Reason=" + (reason ?? string.Empty));
+
+            if (_transport != null && _transport.Exists() && !_transport.IsDead)
+            {
+                try
+                {
+                    SetEmergencySignals(_transport, false);
+                    Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _transport, false);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_CONVOY_DISPATCH_DECLINED_CREW_RELEASE_FAILED", ex);
+                }
+            }
+
+            string message = allPrisonersLoaded
+                ? "Dispatch is clear. The transport crew retains the loaded suspects; its blocked departure was released without starting a Player station route."
+                : "Dispatch is clear. The transport departure could not be confirmed, and no Player station route was started.";
+            Notify("~b~POLICE CUSTODY~s~\n" + message);
+            // Do not queue cleanup here: Convoy is relinquishing the loaded
+            // crew and vehicle to the world after the Player declined station
+            // transport. Deleting or reclaiming their occupants would break
+            // the confirmed physical custody handoff.
+            ClearTerminalState();
+            return message;
+        }
+
+        private bool TryRecoverDispatchCrewStationRoute(DateTime now)
+        {
+            if (_transport == null || !_transport.Exists()
+                || _transportDriver == null || !_transportDriver.Exists()
+                || _stationDestination == Vector3.Zero)
+                return false;
+
+            if (_dispatchCrewRouteRecoveryTarget != Vector3.Zero
+                && _transport.Position.DistanceTo(_dispatchCrewRouteRecoveryTarget) <= 12f)
+            {
+                LogRuntime("POLICE_CONVOY_DISPATCH_CREW_ROUTE_WAYPOINT_REACHED",
+                    "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                    + "; RoadTarget=" + _dispatchCrewRouteRecoveryTarget
+                    + "; NextTarget=Station");
+                _dispatchCrewRouteRecoveryTarget = Vector3.Zero;
+                _lastDispatchCrewStationRouteProgressAt = now;
+                _lastDispatchCrewStationGoalDistance = _transport.Position.DistanceTo(_stationDestination);
+                return false;
+            }
+
+            Vector3 goal = _dispatchCrewRouteRecoveryTarget == Vector3.Zero
+                ? _stationDestination : _dispatchCrewRouteRecoveryTarget;
+            float distance = _transport.Position.DistanceTo(goal);
+            if (_dispatchCrewRouteRecoveryTarget == Vector3.Zero
+                && distance <= _settings.StationArrivalRadius)
+                return false;
+            if (_lastDispatchCrewStationRouteProgressAt == DateTime.MinValue
+                || _lastDispatchCrewStationGoalDistance == float.MaxValue)
+            {
+                _lastDispatchCrewStationRouteProgressAt = now;
+                _lastDispatchCrewStationGoalDistance = distance;
+                return false;
+            }
+            if (_lastDispatchCrewStationGoalDistance - distance >= 4f)
+            {
+                _lastDispatchCrewStationRouteProgressAt = now;
+                _lastDispatchCrewStationGoalDistance = distance;
+                return false;
+            }
+            if (now < _lastDispatchCrewStationRouteProgressAt.AddSeconds(TransportRouteStallTimeoutSeconds))
+                return false;
+            if (_transportRouteRecoveryCount >= MaximumTransportRouteRecoveries)
+                return false;
+
+            try
+            {
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _transport, false);
+                SetEmergencySignals(_transport, true);
+                Vector3 roadTarget = ResolveTransportRoadPosition(
+                    _stationDestination,
+                    _transportRouteRecoveryCount + 1);
+                Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
+                    _transportDriver,
+                    _transport,
+                    roadTarget.X,
+                    roadTarget.Y,
+                    roadTarget.Z,
+                    22.0f,
+                    (int)EmergencyDrivingFlags,
+                    10.0f);
+                _transportRouteRecoveryCount++;
+                _dispatchCrewRouteRecoveryTarget = roadTarget;
+                _lastDispatchCrewStationRouteProgressAt = now;
+                _lastDispatchCrewStationGoalDistance = _transport.Position.DistanceTo(roadTarget);
+                _lastDriverTaskAt = now;
+                LogRuntime("POLICE_CONVOY_DISPATCH_CREW_ROUTE_RECOVERY",
+                    "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                    + "; Driver=" + _transportDriver.Handle
+                    + "; Recovery=" + _transportRouteRecoveryCount
+                    + "; Station=" + _stationDestination
+                    + "; RoadTarget=" + roadTarget
+                    + "; PreviousGoalDistance=" + distance.ToString("0.0")
+                    + "; CustodyRetained=true");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_DISPATCH_CREW_ROUTE_RECOVERY_FAILED", ex);
+                _lastDispatchCrewStationRouteProgressAt = now;
+                return false;
+            }
+        }
+
         internal bool RestoreFailedPrisonTransferForRetry()
         {
             if (!FailedAfterStationHandoff || !ValidPrisoners().Any())
@@ -1120,6 +1664,8 @@ namespace LSImmersiveLife
                 return Fail(lossReason, recoverable);
             }
             MaintainActiveCustody(now);
+            if (PlayerOwnsPhysicalCustodyInteraction)
+                LSPDPlayerControlSuppression.SuppressMeleeThisFrame();
             string playerCustodyMessage = ProcessPlayerCustodyInput(now, allowGameplayInput);
             if (!string.IsNullOrWhiteSpace(playerCustodyMessage))
                 return playerCustodyMessage;
@@ -1144,6 +1690,11 @@ namespace LSImmersiveLife
                     return ProcessTransportArrival(now, true);
                 case CustodyPhase.SceneLoading:
                     return ProcessLoading(now, false);
+                case CustodyPhase.DispatchStationTransportDecision:
+                    return string.Empty;
+                case CustodyPhase.DispatchCrewDriverBoarding:
+                case CustodyPhase.DispatchCrewDriveToStation:
+                    return ProcessDispatchCrewStationTransport(now);
                 case CustodyPhase.PrisonLoading:
                     return ProcessLoading(now, true);
                 case CustodyPhase.DriveToStation:
@@ -1252,7 +1803,9 @@ namespace LSImmersiveLife
 
             try
             {
+                RestoreConvoyInjuryState(suspect, "DispatchReleaseAfterPhysicalExit");
                 suspect.Task.ClearAll();
+                RestoreDispatchCustodyMovementStyle(suspect);
                 RestoreCustodyInvincibility(suspect);
                 Function.Call(Hash.SET_ENTITY_PROOFS,
                     suspect, false, false, false, false, false, false, false, false);
@@ -1289,6 +1842,9 @@ namespace LSImmersiveLife
                 || value.Handle == handle);
             _lastPrisonerTaskAt.Remove(handle);
             _lastPrisonerVehicleEntryAt.Remove(handle);
+            _lastPrisonerVehicleExitAt.Remove(handle);
+            _lastAssignedSeatCheckAt.Remove(handle);
+            _lastAssignedSeatCheckResult.Remove(handle);
             _prisonerEscortOfficers.Remove(handle);
             _prisonerEscortStartedAt.Remove(handle);
             _lastPrisonerEscortPosition.Remove(handle);
@@ -1305,6 +1861,7 @@ namespace LSImmersiveLife
             _playerEscortLostAt.Remove(handle);
             _prisonerVehicleDoorsOpened.Remove(handle);
             _prisonerDoorOpenTaskIssuedAt.Remove(handle);
+            _dispatchSceneDoorAnimationFallbackIssued.Remove(handle);
             _prisonerEntryTasksIssued.Remove(handle);
             _prisonerLoadedLogIssued.Remove(handle);
             _playerEscortPrisoners.Remove(handle);
@@ -1316,6 +1873,7 @@ namespace LSImmersiveLife
             _playerUnloadingStartedAt.Remove(handle);
             _playerUnloadingDoorInteractions.Remove(handle);
             _playerUnloadingTasksIssued.Remove(handle);
+            _prisonerInjuryStates.Remove(handle);
 
             if (escort != null && escort.Exists()
                 && !_prisonerEscortOfficers.Values.Any(value => value != null
@@ -1367,6 +1925,7 @@ namespace LSImmersiveLife
             _playerCustodyKeyDown = keyDown;
             if (!pressed)
                 return string.Empty;
+            LSPDPlayerControlSuppression.SuppressMeleeThisFrame();
             if (_phase == CustodyPhase.StationUnloading || _phase == CustodyPhase.PrisonHandoff)
                 return ProcessPlayerPrisonerUnloadInput(now);
             if (_phase != CustodyPhase.SceneLoading && _phase != CustodyPhase.PrisonLoading)
@@ -1784,7 +2343,7 @@ namespace LSImmersiveLife
                 // warp the prisoner, and the receiving officer resumes escort
                 // as soon as the prisoner is physically outside.
                 _lastPrisonerTaskAt.Remove(prisonerHandle);
-                CommandLeaveTransport(target);
+                CommandLeaveTransport(target, "PlayerPhysicalUnload");
                 _playerUnloadingTasksIssued.Add(prisonerHandle);
                 _playerUnloadingStartedAt[prisonerHandle] = now;
                 _phaseStartedAt = now;
@@ -1838,9 +2397,25 @@ namespace LSImmersiveLife
         /// </summary>
         internal IList<Ped> ConsumeFailedPrisoners()
         {
+            IList<LSPDSuspectInjuryState> ignored;
+            return ConsumeFailedPrisoners(out ignored);
+        }
+
+        internal IList<Ped> ConsumeFailedPrisoners(
+            out IList<LSPDSuspectInjuryState> injuryStates)
+        {
+            injuryStates = new List<LSPDSuspectInjuryState>();
             if (!Failed || !_failedIsRecoverable)
                 return new List<Ped>();
             List<Ped> result = ValidPrisoners().ToList();
+            foreach (Ped prisoner in result)
+            {
+                ObserveConvoyInjuryState(prisoner, DateTime.UtcNow, true);
+                LSPDSuspectInjuryState state;
+                if (_prisonerInjuryStates.TryGetValue(prisoner.Handle, out state)
+                    && state != null)
+                    injuryStates.Add(state);
+            }
             ClearDeferredCleanupBeforeRetry();
             _prisoners.Clear();
             ClearTerminalState();
@@ -1865,6 +2440,8 @@ namespace LSImmersiveLife
             foreach (DeferredCleanup item in _deferredCleanup.ToArray())
                 DeleteDeferred(item);
             _deferredCleanup.Clear();
+            RestoreAllConvoyInjuryStates("ConvoyReset");
+            RestoreDispatchCustodyMovementStyles();
             CleanupImmediate();
             CleanupWaypoint();
             _prisoners.Clear();
@@ -2153,17 +2730,25 @@ namespace LSImmersiveLife
             DriveTransportTo(target, true);
             LogRuntime("POLICE_CONVOY_TRANSPORT_STAGED",
                 "Vehicle=" + vehicle.Handle + "; Driver=" + driver.Handle
-                + "; Spawn=" + spawn + "; Target=" + target + "; PrisonTrip=" + prisonTrip);
+                + "; Spawn=" + spawn + "; Target=" + target + "; PrisonTrip=" + prisonTrip
+                + "; TransportOfficerCount=" + _sceneEscortOfficers.Count
+                + "; RequiredSceneEscorts=" + Math.Min(2, ValidPrisoners().Count()));
             return true;
         }
 
-        private bool IsNearbyTransportUsableForCustody(Vector3 target)
+        private bool IsNearbyTransportUsableForCustody(Vector3 target, bool prisonTrip)
         {
             if (!HasUsableTransport())
                 return false;
 
             float verticalDifference = Math.Abs(_transport.Position.Z - target.Z);
             if (verticalDifference > MaximumRoadElevationDifference)
+                return false;
+
+            if (!prisonTrip && _dispatchCustodyOperation
+                && !_isRequestedConvoyActivity && !_playerOwnedTransport
+                && _transport.Position.DistanceTo(_pickupTarget)
+                    > MaximumDispatchSceneVehicleDistance)
                 return false;
 
             int configuredDistance = _settings == null
@@ -2186,7 +2771,9 @@ namespace LSImmersiveLife
                 return Fail("The staged Police transport is no longer available (" + reason + ").", true);
             }
             Vector3 target = TransportTarget(prisonTrip);
-            if (_transport.Position.DistanceTo(target) > ArrivalRadius)
+            float arrivalRadius = IsDispatchSceneRoadPickup(prisonTrip)
+                ? DispatchSceneVehicleArrivalRadius : ArrivalRadius;
+            if (_transport.Position.DistanceTo(target) > arrivalRadius)
             {
                 if (TryRecoverStalledTransport(target, now))
                     return string.Empty;
@@ -2199,7 +2786,7 @@ namespace LSImmersiveLife
                     // used to queue the live van for cleanup, return custody to
                     // Dispatch, and make the next request spawn a duplicate
                     // transport even though the first van was still usable.
-                    if (IsNearbyTransportUsableForCustody(target))
+                    if (IsNearbyTransportUsableForCustody(target, prisonTrip))
                     {
                         if (!_transportNearCustodyFallback)
                         {
@@ -2237,9 +2824,26 @@ namespace LSImmersiveLife
             // used by the bounded nearby-transport recovery above, so that path
             // reuses the exact same physical loading state rather than creating
             // a second transport request.
+            if (IsDispatchSceneRoadPickup(false)
+                && _transport != null && _transport.Exists())
+            {
+                _dispatchSceneWalkInDistanceMeters = Math.Min(
+                    MaximumDispatchSceneVehicleDistance,
+                    _transport.Position.DistanceTo(_pickupTarget));
+            }
             SetEmergencySignals(_transport, false);
             if (!ReleaseDriverForPlayer(now))
                 return string.Empty;
+            if (IsDispatchSceneRoadPickup(false)
+                && _transport != null && _transport.Exists())
+                LogRuntime(
+                    "POLICE_CONVOY_DISPATCH_ROADSIDE_TRANSPORT_READY",
+                    "ScenePickup=" + _pickupTarget
+                    + "; RoadTarget=" + _dispatchSceneVehicleAccessTarget
+                    + "; Vehicle=" + _transport.Handle
+                    + "; WalkInDistance="
+                    + _dispatchSceneWalkInDistanceMeters.ToString("0.0")
+                    + "; OfficerWalkInAndPhysicalEscort=true");
             // The driver reference is intentionally cleared once the driver
             // has left. Move into the loading state before waiting for the
             // passenger escort; otherwise the next Script tick re-enters the
@@ -2312,11 +2916,29 @@ namespace LSImmersiveLife
             foreach (int staleHandle in _prisonerLoadingTimeoutStartedAt.Keys
                 .Where(handle => !activePrisonerHandles.Contains(handle)).ToArray())
                 _prisonerLoadingTimeoutStartedAt.Remove(staleHandle);
+            foreach (int staleHandle in _lastAssignedSeatCheckAt.Keys
+                .Where(handle => !activePrisonerHandles.Contains(handle)).ToArray())
+            {
+                _lastAssignedSeatCheckAt.Remove(staleHandle);
+                _lastAssignedSeatCheckResult.Remove(staleHandle);
+                _lastPrisonerVehicleExitAt.Remove(staleHandle);
+            }
             foreach (Ped prisoner in prisoners)
             {
-                if (IsInTransport(prisoner))
+                if (_prisonerLoadedLogIssued.Contains(prisoner.Handle)
+                    && IsInTransport(prisoner))
+                    continue;
+
+                VehicleSeat seat = PrisonerSeat(prisoner, prisoners);
+                if (seat == VehicleSeat.None || seat == VehicleSeat.Any)
+                    return Fail(
+                        "No rear custody seat is available for every prisoner in this transport.",
+                        true);
+
+                if (IsPrisonerInAssignedTransportSeat(prisoner, seat))
                 {
                     _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
+                    _lastPrisonerVehicleExitAt.Remove(prisoner.Handle);
                     Ped completedEscort;
                     _prisonerEscortOfficers.TryGetValue(
                         prisoner.Handle, out completedEscort);
@@ -2330,7 +2952,9 @@ namespace LSImmersiveLife
                         LogRuntime(
                             "POLICE_CONVOY_PRISONER_LOADED",
                             "Prisoner=" + prisoner.Handle + "; Vehicle=" + _transport.Handle
-                            + "; Phase=" + _phase + "; PhysicalEntry=true");
+                            + "; Seat=" + seat
+                            + "; Phase=" + _phase + "; PhysicalEntry=true"
+                            + "; SeatOccupantConfirmed=true");
                     }
                     ClosePrisonerDoor(prisoner);
                     _playerEscortPrisoners.Remove(prisoner.Handle);
@@ -2345,13 +2969,20 @@ namespace LSImmersiveLife
                     _lastPrisonerEscortRecoveryAt.Remove(prisoner.Handle);
                     continue;
                 }
+                if (IsInTransport(prisoner))
+                {
+                    // Being in the right vehicle is not proof that GTA seated
+                    // the prisoner in the assigned custody seat. Keep the
+                    // stage open and request a physical exit before retrying
+                    // the documented rear-door loading sequence.
+                    _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
+                    CommandLeaveTransport(prisoner, "WrongAssignedSeat:" + seat);
+                    continue;
+                }
+                _lastPrisonerVehicleExitAt.Remove(prisoner.Handle);
+                _lastAssignedSeatCheckAt.Remove(prisoner.Handle);
+                _lastAssignedSeatCheckResult.Remove(prisoner.Handle);
                 MaintainPrisonerCustodyState(prisoner);
-
-                VehicleSeat seat = PrisonerSeat(prisoner, prisoners);
-                if (seat == VehicleSeat.None)
-                    return Fail(
-                        "No rear custody seat is available for every prisoner in this transport.",
-                        true);
 
                 // If the player is already at the active custody scene, keep
                 // the prisoner waiting for the player's explicit E handoff
@@ -2416,9 +3047,15 @@ namespace LSImmersiveLife
                 }
                 StartPrisonerLoadingTimeout(prisoner, now);
                 bool escortIsWorking = MaintainPrisonerLoadingEscort(prisoner, seat, now);
+                if (IsPrisonerInAssignedTransportSeat(prisoner, seat))
+                {
+                    _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
+                    continue;
+                }
                 if (IsInTransport(prisoner))
                 {
                     _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
+                    CommandLeaveTransport(prisoner, "WrongAssignedSeat:" + seat);
                     continue;
                 }
                 if (HasPrisonerLoadingTimedOut(prisoner, now))
@@ -2428,9 +3065,15 @@ namespace LSImmersiveLife
                     continue;
             }
 
-            if (ValidPrisoners().All(IsInTransport))
+            if (prisoners.All(prisoner => IsPrisonerInAssignedTransportSeat(
+                prisoner, PrisonerSeat(prisoner, prisoners))))
             {
-                if (!ReleaseDriverForPlayer(now))
+                bool crewOwnsDispatchTransport = !prisonTrip
+                    && _dispatchCustodyOperation
+                    && !_isRequestedConvoyActivity
+                    && !_playerOwnedTransport
+                    && !PlayerDrivesTransport();
+                if (!crewOwnsDispatchTransport && !ReleaseDriverForPlayer(now))
                     return string.Empty;
                 LogRuntime(
                     "POLICE_CONVOY_TRANSPORT_READY",
@@ -2438,7 +3081,8 @@ namespace LSImmersiveLife
                     + "; PrisonTrip=" + prisonTrip
                     + "; Prisoners=" + DescribePrisoners()
                     + "; Vehicle=" + _transport.Handle
-                    + "; PlayerDriverRequired=true");
+                    + "; PlayerDriverRequired="
+                    + (crewOwnsDispatchTransport ? "false" : "true"));
                 if (prisonTrip)
                 {
                     // Prison staff are staged when the player reaches the
@@ -2451,6 +3095,19 @@ namespace LSImmersiveLife
                     ReportStage("lsimmersivelife.police.transport.departing", "prison-departing");
                     SetPhase(CustodyPhase.DriveToPrison);
                     return "Prison convoy loaded. Take the vehicle and drive to Bolingbroke.";
+                }
+                if (crewOwnsDispatchTransport)
+                {
+                    _state = LSPDDispatchState.AwaitingTransport;
+                    SetPhase(CustodyPhase.DispatchStationTransportDecision);
+                    LogRuntime("POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_CHOICE_READY",
+                        "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                        + "; Prisoners=" + DescribePrisoners()
+                        + "; AllAssignedRearSeatsConfirmed=true"
+                        + "; ConvoyOfficerAndVehicleOwnerConfirmed=true"
+                        + "; PlayerChoice=Y/N");
+                    Notify("~b~POLICE CUSTODY~s~\nThe suspects are secured in the transport. Press Y to continue the station transport, or N to end Dispatch and let the transport officer take them away.");
+                    return "Suspects secured in the transport. Press Y to continue to the station or N to let the transport officer take custody and end Dispatch.";
                 }
                 // Route to the authored station outside point. Receiving staff
                 // are created only after the Player reaches safe handoff ground.
@@ -2505,6 +3162,7 @@ namespace LSImmersiveLife
 
             if (!IsInTransport(prisoner))
             {
+                _lastPrisonerVehicleExitAt.Remove(prisonerHandle);
                 _playerUnloadingStartedAt.Remove(prisonerHandle);
                 _playerUnloadingDoorInteractions.Remove(prisonerHandle);
                 _playerUnloadingTasksIssued.Remove(prisonerHandle);
@@ -2586,6 +3244,9 @@ namespace LSImmersiveLife
         {
             if (_transportDriver == null || !_transportDriver.Exists())
                 return true;
+            if (_dispatchCustodyOperation && !_isRequestedConvoyActivity
+                && !_playerOwnedTransport && _dispatchSceneTransportDriver == null)
+                _dispatchSceneTransportDriver = _transportDriver;
             if (!_driverReleaseRequested)
             {
                 _driverReleaseRequested = true;
@@ -2604,9 +3265,21 @@ namespace LSImmersiveLife
             {
                 // This recovery fallback prevents a permanently occupied
                 // driver's seat. Normal play uses the GTA exit task above.
+                int releasedDriverHandle = _transportDriver.Handle;
                 try { _transportDriver.Delete(); } catch { }
                 _transportDriver = null;
-                LogRuntime("POLICE_CONVOY_DRIVER_RELEASE_RECOVERY", "Driver exit task timed out.");
+                if (_dispatchSceneTransportDriver != null
+                    && _dispatchSceneTransportDriver.Handle == releasedDriverHandle)
+                    _dispatchSceneTransportDriver = null;
+                _sceneEscortOfficers.RemoveAll(officer => officer == null
+                    || !officer.Exists() || officer.Handle == releasedDriverHandle);
+                LogRuntime("POLICE_CONVOY_DRIVER_RELEASE_RECOVERY",
+                    "Driver exit task timed out; owned driver removed from retry candidates. Driver="
+                    + releasedDriverHandle + "; Vehicle="
+                    + (_transport == null || !_transport.Exists()
+                        ? "unavailable" : _transport.Handle.ToString())
+                    + "; SceneDriverReferenceCleared="
+                    + (_dispatchSceneTransportDriver == null ? "true" : "false"));
                 return true;
             }
             return false;
@@ -2665,16 +3338,278 @@ namespace LSImmersiveLife
             return false;
         }
 
-        private string ProcessPlayerArrivalAtStation(DateTime now)
+        private string ProcessDispatchCrewStationTransport(DateTime now)
         {
-            if (!PlayerDrivesTransport())
+            if (!_dispatchCrewStationTransport
+                || !_dispatchCustodyOperation
+                || _isRequestedConvoyActivity
+                || _playerOwnedTransport)
+                return FailOrRelinquishClosedCrewRun(
+                    "The Dispatch transport crew lost ownership of its station run.", true);
+            if (_transport == null || !_transport.Exists() || _transport.IsDead)
+                return FailOrRelinquishClosedCrewRun(
+                    "The transport van is unavailable during the crew station run.", true);
+
+            if (_dispatchCrewPlayerRecoveryPending)
+                return RecoverOrRelinquishClosedCrewRun(
+                    _dispatchCrewPlayerRecoveryReason, now);
+
+            Ped driver = _dispatchSceneTransportDriver;
+            if (driver == null || !driver.Exists() || driver.IsDead)
+            {
+                driver = TryReassignDispatchCrewDriver(
+                    "DriverUnavailableDuringStationRun",
+                    driver != null ? driver.Handle : 0);
+                if (driver == null)
+                    return RecoverOrRelinquishClosedCrewRun(
+                        "No live Convoy scene officer remained to drive the station route.", now);
+                if (_phase != CustodyPhase.DispatchCrewDriverBoarding)
+                    SetPhase(CustodyPhase.DispatchCrewDriverBoarding);
+            }
+            _transportDriver = driver;
+            if (_stationDestination == Vector3.Zero)
+                return FailOrRelinquishClosedCrewRun(
+                    "The selected station has no outside custody point.", true);
+
+            int driverSeatOccupant = DispatchCrewDriverSeatOccupant(now);
+            if (driverSeatOccupant == driver.Handle)
+            {
+                _dispatchCrewDriverSeatConflictLogged = false;
+                if (_phase == CustodyPhase.DispatchCrewDriverBoarding)
+                {
+                    SetPhase(CustodyPhase.DispatchCrewDriveToStation);
+                    _lastDriverTaskAt = DateTime.MinValue;
+                    _lastTransportProgressPosition = _transport.Position;
+                    _lastTransportProgressAt = now;
+                    _lastDispatchCrewRouteRecoveryCheckAt = now;
+                    _lastDispatchCrewArrivalCheckAt = now;
+                    if (_dispatchCrewDepartureStartedAt == DateTime.MinValue)
+                        _dispatchCrewDepartureStartedAt = now;
+                    if (_dispatchCrewDepartureOrigin == Vector3.Zero)
+                        _dispatchCrewDepartureOrigin = _transport.Position;
+                    if (_lastDispatchCrewStationRouteProgressAt == DateTime.MinValue)
+                    {
+                        _lastDispatchCrewStationRouteProgressAt = now;
+                        _lastDispatchCrewStationGoalDistance =
+                            _transport.Position.DistanceTo(_stationDestination);
+                    }
+                    LogRuntime("POLICE_CONVOY_DISPATCH_CREW_DRIVER_SEATED",
+                        "Operation=" + _operationId + "; Driver=" + driver.Handle
+                        + "; Vehicle=" + _transport.Handle
+                        + "; Seat=Driver; PhysicalEntryConfirmed=true");
+                }
+
+                Vector3 stationRouteGoal = _dispatchCrewRouteRecoveryTarget != Vector3.Zero
+                    ? _dispatchCrewRouteRecoveryTarget : _stationDestination;
+                if (now >= _lastDriverTaskAt.AddMilliseconds(DriverTaskRefreshMilliseconds))
+                    DriveTransportTo(stationRouteGoal, false);
+
+                float departureDistance = _transport.Position.DistanceTo(
+                    _dispatchCrewDepartureOrigin);
+                if (_dispatchCrewDepartureStartedAt != DateTime.MinValue
+                    && now >= _dispatchCrewDepartureStartedAt.AddSeconds(
+                        DispatchCrewDepartureConfirmationMinimumSeconds)
+                    && departureDistance >= DispatchCrewDepartureConfirmationDistance
+                    && AllDispatchPrisonersPhysicallyLoaded())
+                {
+                    LogRuntime("POLICE_CONVOY_DISPATCH_CREW_DEPARTURE_CONFIRMED",
+                        "Operation=" + _operationId
+                        + "; Vehicle=" + _transport.Handle
+                        + "; Driver=" + driver.Handle
+                        + "; DepartureDistance=" + departureDistance.ToString("0.0")
+                        + "; RequiredDistance="
+                        + DispatchCrewDepartureConfirmationDistance.ToString("0.0")
+                        + "; AssignedRearSeatsConfirmed=true"
+                        + "; PlayerDispatchAlreadyEnded=true"
+                        + "; BackgroundConvoyEndsAfterDeparture=true");
+                    Complete(
+                        "The transport crew departed with the secured suspects. The background custody run is clear.",
+                        false);
+                    return "Transport crew departure confirmed. Background custody movement ended.";
+                }
+                if (_dispatchCrewDepartureStartedAt != DateTime.MinValue
+                    && now >= _dispatchCrewDepartureStartedAt.AddSeconds(
+                        DispatchCrewDepartureConfirmationMaximumSeconds))
+                    return RecoverOrRelinquishClosedCrewRun(
+                        "The crew van did not complete a physical scene departure within the bounded confirmation time.", now);
+                if (now >= _lastDispatchCrewRouteRecoveryCheckAt.AddMilliseconds(
+                    DispatchCrewRouteRecoveryCheckMilliseconds))
+                {
+                    _lastDispatchCrewRouteRecoveryCheckAt = now;
+                    TryRecoverDispatchCrewStationRoute(now);
+                    if (_transportRouteRecoveryCount >= MaximumTransportRouteRecoveries
+                        && now >= _lastDispatchCrewStationRouteProgressAt
+                            .AddSeconds(TransportRouteStallTimeoutSeconds)
+                        && _transport.Position.DistanceTo(_stationDestination)
+                            > _settings.StationArrivalRadius)
+                        return RecoverOrRelinquishClosedCrewRun(
+                            "The crew van remained unable to make station-route progress after bounded recovery attempts.", now);
+                }
+                if (now >= _lastDispatchCrewArrivalCheckAt.AddMilliseconds(
+                    DispatchCrewArrivalCheckMilliseconds))
+                {
+                    _lastDispatchCrewArrivalCheckAt = now;
+                    if (_transport.Position.DistanceTo(_stationDestination)
+                        <= _settings.StationArrivalRadius
+                        && Math.Abs(_transport.Speed) <= StationHandoffStoppedSpeed)
+                        return ProcessPlayerArrivalAtStation(now, true);
+                }
+                return string.Empty;
+            }
+
+            if (IsOfficerInTransport(driver))
+            {
+                // A surviving scene officer can still be in the front
+                // passenger seat when the original driver disappears. Let
+                // that owned officer leave physically before attempting the
+                // driver's seat; issuing EnterVehicle while already seated
+                // merely restarts GTA's task and used to strand loaded custody.
+                if (now >= _dispatchCrewDriverEntryStartedAt
+                    .AddSeconds(DispatchCrewDriverEntryTimeoutSeconds))
+                    return RecoverOrRelinquishClosedCrewRun(
+                        "The surviving transport officer could not physically leave the passenger seat to take over driving.", now);
+                if (_lastDispatchCrewDriverEntryTaskAt == DateTime.MinValue
+                    || now >= _lastDispatchCrewDriverEntryTaskAt.AddMilliseconds(
+                        DispatchCrewDriverEntryTaskRefreshMilliseconds))
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_LEAVE_VEHICLE, driver, _transport, 0);
+                        _lastDispatchCrewDriverEntryTaskAt = now;
+                        LogRuntime("POLICE_CONVOY_DISPATCH_REPLACEMENT_DRIVER_EXIT_TASK",
+                            "Operation=" + _operationId + "; Driver=" + driver.Handle
+                            + "; Vehicle=" + _transport.Handle
+                            + "; Reason=ReleasePassengerForDriverSeat; PhysicalExitRequired=true");
+                    }
+                    catch (Exception ex)
+                    {
+                        _lastDispatchCrewDriverEntryTaskAt = now;
+                        LogException("POLICE_CONVOY_DISPATCH_REPLACEMENT_DRIVER_EXIT_FAILED", ex);
+                    }
+                }
+                return string.Empty;
+            }
+
+            if (driverSeatOccupant > 0)
+            {
+                if (!_dispatchCrewDriverSeatConflictLogged)
+                {
+                    _dispatchCrewDriverSeatConflictLogged = true;
+                    LogRuntime("POLICE_CONVOY_DISPATCH_CREW_DRIVER_SEAT_OCCUPIED",
+                        "Operation=" + _operationId + "; Vehicle=" + _transport.Handle
+                        + "; Driver=" + driver.Handle
+                        + "; Occupant=" + driverSeatOccupant
+                        + "; CustodyRetained=true");
+                    Notify("~b~POLICE CUSTODY~s~\nThe transport crew is waiting for the driver's seat to be clear. Custody remains active.");
+                }
+                if (now >= _dispatchCrewDriverEntryStartedAt
+                    .AddSeconds(DispatchCrewDriverEntryTimeoutSeconds))
+                    return FailOrRelinquishClosedCrewRun(
+                        "The transport crew could not safely take the driver's seat.", true);
+                return string.Empty;
+            }
+
+            if (driverSeatOccupant < 0)
+            {
+                if (now >= _dispatchCrewDriverEntryStartedAt
+                    .AddSeconds(DispatchCrewDriverEntryTimeoutSeconds))
+                    return FailOrRelinquishClosedCrewRun(
+                        "The transport crew could not verify physical control of the driver's seat.", true);
+                return string.Empty;
+            }
+
+            if (_phase == CustodyPhase.DispatchCrewDriveToStation)
+            {
+                _dispatchCrewDriverEntryStartedAt = now;
+                _lastDispatchCrewDriverEntryTaskAt = DateTime.MinValue;
+                _lastDispatchCrewRouteRecoveryCheckAt = DateTime.MinValue;
+                _lastDispatchCrewArrivalCheckAt = DateTime.MinValue;
+                SetPhase(CustodyPhase.DispatchCrewDriverBoarding);
+                LogRuntime("POLICE_CONVOY_DISPATCH_CREW_DRIVER_REENTRY_REQUIRED",
+                    "Operation=" + _operationId + "; Driver=" + driver.Handle
+                    + "; Vehicle=" + _transport.Handle
+                    + "; PhysicalEntryRequired=true");
+            }
+            if (now >= _dispatchCrewDriverEntryStartedAt
+                .AddSeconds(DispatchCrewDriverEntryTimeoutSeconds))
+                return FailOrRelinquishClosedCrewRun(
+                    "The transport crew could not physically enter the van.", true);
+            if (_lastDispatchCrewDriverEntryTaskAt == DateTime.MinValue
+                || now >= _lastDispatchCrewDriverEntryTaskAt.AddMilliseconds(
+                    DispatchCrewDriverEntryTaskRefreshMilliseconds))
+            {
+                try
+                {
+                    driver.Task.EnterVehicle(_transport, VehicleSeat.Driver, 10000, 1.0f);
+                    _lastDispatchCrewDriverEntryTaskAt = now;
+                    LogRuntime("POLICE_CONVOY_DISPATCH_CREW_DRIVER_ENTRY_TASK",
+                        "Operation=" + _operationId + "; Driver=" + driver.Handle
+                        + "; Vehicle=" + _transport.Handle
+                        + "; Seat=Driver; AttemptIntervalMs="
+                        + DispatchCrewDriverEntryTaskRefreshMilliseconds);
+                }
+                catch (Exception ex)
+                {
+                    _lastDispatchCrewDriverEntryTaskAt = now;
+                    LogException("POLICE_CONVOY_DISPATCH_CREW_DRIVER_ENTRY_FAILED", ex);
+                }
+            }
+            return string.Empty;
+        }
+
+        private int DispatchCrewDriverSeatOccupant(DateTime now)
+        {
+            if (now < _lastDispatchCrewDriverSeatCheckAt.AddMilliseconds(
+                DispatchCrewDriverSeatCheckMilliseconds))
+                return _dispatchCrewDriverSeatOccupantHandle;
+
+            _lastDispatchCrewDriverSeatCheckAt = now;
+            try
+            {
+                Ped occupant = Function.Call<Ped>(
+                    Hash.GET_PED_IN_VEHICLE_SEAT,
+                    _transport,
+                    (int)VehicleSeat.Driver,
+                    false);
+                _dispatchCrewDriverSeatOccupantHandle = occupant != null && occupant.Exists()
+                    ? occupant.Handle : 0;
+            }
+            catch (Exception ex)
+            {
+                _dispatchCrewDriverSeatOccupantHandle = -1;
+                if (!_dispatchCrewDriverSeatConflictLogged)
+                {
+                    _dispatchCrewDriverSeatConflictLogged = true;
+                    LogException("POLICE_CONVOY_DISPATCH_CREW_DRIVER_SEAT_CHECK_FAILED", ex);
+                }
+            }
+            return _dispatchCrewDriverSeatOccupantHandle;
+        }
+
+        private string ProcessPlayerArrivalAtStation(DateTime now, bool transportCrewDriving = false)
+        {
+            if (transportCrewDriving)
+            {
+                if (!_dispatchCrewStationTransport
+                    || _dispatchSceneTransportDriver == null
+                    || DispatchCrewDriverSeatOccupant(now)
+                        != _dispatchSceneTransportDriver.Handle)
+                    return string.Empty;
+            }
+            else if (!PlayerDrivesTransport())
                 return string.Empty;
             if (_stationDestination == Vector3.Zero)
                 return Fail("The selected station has no outside custody point.", true);
 
             if (_stationHandoffGroundPosition == Vector3.Zero)
             {
-                if (_transport.Position.DistanceTo(_stationDestination) > _settings.StationArrivalRadius)
+                // Resolve the visible handoff point while the arriving unit is
+                // still approaching the station. Waiting for the broad route
+                // waypoint to be within the final arrival radius left the
+                // Player at the station with no marker or receiving officer.
+                if (_transport.Position.DistanceTo(_stationDestination)
+                    > Math.Max(StationHandoffPreparationRadius,
+                        _settings.StationArrivalRadius))
                     return string.Empty;
                 if (now < _lastStationHandoffSearchAt.AddSeconds(2))
                     return string.Empty;
@@ -2707,6 +3642,11 @@ namespace LSImmersiveLife
             }
 
             DrawStationHandoffMarker();
+            // Receiving officers are part of the visible station destination,
+            // so prepare them with the marker. Physical unloading still waits
+            // for the transport to stop on the confirmed ground point below.
+            EnsureStationHandoffOfficers();
+            OrderStationHandoffGuards();
             float handoffDistance = _transport.Position.DistanceTo(_stationHandoffGroundPosition);
             if (handoffDistance > StationHandoffArrivalRadius
                 || Math.Abs(_transport.Speed) > StationHandoffStoppedSpeed)
@@ -2720,9 +3660,18 @@ namespace LSImmersiveLife
             }
 
             SetPhase(CustodyPhase.StationUnloading);
-            EnsureStationHandoffOfficers();
-            OrderStationHandoffGuards();
             _playerUnloadingOfferNotified = true;
+            if (_dispatchCrewStationTransport)
+            {
+                LogRuntime("POLICE_CONVOY_DISPATCH_CREW_STATION_ARRIVED",
+                    "Operation=" + _operationId + "; Driver="
+                    + (_dispatchSceneTransportDriver == null
+                        ? "none" : _dispatchSceneTransportDriver.Handle.ToString())
+                    + "; Vehicle=" + _transport.Handle
+                    + "; HandoffGround=" + _stationHandoffGroundPosition);
+                Notify("~b~POLICE CUSTODY~s~\nTransport crew reached the station. Standby officers are receiving the secured suspects.");
+                return "Transport crew reached the station; standby officers are completing the physical custody handoff.";
+            }
             LogRuntime("POLICE_CONVOY_PLAYER_UNLOAD_AVAILABLE",
                 "Stage=STATION; E=OpenRearDoorThenUnload; StandbyOfficer=CompletesIntake");
             Notify("~b~POLICE CUSTODY~s~\nStation reached. Exit the transport; at the rear door press E to open it, then E again to unload. The station officer completes intake.");
@@ -2756,7 +3705,8 @@ namespace LSImmersiveLife
             OrderStationHandoffGuards();
             foreach (Ped prisoner in ValidPrisoners())
             {
-                if (ShouldOfferPlayerUnloading(prisoner, now))
+                if (!_dispatchCrewStationTransport
+                    && ShouldOfferPlayerUnloading(prisoner, now))
                 {
                     if (!_playerUnloadingOfferNotified)
                     {
@@ -2792,6 +3742,16 @@ namespace LSImmersiveLife
                     + "; Officers=" + string.Join(",", _stationHandoffOfficers
                         .Where(ped => ped != null && ped.Exists())
                         .Select(ped => ped.Handle.ToString()).ToArray()));
+                if (_dispatchCrewStationTransport)
+                {
+                    LogRuntime("POLICE_CONVOY_DISPATCH_CREW_STATION_HANDOFF_COMPLETED",
+                        "Operation=" + _operationId
+                        + "; Prisoners=" + string.Join(",", stationPrisoners
+                            .Select(ped => ped.Handle.ToString()).ToArray())
+                        + "; PhysicalStationOfficerReceipt=true; DispatchEndsAfterHandoff=true");
+                    Complete("The transport crew completed the station handoff. Dispatch custody is closed.", false);
+                    return "Transport crew completed the station handoff. Dispatch activity ended.";
+                }
                 Notify("~g~POLICE CUSTODY~s~\nPrisoner(s) received at the station. Approve or decline prison transfer.");
                 return "Prisoner(s) arrived at the selected Police station. Approve or decline prison transfer.";
             }
@@ -3298,6 +4258,205 @@ namespace LSImmersiveLife
             _prisonHandoffArrivalOrdersIssued = _prisonHandoffOfficers.Count > 0;
         }
 
+        internal bool AdoptDispatchCustodyInjuryStates(
+            IEnumerable<LSPDSuspectInjuryState> injuryStates)
+        {
+            if (!Active || !_dispatchCustodyOperation || injuryStates == null)
+                return false;
+
+            Dictionary<int, LSPDSuspectInjuryState> offered = injuryStates
+                .Where(state => state != null && state.Actor != null
+                    && state.Actor.Exists() && !state.Actor.IsDead
+                    && state.Actor.Health > 0 && !state.Fatal)
+                .GroupBy(state => state.Actor.Handle)
+                .ToDictionary(group => group.Key, group => group.First());
+            List<Ped> livingPrisoners = _prisoners.Where(prisoner => prisoner != null
+                && prisoner.Exists() && !prisoner.IsDead && prisoner.Health > 0).ToList();
+            if (livingPrisoners.Count == 0 || offered.Count != livingPrisoners.Count
+                || livingPrisoners.Any(prisoner => !offered.ContainsKey(prisoner.Handle)))
+                return false;
+
+            _prisonerInjuryStates.Clear();
+            foreach (KeyValuePair<int, LSPDSuspectInjuryState> entry in offered)
+                _prisonerInjuryStates.Add(entry.Key, entry.Value);
+            return true;
+        }
+
+        internal void DiscardUncommittedDispatchInjuryHandoff()
+        {
+            _prisonerInjuryStates.Clear();
+        }
+
+        internal void ConfirmDispatchInjuryHandoff()
+        {
+            foreach (Ped prisoner in _prisoners.ToArray())
+            {
+                if (prisoner == null || !prisoner.Exists())
+                    continue;
+                LSPDSuspectInjuryState state;
+                if (!_prisonerInjuryStates.TryGetValue(prisoner.Handle, out state)
+                    || state == null)
+                    continue;
+
+                int healthBefore = prisoner.Health;
+                int maximumBefore = prisoner.MaxHealth;
+                try
+                {
+                    // Re-enable the Ped's original critical-hit policy after
+                    // custody adoption. The managed health buffer remains in
+                    // place, while fatal head hits and severe damage stay real.
+                    prisoner.CanSufferCriticalHits = state.OriginalCanSufferCriticalHits;
+                    if (_dispatchCustodyOperation)
+                        Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                            prisoner, HandcuffedPedConfigFlag, true);
+                    Function.Call(Hash.SET_ENABLE_HANDCUFFS, prisoner, true);
+                    state.RuntimeOwner = "Convoy";
+                    state.LastConvoyHealthCheckAt = DateTime.MinValue;
+                    state.LastHealth = Math.Max(1, prisoner.Health);
+                    LogRuntime("POLICE_CONVOY_INJURY_STATE_ADOPTED",
+                        "Incident=" + state.OccurrenceId
+                        + "; Ped=" + prisoner.Handle
+                        + "; From=Dispatch; To=Convoy"
+                        + "; HealthBefore=" + healthBefore
+                        + "; HealthAfter=" + prisoner.Health
+                        + "; MaximumHealthBefore=" + maximumBefore
+                        + "; MaximumHealthAfter=" + prisoner.MaxHealth
+                        + "; Cuffed=" + Function.Call<bool>(Hash.IS_PED_CUFFED, prisoner)
+                        + "; ConfigFlag120=true; CollisionProof=true"
+                        + "; BulletFireExplosionMeleeProof=false"
+                        + "; CriticalHits=" + prisoner.CanSufferCriticalHits
+                        + "; CumulativeDamage=" + state.DamageTaken
+                        + "; LastDamageKind=" + (state.LastDamageKind ?? "Unknown"));
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_CONVOY_INJURY_HANDOFF_MAINTENANCE_FAILED", ex);
+                }
+            }
+        }
+
+        private void ObserveConvoyInjuryState(Ped prisoner, DateTime now, bool force = false)
+        {
+            if (prisoner == null || !prisoner.Exists())
+                return;
+            LSPDSuspectInjuryState state;
+            if (!_prisonerInjuryStates.TryGetValue(prisoner.Handle, out state)
+                || state == null)
+                return;
+            if (!force && now < state.LastConvoyHealthCheckAt
+                .AddMilliseconds(ActiveCustodyMaintenanceRefreshMilliseconds))
+                return;
+            state.LastConvoyHealthCheckAt = now;
+
+            int currentHealth = Math.Max(0, prisoner.Health);
+            if (currentHealth < state.LastHealth)
+            {
+                int previousHealth = state.LastHealth;
+                int damage = previousHealth - currentHealth;
+                state.DamageTaken += damage;
+                state.RegisteredHits++;
+                state.Wounded = true;
+                state.LastDamageKind = "UnknownDuringConvoy";
+                try
+                {
+                    using (OutputArgument output = new OutputArgument())
+                    {
+                        if (Function.Call<bool>(Hash.GET_PED_LAST_DAMAGE_BONE,
+                            prisoner, output))
+                        {
+                            int bone = output.GetResult<int>();
+                            if (bone != 0)
+                            {
+                                state.LastValidDamageBone = bone;
+                                state.LastValidDamageBoneAt = now;
+                            }
+                        }
+                    }
+                }
+                catch { }
+                LogRuntime("POLICE_CONVOY_PRISONER_HEALTH_DELTA",
+                    "Incident=" + state.OccurrenceId
+                    + "; RuntimeOwner=Convoy; Ped=" + prisoner.Handle
+                    + "; HealthBefore=" + previousHealth
+                    + "; HealthAfter=" + currentHealth
+                    + "; DamageDelta=" + damage
+                    + "; LastValidBone=" + state.LastValidDamageBone
+                    + "; DamageKind=UnknownDuringConvoy"
+                    + "; Cuffed=" + Function.Call<bool>(Hash.IS_PED_CUFFED, prisoner)
+                    + "; CumulativeDamage=" + state.DamageTaken);
+            }
+            state.LastHealth = currentHealth;
+
+            if ((prisoner.IsDead || currentHealth <= 0) && !state.ConvoyTerminalLogged)
+            {
+                state.Fatal = true;
+                state.ConvoyTerminalLogged = true;
+                LogRuntime("POLICE_CONVOY_PRISONER_TERMINAL_INJURY",
+                    "Incident=" + state.OccurrenceId
+                    + "; RuntimeOwner=Convoy; Ped=" + prisoner.Handle
+                    + "; Health=" + currentHealth
+                    + "; MaximumHealth=" + prisoner.MaxHealth
+                    + "; Cuffed=" + Function.Call<bool>(Hash.IS_PED_CUFFED, prisoner)
+                    + "; ConfigFlag120=true; CollisionProof=true"
+                    + "; BulletFireExplosionMeleeProof=false"
+                    + "; LastDamageKind=" + (state.LastDamageKind ?? "Unknown")
+                    + "; Cause=EngineTerminal; Revived=false");
+            }
+        }
+
+        private void RestoreConvoyInjuryState(Ped prisoner, string reason)
+        {
+            if (prisoner == null || !prisoner.Exists())
+                return;
+            LSPDSuspectInjuryState state;
+            if (!_prisonerInjuryStates.TryGetValue(prisoner.Handle, out state)
+                || state == null)
+                return;
+
+            ObserveConvoyInjuryState(prisoner, DateTime.UtcNow, true);
+            int healthBefore = Math.Max(0, prisoner.Health);
+            int maximumBefore = Math.Max(1, prisoner.MaxHealth);
+            if (!state.Fatal && !prisoner.IsDead && prisoner.Health > 0)
+            {
+                try
+                {
+                    prisoner.MaxHealth = Math.Max(1, state.OriginalMaximumHealth);
+                    int restoredHealth = Math.Max(1,
+                        state.OriginalHealth - state.DamageTaken);
+                    if (state.Wounded)
+                        restoredHealth = Math.Max(restoredHealth,
+                            state.ArrestableWoundedHealthFloor);
+                    prisoner.Health = Math.Min(state.OriginalMaximumHealth,
+                        restoredHealth);
+                    prisoner.CanSufferCriticalHits = state.OriginalCanSufferCriticalHits;
+                    state.RuntimeOwner = "Released";
+                    LogRuntime("POLICE_CONVOY_INJURY_STATE_RESTORED",
+                        "Incident=" + state.OccurrenceId
+                        + "; Ped=" + prisoner.Handle
+                        + "; Reason=" + (reason ?? string.Empty)
+                        + "; HealthBefore=" + healthBefore
+                        + "; HealthAfter=" + prisoner.Health
+                        + "; MaximumHealthBefore=" + maximumBefore
+                        + "; MaximumHealthAfter=" + prisoner.MaxHealth
+                        + "; CumulativeDamage=" + state.DamageTaken
+                        + "; Cuffed=" + Function.Call<bool>(Hash.IS_PED_CUFFED, prisoner));
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_CONVOY_INJURY_STATE_RESTORE_FAILED", ex);
+                }
+            }
+            _prisonerInjuryStates.Remove(prisoner.Handle);
+        }
+
+        private void RestoreAllConvoyInjuryStates(string reason)
+        {
+            foreach (LSPDSuspectInjuryState state in _prisonerInjuryStates.Values.ToArray())
+                if (state != null)
+                    RestoreConvoyInjuryState(state.Actor, reason);
+            _prisonerInjuryStates.Clear();
+        }
+
         private void PreparePrisoner(Ped prisoner, bool assignVisibleSurrenderTask = true)
         {
             if (prisoner == null || !prisoner.Exists())
@@ -3315,6 +4474,9 @@ namespace LSImmersiveLife
                 Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, prisoner, true, true);
                 Function.Call(Hash.SET_ENTITY_VISIBLE, prisoner, true, false);
                 Function.Call(Hash.SET_ENABLE_HANDCUFFS, prisoner, true);
+                if (_dispatchCustodyOperation)
+                    Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                        prisoner, HandcuffedPedConfigFlag, true);
                 // Convoy owns the prisoner's lifetime and tasks, not the
                 // prisoner's damage outcome. Clear stale proofs from an older
                 // owner so the prisoner remains visible and can still be
@@ -3349,8 +4511,13 @@ namespace LSImmersiveLife
                 _lastPrisonerMaintenanceAt = now;
             foreach (Ped prisoner in _prisoners.ToArray())
             {
-                if (prisoner == null || !prisoner.Exists() || prisoner.IsDead)
+                if (prisoner == null || !prisoner.Exists())
                     return false;
+                if (prisoner.IsDead || prisoner.Health <= 0)
+                {
+                    ObserveConvoyInjuryState(prisoner, now, true);
+                    return false;
+                }
                 if (!refreshCustodyFlags)
                     continue;
                 try
@@ -3361,8 +4528,12 @@ namespace LSImmersiveLife
                     Function.Call(Hash.SET_ENTITY_AS_MISSION_ENTITY, prisoner, true, true);
                     Function.Call(Hash.SET_ENTITY_VISIBLE, prisoner, true, false);
                     Function.Call(Hash.SET_ENABLE_HANDCUFFS, prisoner, true);
+                    if (_dispatchCustodyOperation)
+                        Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                            prisoner, HandcuffedPedConfigFlag, true);
                     Function.Call(Hash.SET_ENTITY_PROOFS,
                         prisoner, false, false, false, true, false, false, false, false);
+                    ObserveConvoyInjuryState(prisoner, now);
                 }
                 catch (Exception ex)
                 {
@@ -3422,6 +4593,9 @@ namespace LSImmersiveLife
         {
             switch (_phase)
             {
+                case CustodyPhase.DispatchStationTransportDecision:
+                case CustodyPhase.DispatchCrewDriverBoarding:
+                case CustodyPhase.DispatchCrewDriveToStation:
                 case CustodyPhase.DriveToStation:
                 case CustodyPhase.StationUnloading:
                 case CustodyPhase.DriveToPrison:
@@ -3452,10 +4626,23 @@ namespace LSImmersiveLife
                 && _prisonerEscortOfficers.TryGetValue(prisoner.Handle, out assignedOfficer)
                 && assignedOfficer != null && assignedOfficer.Exists()
                 && !assignedOfficer.IsDead && !IsOfficerInTransport(assignedOfficer);
-            return playerIsEscortingThisSuspect || officerIsEscortingThisSuspect
+            int timeout = playerIsEscortingThisSuspect || officerIsEscortingThisSuspect
                 || _transportNearCustodyFallback
                 ? Math.Max(PhysicalPhaseTimeoutSeconds, PlayerEscortTimeoutSeconds)
                 : PhysicalPhaseTimeoutSeconds;
+            if (_dispatchCustodyOperation && !_isRequestedConvoyActivity
+                && !_playerOwnedTransport
+                && _dispatchSceneWalkInDistanceMeters > 0f)
+            {
+                // A remote roadside stop adds a walk-in and return escort. At
+                // the 100 m scene-access limit this adds at most 200 seconds
+                // per active suspect; the existing one-at-a-time queue stays
+                // responsible for group loading.
+                timeout += (int)Math.Ceiling(
+                    Math.Min(_dispatchSceneWalkInDistanceMeters,
+                        MaximumDispatchSceneVehicleDistance) * 2.0f);
+            }
+            return timeout;
         }
 
         private void StartPrisonerLoadingTimeout(Ped prisoner, DateTime now)
@@ -3526,6 +4713,42 @@ namespace LSImmersiveLife
                 && prisoner.CurrentVehicle.Handle == _transport.Handle;
         }
 
+        private bool IsPrisonerInAssignedTransportSeat(Ped prisoner, VehicleSeat seat)
+        {
+            if (!IsInTransport(prisoner) || seat == VehicleSeat.None
+                || seat == VehicleSeat.Any)
+                return false;
+            int handle = prisoner.Handle;
+            DateTime now = DateTime.UtcNow;
+            DateTime lastCheck;
+            bool lastResult;
+            if (_lastAssignedSeatCheckAt.TryGetValue(handle, out lastCheck)
+                && now < lastCheck.AddMilliseconds(
+                    PrisonerAssignedSeatCheckRefreshMilliseconds)
+                && _lastAssignedSeatCheckResult.TryGetValue(handle, out lastResult))
+                return lastResult;
+
+            _lastAssignedSeatCheckAt[handle] = now;
+            try
+            {
+                Ped occupant = Function.Call<Ped>(
+                    Hash.GET_PED_IN_VEHICLE_SEAT,
+                    _transport,
+                    (int)seat,
+                    false);
+                bool confirmed = occupant != null && occupant.Exists()
+                    && occupant.Handle == prisoner.Handle;
+                _lastAssignedSeatCheckResult[handle] = confirmed;
+                return confirmed;
+            }
+            catch (Exception ex)
+            {
+                _lastAssignedSeatCheckResult[handle] = false;
+                LogException("POLICE_CONVOY_PRISONER_ASSIGNED_SEAT_CHECK_FAILED", ex);
+                return false;
+            }
+        }
+
         private bool IsOfficerInTransport(Ped officer)
         {
             return officer != null && officer.Exists() && _transport != null && _transport.Exists()
@@ -3546,8 +4769,13 @@ namespace LSImmersiveLife
                 prisoner.CanSwitchWeapons = false;
                 Function.Call(Hash.SET_ENTITY_VISIBLE, prisoner, true, false);
                 Function.Call(Hash.SET_ENABLE_HANDCUFFS, prisoner, true);
+                if (_dispatchCustodyOperation)
+                    Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                        prisoner, HandcuffedPedConfigFlag, true);
                 Function.Call(Hash.SET_ENTITY_PROOFS,
                     prisoner, false, false, false, true, false, false, false, false);
+                ObserveConvoyInjuryState(prisoner, DateTime.UtcNow);
+                MaintainDispatchCustodyMovementStyle(prisoner);
                 if (ShouldMaintainVisibleCuffPose(prisoner))
                     MaintainVisibleCuffPose(prisoner, DateTime.UtcNow, false);
             }
@@ -3718,11 +4946,83 @@ namespace LSImmersiveLife
             RestoreCustodyInvincibility(_transport);
             RestoreCustodyInvincibility(_transportDriver);
             foreach (Ped prisoner in _prisoners.ToArray())
+            {
+                RestoreDispatchCustodyMovementStyle(prisoner);
                 RestoreCustodyInvincibility(prisoner);
+            }
             foreach (Ped officer in _sceneEscortOfficers.Concat(_stationHandoffOfficers)
                 .Concat(_prisonHandoffOfficers).ToArray())
                 RestoreCustodyInvincibility(officer);
             _custodyInvincibilityStates.Clear();
+        }
+
+        private void MaintainDispatchCustodyMovementStyle(Ped prisoner)
+        {
+            if (!_dispatchCustodyOperation || _isRequestedConvoyActivity
+                || prisoner == null || !prisoner.Exists() || prisoner.IsDead
+                || _dispatchCustodyMovementStyleApplied.Contains(prisoner.Handle))
+                return;
+
+            int handle = prisoner.Handle;
+            DateTime lastRequest;
+            if (_dispatchCustodyMovementStyleRequestedAt.TryGetValue(handle, out lastRequest)
+                && DateTime.UtcNow < lastRequest.AddMilliseconds(
+                    DispatchMovementClipsetRequestRefreshMilliseconds))
+                return;
+
+            const string movementClipset = "move_m@prisoner_cuffed";
+            try
+            {
+                _dispatchCustodyMovementStyleRequestedAt[handle] = DateTime.UtcNow;
+                if (!Function.Call<bool>(Hash.HAS_ANIM_SET_LOADED, movementClipset))
+                {
+                    Function.Call(Hash.REQUEST_ANIM_SET, movementClipset);
+                    return;
+                }
+
+                Function.Call(Hash.SET_PED_MOVEMENT_CLIPSET,
+                    prisoner, movementClipset, 0.25f);
+                _dispatchCustodyMovementStyleApplied.Add(handle);
+                _dispatchCustodyMovementStyleRequestedAt.Remove(handle);
+                LogRuntime("POLICE_CONVOY_DISPATCH_RESTRAINED_MOVEMENT_APPLIED",
+                    "Prisoner=" + handle + "; Clipset=" + movementClipset
+                    + "; Attached=false; Owner=DispatchCustody");
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_DISPATCH_RESTRAINED_MOVEMENT_FAILED", ex);
+            }
+        }
+
+        private void RestoreDispatchCustodyMovementStyle(Ped prisoner)
+        {
+            if (prisoner == null)
+                return;
+
+            int handle = prisoner.Handle;
+            bool wasApplied = _dispatchCustodyMovementStyleApplied.Remove(handle);
+            _dispatchCustodyMovementStyleRequestedAt.Remove(handle);
+            if (!wasApplied || !prisoner.Exists())
+                return;
+
+            try
+            {
+                Function.Call(Hash.RESET_PED_MOVEMENT_CLIPSET, prisoner, 0.25f);
+                LogRuntime("POLICE_CONVOY_DISPATCH_RESTRAINED_MOVEMENT_RESTORED",
+                    "Prisoner=" + handle + "; Owner=DispatchCustody");
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_DISPATCH_RESTRAINED_MOVEMENT_RESTORE_FAILED", ex);
+            }
+        }
+
+        private void RestoreDispatchCustodyMovementStyles()
+        {
+            foreach (Ped prisoner in _prisoners.ToArray())
+                RestoreDispatchCustodyMovementStyle(prisoner);
+            _dispatchCustodyMovementStyleApplied.Clear();
+            _dispatchCustodyMovementStyleRequestedAt.Clear();
         }
 
         private bool MaintainPlayerHandcuffInteraction(
@@ -3853,8 +5153,24 @@ namespace LSImmersiveLife
                 return false;
 
             bool playerEscort = IsPlayerEscort(escort);
+            bool dispatchCustody = _dispatchCustodyOperation
+                && !_isRequestedConvoyActivity;
 
             int prisonerHandle = prisoner.Handle;
+            PrisonerLoadingStage stage;
+            if (!_prisonerLoadingStages.TryGetValue(prisonerHandle, out stage))
+                stage = PrisonerLoadingStage.EscortApproach;
+            if (dispatchCustody
+                && (stage == PrisonerLoadingStage.VehicleDoorReached
+                    || stage == PrisonerLoadingStage.DoorOpened
+                    || stage == PrisonerLoadingStage.Loading))
+            {
+                // The loading stage owns these tasks now. Clearing the
+                // transport officer's door task here restarts the approach
+                // loop while the same door is still being opened/entered.
+                return false;
+            }
+
             Vector3 previousPrisonerPosition;
             Vector3 previousEscortPosition;
             DateTime lastProgressAt;
@@ -3905,11 +5221,10 @@ namespace LSImmersiveLife
                 }
             }
             MaintainPrisonerCustodyState(prisoner);
-            PrisonerLoadingStage stage;
-            _prisonerLoadingStages.TryGetValue(prisonerHandle, out stage);
-            if (escort.Position.DistanceTo(prisoner.Position) > TransportOfficerContactRadius)
-                IssuePrisonerGroundedEscortFollow(prisoner, escort, now);
-            if (!playerEscort)
+            if (dispatchCustody
+                || escort.Position.DistanceTo(prisoner.Position) > TransportOfficerContactRadius)
+                IssuePrisonerGroundedEscortFollow(prisoner, escort, seat, now);
+            if (!playerEscort && !dispatchCustody)
             {
                 if (stage == PrisonerLoadingStage.Escorting
                     || stage == PrisonerLoadingStage.VehicleDoorApproach)
@@ -3945,6 +5260,9 @@ namespace LSImmersiveLife
             if (hadPrevious && previous == stage)
                 return;
 
+            if (stage == PrisonerLoadingStage.EscortApproach
+                || stage == PrisonerLoadingStage.Loaded)
+                _dispatchSceneDoorAnimationFallbackIssued.Remove(prisonerHandle);
             _prisonerLoadingStages[prisonerHandle] = stage;
             _prisonerLoadingStageStartedAt[prisonerHandle] = now;
             LogRuntime(
@@ -3975,6 +5293,7 @@ namespace LSImmersiveLife
         private bool IssuePrisonerGroundedEscortFollow(
             Ped prisoner,
             Ped escort,
+            VehicleSeat seat,
             DateTime now)
         {
             if (prisoner == null || !prisoner.Exists() || prisoner.IsDead
@@ -3997,17 +5316,59 @@ namespace LSImmersiveLife
                 DetachPrisonerFromEscort(
                     prisoner, escort, "GroundedEscortFollowStarts");
                 MaintainPrisonerCustodyState(prisoner);
+                bool dispatchCustody = _dispatchCustodyOperation
+                    && !_isRequestedConvoyActivity;
+                string movement;
+                if (dispatchCustody && IsPlayerEscort(escort))
+                {
+                    // GTA has no dependable shoulder-guiding pair for this
+                    // grounded custody walk; attached escort attempts floated.
+                    // Let the cuffed suspect navigate to the real rear-door
+                    // point while the Player walks behind and remains close.
+                    Vector3 entry = TransportDoorPosition(seat);
+                    Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                        prisoner, entry.X, entry.Y, entry.Z,
+                        0.85f, -1, 1.0f, 1, 0f);
+                    movement = "PrisonerLeadsPlayerToTransport";
+                }
+                else if (dispatchCustody)
+                {
+                    // Keep the suspect physically separate and walking in
+                    // front under its cuffed movement style. The officer
+                    // follows behind; the existing door task takes over only
+                    // after both actors reach the rear-door area.
+                    Vector3 entry = TransportDoorPosition(seat);
                     Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
-                    prisoner,
-                    escort,
-                    0f, -0.45f, 0f,
-                    1.0f, -1, 0.45f, false);
+                        escort, prisoner,
+                        0f, DispatchEscortOfficerTrailingOffset, 0f,
+                        0.85f, -1, 0.3f, false);
+                    Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                        prisoner, entry.X, entry.Y, entry.Z,
+                        0.85f, -1, 1.0f, 1, 0f);
+                    movement = "PrisonerLeadsTransportOfficerToDoor";
+                }
+                else
+                {
+                    // Keep the confirmed standalone Convoy movement path.
+                    Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
+                        prisoner, escort,
+                        0f, -0.2f, 0f,
+                        0.85f, -1, 0.3f, false);
+                    movement = "RestrainedGroundedFollow";
+                }
                 _lastGroundedEscortFollowAt[prisonerHandle] = now;
                 LogRuntime(
                     "POLICE_CONVOY_GROUNDED_ESCORT_FOLLOW_STARTED",
                     "Prisoner=" + prisonerHandle + "; Escort=" + escort.Handle
-                    + "; Movement=FollowToOffsetOfEntity"
-                    + "; Offset=0,-0.45,0; Speed=1.0; StoppingRange=0.45"
+                    + "; Movement=" + movement
+                    + "; Clipset=move_m@prisoner_cuffed"
+                    + (dispatchCustody
+                        ? "; Route=PrisonerNavigatesToPhysicalRearDoor; ActorOrder=PrisonerFrontEscortBehind"
+                        : "; Offset=0,-0.2,0")
+                    + (dispatchCustody && !IsPlayerEscort(escort)
+                        ? "; OfficerTrailingOffsetY=" + DispatchEscortOfficerTrailingOffset
+                        : string.Empty)
+                    + "; Speed=0.85; StoppingRange=0.3"
                     + "; Attached=false");
                 return true;
             }
@@ -4090,6 +5451,8 @@ namespace LSImmersiveLife
 
             int prisonerHandle = prisoner.Handle;
             bool playerEscort = IsPlayerEscort(escort);
+            bool dispatchCustody = _dispatchCustodyOperation
+                && !_isRequestedConvoyActivity;
             if (playerEscort && ReleaseAbandonedPlayerEscort(prisoner, escort, now))
             {
                 escort = FindLoadingEscort(prisoner);
@@ -4224,7 +5587,7 @@ namespace LSImmersiveLife
                     return true;
                 }
 
-                if (!IssuePrisonerGroundedEscortFollow(prisoner, escort, now))
+                if (!IssuePrisonerGroundedEscortFollow(prisoner, escort, seat, now))
                     return true;
 
                 _prisonerEscortStartedAt[prisonerHandle] = now;
@@ -4238,7 +5601,13 @@ namespace LSImmersiveLife
                 LogRuntime("POLICE_CONVOY_ESCORT_MOVEMENT_STARTED",
                     "Prisoner=" + prisonerHandle + "; Escort=" + escort.Handle
                     + "; Owner=" + (playerEscort ? "Player" : "TransportOfficer")
-                    + "; Movement=GroundedFollowToOffset; Attached=false");
+                    + "; Movement=" + (dispatchCustody
+                        ? (playerEscort ? "PrisonerLeadsPlayerToTransport"
+                            : "PrisonerLeadsTransportOfficerToDoor")
+                        : "GroundedFollowToOffset")
+                    + "; ActorOrder=" + (dispatchCustody
+                        ? "PrisonerFrontEscortBehind" : "ExistingConvoyOrder")
+                    + "; Attached=false");
                 return true;
             }
 
@@ -4254,11 +5623,11 @@ namespace LSImmersiveLife
                     SetPrisonerLoadingStage(prisoner, escort,
                         PrisonerLoadingStage.VehicleDoorApproach, now,
                         "WalkingUnderGroundedEscortToRearDoor");
-                    if (!playerEscort)
+                    if (!playerEscort && !dispatchCustody)
                         IssueTransportOfficerVehicleApproach(escort, escortTarget, now);
                     if (prisoner.Position.DistanceTo(escort.Position) > 2.8f
                         && Math.Abs(prisoner.Speed) < 0.2f)
-                        IssuePrisonerGroundedEscortFollow(prisoner, escort, now);
+                        IssuePrisonerGroundedEscortFollow(prisoner, escort, seat, now);
                     return true;
                 }
 
@@ -4287,6 +5656,7 @@ namespace LSImmersiveLife
                 {
                     _prisonerVehicleDoorsOpened.Add(prisonerHandle);
                     _prisonerDoorOpenTaskIssuedAt.Remove(prisonerHandle);
+                    _dispatchSceneDoorAnimationFallbackIssued.Remove(prisonerHandle);
                     SetPrisonerLoadingStage(prisoner, escort,
                         PrisonerLoadingStage.DoorOpened, now,
                         playerEscort ? "PlayerRearDoorPhysicallyOpenConfirmed"
@@ -4305,20 +5675,62 @@ namespace LSImmersiveLife
                 // interval if GTA did not physically open it.
                 if (playerEscort)
                     return true;
+                bool dispatchSceneCustody = dispatchCustody
+                    && _phase == CustodyPhase.SceneLoading;
+                if (dispatchSceneCustody && doorTaskWasIssued
+                    && now >= doorTaskIssuedAt.AddMilliseconds(
+                        DispatchSceneDoorAnimationFallbackGraceMilliseconds)
+                    && _dispatchSceneDoorAnimationFallbackIssued.Add(prisonerHandle))
+                {
+                    try
+                    {
+                        // Some stock Utility/Transport models leave the AI
+                        // open-door task queued without moving the rear door.
+                        // Keep the officer at the door and request the door's
+                        // normal animation; physical angle confirmation and
+                        // the prisoner's physical seat entry remain mandatory.
+                        Function.Call(Hash.SET_VEHICLE_DOOR_OPEN,
+                            _transport, doorIndex, false, false);
+                        LogRuntime(
+                            "POLICE_CONVOY_DISPATCH_SCENE_DOOR_ANIMATION_FALLBACK",
+                            "Prisoner=" + prisonerHandle
+                            + "; Escort=" + escort.Handle
+                            + "; Vehicle=" + _transport.Handle
+                            + "; Door=" + doorIndex
+                            + "; TaskWaitMs="
+                            + DispatchSceneDoorAnimationFallbackGraceMilliseconds
+                            + "; OpenInstantly=false; PhysicalAngleConfirmationRequired=true"
+                            + "; PhysicalEntryAndSeatConfirmationRequired=true");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException(
+                            "POLICE_CONVOY_DISPATCH_SCENE_DOOR_ANIMATION_FALLBACK_FAILED",
+                            ex);
+                        return false;
+                    }
+                    return true;
+                }
+                int doorTaskTimeoutMilliseconds = dispatchCustody
+                    ? DispatchCustodyDoorOpenTaskTimeoutMilliseconds
+                    : 4000;
+                int doorTaskRetryMilliseconds = dispatchCustody
+                    ? DispatchCustodyDoorOpenRetryMilliseconds
+                    : 4000;
                 if (doorTaskWasIssued
-                    && now < doorTaskIssuedAt.AddSeconds(4))
+                    && now < doorTaskIssuedAt.AddMilliseconds(doorTaskRetryMilliseconds))
                     return true;
                 try
                 {
-                    Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                        escort, prisoner, 800);
                     Function.Call(Hash.TASK_OPEN_VEHICLE_DOOR,
-                        escort, _transport, 4000, doorIndex, 1.0f);
+                        escort, _transport, doorTaskTimeoutMilliseconds, doorIndex, 1.0f);
                     _prisonerDoorOpenTaskIssuedAt[prisonerHandle] = now;
                     LogRuntime("POLICE_CONVOY_PRISONER_DOOR_TASK_ISSUED",
                         "Prisoner=" + prisonerHandle + "; Escort=" + escort.Handle
                         + "; Door=" + doorIndex + "; Owner=TransportOfficer"
                         + "; Retry=" + doorTaskWasIssued
+                        + "; TaskTimeoutMs=" + doorTaskTimeoutMilliseconds
+                        + "; RetryAfterMs=" + doorTaskRetryMilliseconds
                         + "; PhysicalOpenForced=false");
                 }
                 catch (Exception ex)
@@ -4464,9 +5876,11 @@ namespace LSImmersiveLife
                     // Only the handoff officer opens the door and starts the
                     // exit. The prisoner never receives a free-standing leave
                     // task before an officer is physically beside the vehicle.
-                    CommandLeaveTransport(prisoner);
+                    CommandLeaveTransport(prisoner, "ReceivingOfficerPhysicalUnload");
                     return true;
                 }
+
+                _lastPrisonerVehicleExitAt.Remove(prisonerHandle);
 
                 if (_prisonerUnloadingDoorsOpened.Remove(prisonerHandle))
                 {
@@ -4798,14 +6212,39 @@ namespace LSImmersiveLife
             CommandWalkTo(prisoner, entry);
         }
 
-        private void CommandLeaveTransport(Ped prisoner)
+        private void CommandLeaveTransport(Ped prisoner, string reason = "PhysicalUnload")
         {
             if (prisoner == null || !prisoner.Exists() || !IsInTransport(prisoner))
                 return;
+            DateTime now = DateTime.UtcNow;
+            DateTime lastIssuedAt;
+            bool retry = _lastPrisonerVehicleExitAt.TryGetValue(
+                prisoner.Handle, out lastIssuedAt);
+            if (retry && now < lastIssuedAt.AddMilliseconds(
+                    PrisonerVehicleExitRefreshMilliseconds))
+                return;
             if (!CanIssuePrisonerTask(prisoner))
                 return;
-            try { Function.Call(Hash.TASK_LEAVE_VEHICLE, prisoner, _transport, 0); }
-            catch (Exception ex) { LogException("POLICE_CONVOY_PRISONER_EXIT_TASK_FAILED", ex); }
+            try
+            {
+                Function.Call(Hash.TASK_LEAVE_VEHICLE, prisoner, _transport, 0);
+                _lastPrisonerVehicleExitAt[prisoner.Handle] = now;
+                LogRuntime(retry
+                        ? "POLICE_CONVOY_PRISONER_EXIT_TASK_RETRY_ISSUED"
+                        : "POLICE_CONVOY_PRISONER_EXIT_TASK_ISSUED",
+                    "Prisoner=" + prisoner.Handle
+                    + "; Vehicle=" + _transport.Handle
+                    + "; AssignedSeat=" + PrisonerSeat(prisoner, _prisoners)
+                    + "; Door=" + PrisonerDoorIndex(PrisonerSeat(prisoner, _prisoners))
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; Retry=" + retry
+                    + "; PhysicalExitConfirmationRequired=true"
+                    + "; RetryAfterMs=" + PrisonerVehicleExitRefreshMilliseconds);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_PRISONER_EXIT_TASK_FAILED", ex);
+            }
         }
 
         private void CommandWalkTo(Ped prisoner, Vector3 target)
@@ -4902,8 +6341,10 @@ namespace LSImmersiveLife
             {
                 Vector3 roadTarget = ResolveTransportRoadPosition(target, 0);
                 SetEmergencySignals(_transport, true);
+                float stoppingDistance = IsDispatchSceneRoadPickup(false)
+                    ? DispatchSceneVehicleArrivalRadius : 18f;
                 _transportDriver.Task.DriveTo(_transport, roadTarget, 22f,
-                    EmergencyDrivingFlags, 18f);
+                    EmergencyDrivingFlags, stoppingDistance);
                 _lastDriverTaskAt = now;
             }
             catch (Exception ex)
@@ -4998,7 +6439,11 @@ namespace LSImmersiveLife
         private Vector3 TransportTarget(bool prisonTrip)
         {
             if (!prisonTrip)
+            {
+                if (IsDispatchSceneRoadPickup(false))
+                    return _dispatchSceneVehicleAccessTarget;
                 return _pickupTarget;
+            }
 
             // Dispatch prison transfer starts from the physical outside spot
             // where the station accepted custody. The general station and
@@ -5008,6 +6453,17 @@ namespace LSImmersiveLife
                 return _stationHandoffGroundPosition;
 
             return _stationDestination;
+        }
+
+        private bool IsDispatchSceneRoadPickup(bool prisonTrip)
+        {
+            return !prisonTrip
+                && _dispatchCustodyOperation
+                && !_isRequestedConvoyActivity
+                && !_playerOwnedTransport
+                && _dispatchSceneVehicleAccessTarget != Vector3.Zero
+                && (_phase == CustodyPhase.PreparingSceneTransport
+                    || _phase == CustodyPhase.SceneTransportEnRoute);
         }
 
         private Vector3 FindSafeStagingPosition(Ped player, Vector3 target, bool prisonTrip)
@@ -5133,6 +6589,7 @@ namespace LSImmersiveLife
                 return;
             if (!terminalAudioAlreadyReported)
                 ReportTerminal("lsimmersivelife.police.transport.completed", "completed");
+            RestoreAllConvoyInjuryStates("PhysicalCustodyCompleted");
             foreach (Ped prisoner in _prisoners.Where(ped => ped != null && ped.Exists()))
             {
                 try
@@ -5170,6 +6627,8 @@ namespace LSImmersiveLife
         {
             if (!Active && _phase != CustodyPhase.Failed)
                 return reason;
+            if (_dispatchClosedAfterCrewCustodyHandoff)
+                recoverable = false;
             _failedIsRecoverable = recoverable;
             _failedAfterStationHandoff = recoverable && IsPrisonTransferPhase(_phase);
             _lastFailureReason = reason ?? string.Empty;
@@ -5192,6 +6651,7 @@ namespace LSImmersiveLife
                 // Preserve the failed scene while the player is still in it.
                 // The existing deferred queue removes owned Convoy entities
                 // only after the player has left the configured cleanup radius.
+                RestoreAllConvoyInjuryStates("NonRecoverableCustodyFailure");
                 RestoreAllCustodyInvincibility();
                 QueueOperationCleanup();
                 _transport = null;
@@ -5260,6 +6720,7 @@ namespace LSImmersiveLife
             _lastEscortOfficerTaskAt.Clear();
             _prisonerVehicleDoorsOpened.Clear();
             _prisonerDoorOpenTaskIssuedAt.Clear();
+            _dispatchSceneDoorAnimationFallbackIssued.Clear();
             _prisonerEntryTasksIssued.Clear();
             foreach (Ped officer in _stationHandoffOfficers.Where(ped => ped != null && ped.Exists()).ToArray())
                 QueueCleanup(officer, null, now);
@@ -5753,6 +7214,99 @@ namespace LSImmersiveLife
             return ResolveRoadPosition(target);
         }
 
+        private static bool TryGetDispatchSceneVehicleRoadNode(
+            Vector3 scenePosition,
+            float maximumDistance,
+            out Vector3 roadPosition,
+            out float distance)
+        {
+            roadPosition = Vector3.Zero;
+            distance = 0f;
+            if (scenePosition == Vector3.Zero || maximumDistance <= 0f)
+                return false;
+
+            try
+            {
+                using (OutputArgument nodeOutput = new OutputArgument())
+                using (OutputArgument headingOutput = new OutputArgument())
+                {
+                    bool found = Function.Call<bool>(
+                        Hash.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING,
+                        scenePosition.X,
+                        scenePosition.Y,
+                        scenePosition.Z,
+                        nodeOutput,
+                        headingOutput,
+                        1,
+                        3.0f,
+                        0);
+                    if (found)
+                    {
+                        Vector3 node = nodeOutput.GetResult<Vector3>();
+                        float heading = headingOutput.GetResult<float>();
+                        float nodeDistance = node.DistanceTo(scenePosition);
+                        if (node != Vector3.Zero
+                            && !float.IsNaN(heading)
+                            && !float.IsInfinity(heading)
+                            && nodeDistance <= maximumDistance
+                            && Math.Abs(node.Z - scenePosition.Z) <= MaximumRoadElevationDifference
+                            && Function.Call<bool>(Hash.IS_POINT_ON_ROAD,
+                                node.X, node.Y, node.Z, 0))
+                        {
+                            roadPosition = node;
+                            distance = nodeDistance;
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Try the existing SHVDN street-node query below. The native
+                // query can fail for a scene coordinate on a sidewalk or lot.
+            }
+
+            Vector3 bestRoadPosition = Vector3.Zero;
+            float bestDistance = float.MaxValue;
+            foreach (Vector3 queryOffset in DispatchSceneRoadNodeQueryOffsets)
+            {
+                try
+                {
+                    Vector3 queryPosition = scenePosition + queryOffset;
+                    float heading;
+                    Vector3 node = World.GetNextPositionOnStreetWithHeading(
+                        queryPosition, out heading);
+                    float nodeDistance = node.DistanceTo(scenePosition);
+                    if (node == Vector3.Zero
+                        || float.IsNaN(heading)
+                        || float.IsInfinity(heading)
+                        || nodeDistance > maximumDistance
+                        || Math.Abs(node.Z - scenePosition.Z) > MaximumRoadElevationDifference
+                        || nodeDistance >= bestDistance)
+                        continue;
+
+                    // This SHVDN helper resolves a vehicle street node; retain
+                    // the scene-distance and elevation bounds, but do not run
+                    // IS_POINT_ON_ROAD again because that native can reject a
+                    // valid node returned from a nearby road query.
+                    bestRoadPosition = node;
+                    bestDistance = nodeDistance;
+                }
+                catch
+                {
+                    // One unavailable sample must not suppress the remaining
+                    // three fixed nearby queries.
+                }
+            }
+
+            if (bestRoadPosition == Vector3.Zero)
+                return false;
+
+            roadPosition = bestRoadPosition;
+            distance = bestDistance;
+            return true;
+        }
+
         private static bool IsPrisonTransferPhase(CustodyPhase phase)
         {
             switch (phase)
@@ -5787,7 +7341,10 @@ namespace LSImmersiveLife
 
         private void ResetOperationFields()
         {
+            RestoreDispatchCustodyMovementStyles();
             _pickupTarget = Vector3.Zero;
+            _dispatchSceneVehicleAccessTarget = Vector3.Zero;
+            _dispatchSceneWalkInDistanceMeters = 0f;
             _stationDestination = Vector3.Zero;
             _stationHandoffGroundPosition = Vector3.Zero;
             _prisonDestination = Vector3.Zero;
@@ -5809,6 +7366,24 @@ namespace LSImmersiveLife
             _lastPrisonerMaintenanceAt = DateTime.MinValue;
             _driverReleaseRequestedAt = DateTime.MinValue;
             _driverReleaseRequested = false;
+            _dispatchSceneTransportDriver = null;
+            _lastDispatchCrewDriverSeatCheckAt = DateTime.MinValue;
+            _lastDispatchCrewDriverEntryTaskAt = DateTime.MinValue;
+            _dispatchCrewDriverEntryStartedAt = DateTime.MinValue;
+            _lastDispatchCrewRouteRecoveryCheckAt = DateTime.MinValue;
+            _lastDispatchCrewArrivalCheckAt = DateTime.MinValue;
+            _lastDispatchCrewStationRouteProgressAt = DateTime.MinValue;
+            _lastDispatchCrewStationGoalDistance = float.MaxValue;
+            _dispatchCrewRouteRecoveryTarget = Vector3.Zero;
+            _dispatchCrewDepartureOrigin = Vector3.Zero;
+            _dispatchCrewDepartureStartedAt = DateTime.MinValue;
+            _dispatchCrewDriverSeatOccupantHandle = 0;
+            _dispatchCrewStationTransport = false;
+            _dispatchCrewCustodyHandoffReady = false;
+            _dispatchClosedAfterCrewCustodyHandoff = false;
+            _dispatchCrewDriverSeatConflictLogged = false;
+            _dispatchCrewPlayerRecoveryPending = false;
+            _dispatchCrewPlayerRecoveryReason = string.Empty;
             _transportOfficerReleaseRequestedAt = DateTime.MinValue;
             _nextTransportOfficerReleaseTaskAt = DateTime.MinValue;
             _lastActiveCustodyMaintenanceAt = DateTime.MinValue;
@@ -5837,11 +7412,16 @@ namespace LSImmersiveLife
             _failedIsRecoverable = false;
             _failedAfterStationHandoff = false;
             _isRequestedConvoyActivity = false;
+            _dispatchCustodyOperation = false;
             _routeThreatState = RouteThreatState.None;
             _routeThreatPreparationDeadline = DateTime.MinValue;
             _lastRouteThreatCombatTaskAt = DateTime.MinValue;
             _lastPrisonerTaskAt.Clear();
             _lastPrisonerVehicleEntryAt.Clear();
+            _lastPrisonerVehicleExitAt.Clear();
+            _lastAssignedSeatCheckAt.Clear();
+            _lastAssignedSeatCheckResult.Clear();
+            _prisonerInjuryStates.Clear();
             _lastPrisonerCuffPoseAt.Clear();
             _lastPrisonerEscortPosition.Clear();
             _lastEscortOfficerPosition.Clear();
@@ -5862,6 +7442,7 @@ namespace LSImmersiveLife
             _prisonerUnloadingOfficers.Clear();
             _prisonerVehicleDoorsOpened.Clear();
             _prisonerDoorOpenTaskIssuedAt.Clear();
+            _dispatchSceneDoorAnimationFallbackIssued.Clear();
             _prisonerEntryTasksIssued.Clear();
             _prisonerLoadedLogIssued.Clear();
             _playerEscortPrisoners.Clear();
@@ -5874,6 +7455,8 @@ namespace LSImmersiveLife
             _playerUnloadingDoorInteractions.Clear();
             _playerUnloadingTasksIssued.Clear();
             _custodyInvincibilityStates.Clear();
+            _dispatchCustodyMovementStyleApplied.Clear();
+            _dispatchCustodyMovementStyleRequestedAt.Clear();
         }
 
         private int DeferredCleanupGraceSeconds
@@ -6118,6 +7701,9 @@ namespace LSImmersiveLife
                 _prisonerLoadingTimeoutStartedAt.Clear();
             _lastPrisonerTaskAt.Clear();
             _lastPrisonerVehicleEntryAt.Clear();
+            _lastPrisonerVehicleExitAt.Clear();
+            _lastAssignedSeatCheckAt.Clear();
+            _lastAssignedSeatCheckResult.Clear();
             _lastPrisonerCuffPoseAt.Clear();
             _prisonerUnloadingOfficers.Clear();
             if (phase == CustodyPhase.StationUnloading

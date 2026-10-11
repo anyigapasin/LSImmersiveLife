@@ -69,6 +69,7 @@ namespace LSImmersiveLife
         private NativeItem _requestConvoyActivity;
         private NativeItem _continueTransport;
         private NativeItem _finishCustody;
+        private NativeItem _recoverPersonalUtility;
         private NativeItem _cancelActiveDispatch;
         private NativeItem _resetPoliceRuntime;
         private NativeMenu _crimeActivitiesMenu;
@@ -593,6 +594,8 @@ namespace LSImmersiveLife
                     _requestCrimeActivity.Enabled = quietPatrol;
                 if (_requestDispatch != null)
                     _requestDispatch.Enabled = quietPatrol && _core.Dispatch.IsEnabled;
+                if (_recoverPersonalUtility != null)
+                    _recoverPersonalUtility.Enabled = _core.CanRecoverPersonalUtility;
                 RefreshBackupResponseMenu();
             };
             dispatch.Opening += delegate { _refreshOffer(); };
@@ -613,11 +616,15 @@ namespace LSImmersiveLife
             _releaseDispatchSuspect = new NativeItem("Release the Ped");
             _approveTransport = new NativeItem("Request Transport");
             _finishCustody = new NativeItem("Complete the Transport");
+            _recoverPersonalUtility = new NativeItem(
+                "Spawn the Personal Utility",
+                "Locate the saved Utility within 150 metres or recover it to safe parked ground nearby.");
             _investigateDispatch.Activated += delegate { RunCoreCommand(_core.InvestigateDispatch); };
             _secureDispatch.Activated += delegate { RunCoreCommand(_core.SecureDispatchSuspect); };
             _releaseDispatchSuspect.Activated += delegate { RunCoreCommand(_core.ReleaseDispatchSuspect); };
             _approveTransport.Activated += delegate { RunCoreCommand(_core.ApproveDispatchTransportAction); };
             _finishCustody.Activated += delegate { RunCoreCommand(_core.CompletePrisonerTransport); };
+            _recoverPersonalUtility.Activated += delegate { RunCoreCommand(_core.RecoverPersonalUtility); };
             dispatch.Add(_investigateDispatch);
             dispatch.Add(_secureDispatch);
             AddUnavailableChoice(dispatch, "Instruct the Back Up Ped to Arrest a Suspect");
@@ -625,7 +632,7 @@ namespace LSImmersiveLife
             dispatch.Add(_approveTransport);
             AddUnavailableChoice(dispatch, "Instruct the Escort Ped to Arrest a Suspect");
             dispatch.Add(_finishCustody);
-            AddUnavailableChoice(dispatch, "Spawn the Personal Utility");
+            dispatch.Add(_recoverPersonalUtility);
             dispatch.Add(_releaseDispatchSuspect);
             _refreshOffer();
         }

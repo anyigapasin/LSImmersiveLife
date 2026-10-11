@@ -43,6 +43,12 @@ namespace LSImmersiveLife
         private const float InteriorAccessUseRadius = 7f;
         private const float InteriorAccessDestinationRadius = 3.25f;
         private const float InteriorAccessDoorOpenRatio = 0.95f;
+        private const float InteriorAccessDoorPropSearchRadius = 2.75f;
+        private const float InteriorAccessDoorMaxSegmentDistance = 1.75f;
+        private const float GunStoreEndpointDoorPropSearchRadius = 4f;
+        private const float GunStoreEndpointDoorMaxDistance = 2.5f;
+        private const string RuntimeGunStoreDoorMappingBasis =
+            "RuntimeGunStoreEntranceEgress_DoorValidatedOnUse";
         private const int InteriorAccessTimeoutMilliseconds = 30000;
         private const int InteriorAccessDoorOpenStepMilliseconds = 80;
         private const float InteriorAccessDoorOpenStep = 0.10f;
@@ -50,16 +56,52 @@ namespace LSImmersiveLife
         private const int InteriorAccessDoorUnlockMaximumAttempts = 8;
         private const float InteriorActivityMinimumDepth = 1.75f;
         private const float InteriorActivityMaximumDepth = 7f;
+        private const float InteriorFloorAlignmentTolerance = 1.5f;
         private const int UnlockedDoorSystemState = 0;
         private const int UnlockedThisFrameDoorSystemState = 3;
         private const float SurveyPointAreaRadius = 650f;
         private const float MaximumSurveyPedSnapDistance = 4f;
         private const float MaximumAreaAnchorSnapDistance = 90f;
         private const int MaximumSurveyCandidatesToValidate = 20;
+        private const int MaximumMappedInteriorDispatchCandidates = 3;
         private const int RecentLocationHistoryLimit = 8;
+        private const float DispatchCivilianSearchRadius = 10f;
+        private const float DispatchCivilianMinimumSuspectDistance = 2.25f;
+        private const int MaximumDispatchCivilianCandidatesToInspect = 24;
+        private const float DispatchParticipantFallbackOffset = 1.25f;
+        private const float DispatchParticipantMaximumTotalOffset = 2.75f;
+        private const float DispatchVictimFallbackCorrectionDistance = 2.75f;
+        private const float DispatchVictimMaximumSceneDistance = 5.25f;
+        private static readonly Vector2[] DispatchParticipantFallbackDirections =
+        {
+            new Vector2(DispatchParticipantFallbackOffset, 0f),
+            new Vector2(-DispatchParticipantFallbackOffset, 0f),
+            new Vector2(0f, DispatchParticipantFallbackOffset),
+            new Vector2(0f, -DispatchParticipantFallbackOffset)
+        };
+        private static readonly Vector2[] DispatchVehicleStagingProbeOffsets =
+        {
+            new Vector2(0f, 0f),
+            new Vector2(0f, 4f),
+            new Vector2(0f, -4f)
+        };
+        private static readonly Vector2[] DispatchVictimFallbackDirections =
+        {
+            new Vector2(2.5f, 0f),
+            new Vector2(-2.5f, 0f),
+            new Vector2(0f, 2.5f),
+            new Vector2(0f, -2.5f),
+            new Vector2(1.75f, 1.75f),
+            new Vector2(1.75f, -1.75f),
+            new Vector2(-1.75f, 1.75f),
+            new Vector2(-1.75f, -1.75f)
+        };
 
         private readonly Dictionary<int, AmbientActorContext> _actors =
             new Dictionary<int, AmbientActorContext>();
+
+        private readonly Dictionary<int, DispatchCivilianClaim> _dispatchCivilianClaims =
+            new Dictionary<int, DispatchCivilianClaim>();
 
         private readonly Dictionary<int, long> _nextEvaluationAt =
             new Dictionary<int, long>();
@@ -73,6 +115,10 @@ namespace LSImmersiveLife
         private readonly Dictionary<int, AmbientInteriorAccessSession> _interiorAccessSessions =
             new Dictionary<int, AmbientInteriorAccessSession>();
         private LSImmersiveLocationCatalog _locationCatalog;
+        private LSNPCDatabase _npcDatabase;
+        private LSImmersiveLocationCatalog _interiorAccessPairsCacheCatalog;
+        private List<LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair>
+            _interiorAccessPairsIncludingGunStores;
         private LSImmersiveLog _log;
 
         internal LSWorldAmbientBehavior(
@@ -94,16 +140,37 @@ namespace LSImmersiveLife
             _log = log;
         }
 
+        internal void AttachNpcDatabase(LSNPCDatabase npcDatabase)
+        {
+            _npcDatabase = npcDatabase;
+        }
+
+        internal bool TryChooseDispatchVictimModel(string poolId, out string modelName)
+        {
+            modelName = string.Empty;
+            return _npcDatabase != null
+                && _npcDatabase.TryChooseDispatchPedModel(poolId, out modelName);
+        }
+
+        internal bool IsDispatchVictimModelInPool(string poolId, int modelHash)
+        {
+            return _npcDatabase != null
+                && _npcDatabase.IsDispatchPedModelInPool(poolId, modelHash);
+        }
+
         internal void UpdateLocationCatalog(LSImmersiveLocationCatalog locationCatalog)
         {
             _locationCatalog = locationCatalog;
+            _interiorAccessPairsCacheCatalog = null;
+            _interiorAccessPairsIncludingGunStores = null;
         }
 
         /// <summary>
         /// Shows and handles the Player's physical threshold action. A mapped
-        /// coordinate pair only points to the candidate threshold; the door must
-        /// be found by raycast and the actor must physically reach the other
-        /// interior context before this operation completes.
+        /// coordinate pair only identifies a candidate threshold. A live,
+        /// Door-System-registered door must be found at that threshold, and the
+        /// actor must physically reach the other interior context before this
+        /// operation completes.
         /// </summary>
         internal AmbientInteriorAccessStatus ProcessPlayerInteriorAccess(
             Ped player,
@@ -166,7 +233,13 @@ namespace LSImmersiveLife
                 + "; CoordinateInteriorId=" + GetInteriorAt(player.Position)
                 + "; Position=" + player.Position
                 + "; Entering=" + route.EnteringInterior
-                + "; MappingBasis=" + route.Pair.MappingBasis);
+                + "; MappingBasis=" + route.Pair.MappingBasis
+                + "; MappedInteriorId=" + route.Pair.InteriorId
+                + "; TargetInteriorId=" + route.TargetInteriorId
+                + "; OutsideLiveInteriorId=" + GetInteriorAt(
+                    ResolveOutsideInteriorProbe(route.Pair))
+                + "; InsideLiveInteriorId=" + GetInteriorAt(
+                    route.Pair.InsidePoint.Position));
 
             if (!TryBeginInteriorAccess(player, route, out routeFailure))
             {
@@ -214,8 +287,10 @@ namespace LSImmersiveLife
             AmbientInteriorAccessRoute nearest = null;
             float nearestDistance = float.MaxValue;
             string walkablePositionFailure = string.Empty;
+            string nearestSideFailure = string.Empty;
+            float nearestSideFailureDistance = float.MaxValue;
             foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
-                in _locationCatalog.InteriorAccessPairs)
+                in GetInteriorAccessPairsIncludingGunStores())
             {
                 int pairInteriorId;
                 if (pair == null || !int.TryParse(
@@ -224,17 +299,44 @@ namespace LSImmersiveLife
                     || pairInteriorId == 0)
                     continue;
 
-                Vector3 outsideProbe = ResolveOutsideInteriorProbe(pair);
-                int liveOutsideInteriorId = GetInteriorAt(outsideProbe);
-                int liveInsideInteriorId = GetInteriorAt(pair.InsidePoint.Position);
-                if (liveInsideInteriorId == 0
-                    || liveOutsideInteriorId == liveInsideInteriorId)
-                    continue;
-
                 float outsideDistance = actor.Position.DistanceTo(
                     pair.OutsidePoint.Position);
                 float insideDistance = actor.Position.DistanceTo(
                     pair.InsidePoint.Position);
+                if (outsideDistance > InteriorAccessUseRadius
+                    && insideDistance > InteriorAccessUseRadius)
+                    continue;
+                float pairDistanceToActor = Math.Min(
+                    outsideDistance, insideDistance);
+
+                Vector3 outsideProbe = ResolveOutsideInteriorProbe(pair);
+                int liveOutsideInteriorId = GetInteriorAt(outsideProbe);
+                int liveInsideInteriorId = GetInteriorAt(pair.InsidePoint.Position);
+                bool runtimeGunStorePair = string.Equals(
+                    pair.MappingBasis,
+                    RuntimeGunStoreDoorMappingBasis,
+                    StringComparison.OrdinalIgnoreCase);
+                if (liveInsideInteriorId == 0
+                    || (runtimeGunStorePair
+                        && liveInsideInteriorId != pairInteriorId))
+                {
+                    if (pairDistanceToActor < nearestSideFailureDistance)
+                    {
+                        nearestSideFailureDistance = pairDistanceToActor;
+                        nearestSideFailure = "Location=" + pair.InsideLocation.Id
+                            + "; MappedInteriorId=" + pair.InteriorId
+                            + "; OutsideLiveInteriorId=" + liveOutsideInteriorId
+                            + "; InsideLiveInteriorId=" + liveInsideInteriorId
+                            + "; OutsideDistance=" + outsideDistance.ToString("0.00", CultureInfo.InvariantCulture)
+                            + "; InsideDistance=" + insideDistance.ToString("0.00", CultureInfo.InvariantCulture);
+                    }
+                    continue;
+                }
+
+                // GTA may report one non-zero interior ID on both sides of a
+                // storefront threshold. The mapped points distinguish the sides;
+                // runtime door lookup and physical crossing still validate entry.
+
                 bool enteringInterior = outsideDistance <= InteriorAccessUseRadius
                     && (outsideDistance + 0.35f < insideDistance
                         || actorCoordinateInteriorId == liveOutsideInteriorId);
@@ -242,7 +344,19 @@ namespace LSImmersiveLife
                     && (insideDistance + 0.35f < outsideDistance
                         || actorCoordinateInteriorId == liveInsideInteriorId);
                 if (!enteringInterior && !exitingInterior)
+                {
+                    if (pairDistanceToActor < nearestSideFailureDistance)
+                    {
+                        nearestSideFailureDistance = pairDistanceToActor;
+                        nearestSideFailure = "Location=" + pair.InsideLocation.Id
+                            + "; MappedInteriorId=" + pair.InteriorId
+                            + "; OutsideLiveInteriorId=" + liveOutsideInteriorId
+                            + "; InsideLiveInteriorId=" + liveInsideInteriorId
+                            + "; OutsideDistance=" + outsideDistance.ToString("0.00", CultureInfo.InvariantCulture)
+                            + "; InsideDistance=" + insideDistance.ToString("0.00", CultureInfo.InvariantCulture);
+                    }
                     continue;
+                }
                 if (enteringInterior && exitingInterior)
                     enteringInterior = outsideDistance <= insideDistance;
 
@@ -287,7 +401,10 @@ namespace LSImmersiveLife
             {
                 reason = !string.IsNullOrWhiteSpace(walkablePositionFailure)
                     ? walkablePositionFailure
-                    : "No live mapped doorway side is close enough to this actor.";
+                    : !string.IsNullOrWhiteSpace(nearestSideFailure)
+                        ? "No live mapped doorway side is close enough to this actor. "
+                            + nearestSideFailure
+                        : "No live mapped doorway side is close enough to this actor.";
                 return false;
             }
 
@@ -333,16 +450,21 @@ namespace LSImmersiveLife
             float nearestDistance = float.MaxValue;
             string walkableFailure = string.Empty;
             foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
-                in _locationCatalog.InteriorAccessPairs)
+                in GetInteriorAccessPairsIncludingGunStores())
             {
-                if (pair == null || pair.OutsidePoint == null || pair.InsidePoint == null)
+                if (pair == null || pair.OutsidePoint == null || pair.InsidePoint == null
+                    || !string.Equals(pair.InteriorId,
+                        targetInteriorId.ToString(CultureInfo.InvariantCulture),
+                        StringComparison.OrdinalIgnoreCase))
                     continue;
 
                 Vector3 outsideProbe = ResolveOutsideInteriorProbe(pair);
                 int liveOutsideInteriorId = GetInteriorAt(outsideProbe);
                 int liveInsideInteriorId = GetInteriorAt(pair.InsidePoint.Position);
-                if (liveInsideInteriorId != targetInteriorId
-                    || liveOutsideInteriorId == liveInsideInteriorId)
+                if (!IsMappedInteriorThresholdRuntimeValid(
+                    targetInteriorId,
+                    liveOutsideInteriorId,
+                    liveInsideInteriorId))
                     continue;
 
                 Vector3 entryPosition = enteringInterior
@@ -386,6 +508,21 @@ namespace LSImmersiveLife
             }
             route = nearest;
             return true;
+        }
+
+        private static bool IsMappedInteriorThresholdRuntimeValid(
+            int targetInteriorId,
+            int liveOutsideInteriorId,
+            int liveInsideInteriorId)
+        {
+            // Some GTA storefront shells report the same nonzero interior ID
+            // on both surveyed sides. The catalog pair and physical door/path
+            // checks disambiguate that threshold; a different nonzero outside
+            // ID remains an incompatible adjacent interior.
+            return targetInteriorId != 0
+                && liveInsideInteriorId == targetInteriorId
+                && (liveOutsideInteriorId == 0
+                    || liveOutsideInteriorId == liveInsideInteriorId);
         }
 
         private bool TryResolveInteriorWalkablePosition(
@@ -448,7 +585,9 @@ namespace LSImmersiveLife
                     if (!World.GetGroundHeightAndNormal(safe, out groundZ, out groundNormal)
                         || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
                         || groundNormal.Z < 0.55f
-                        || Math.Abs(safe.Z - groundZ) > 3f)
+                        || Math.Abs(safe.Z - groundZ) > 3f
+                        || Math.Abs(groundZ - insideThreshold.Z)
+                            > InteriorFloorAlignmentTolerance)
                         continue;
                     safe.Z = groundZ;
                     if (GetInteriorAt(safe) != expectedInteriorId
@@ -857,7 +996,7 @@ namespace LSImmersiveLife
             if (_locationCatalog == null)
                 return false;
             foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
-                in _locationCatalog.InteriorAccessPairs)
+                in GetInteriorAccessPairsIncludingGunStores())
             {
                 if (pair == null || pair.OutsidePoint == null || pair.InsidePoint == null)
                     continue;
@@ -866,6 +1005,80 @@ namespace LSImmersiveLife
                     return true;
             }
             return false;
+        }
+
+        private List<LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair>
+            GetInteriorAccessPairsIncludingGunStores()
+        {
+            if (_locationCatalog == null)
+                return new List<LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair>();
+
+            if (ReferenceEquals(_interiorAccessPairsCacheCatalog, _locationCatalog)
+                && _interiorAccessPairsIncludingGunStores != null)
+                return _interiorAccessPairsIncludingGunStores;
+
+            var accessPairs = new List<LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair>();
+
+            foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
+                in _locationCatalog.InteriorAccessPairs)
+            {
+                if (pair != null)
+                    accessPairs.Add(pair);
+            }
+
+            foreach (LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location
+                in _locationCatalog.Locations)
+            {
+                if (location == null
+                    || !string.Equals(location.PhysicalType, "GunStore",
+                        StringComparison.OrdinalIgnoreCase)
+                    || !location.ExteriorVerified
+                    || !location.InteriorVerified
+                    || !string.Equals(location.IdentityStatus,
+                        "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                LSImmersiveLocationCatalog.LSImmersiveLocationPoint outsidePoint;
+                LSImmersiveLocationCatalog.LSImmersiveLocationPoint insidePoint;
+                int mappedInteriorId;
+                if (!location.TryGetPoint(
+                        "ObservedCoordinateCandidate", false, out outsidePoint)
+                    || !location.TryGetPoint(
+                        "InteriorEgressCandidate", false, out insidePoint)
+                    || outsidePoint == null || insidePoint == null
+                    || !string.Equals(outsidePoint.PositionContext,
+                        "OwnerConfirmedExteriorEntranceReference",
+                        StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(outsidePoint.InteriorId, "0",
+                        StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(insidePoint.PositionContext,
+                        "OwnerConfirmedInteriorCoordinateReference",
+                        StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(outsidePoint.SourceRef, location.SourceRef,
+                        StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(insidePoint.SourceRef, location.SourceRef,
+                        StringComparison.OrdinalIgnoreCase)
+                    || !int.TryParse(insidePoint.InteriorId,
+                        NumberStyles.Integer, CultureInfo.InvariantCulture,
+                        out mappedInteriorId)
+                    || mappedInteriorId == 0)
+                    continue;
+
+                // Gun Store egress records identify the GTA interior destination,
+                // not a paired physical doorway. Resolve the live registered door
+                // at the entrance/egress anchor before exposing the interaction.
+                accessPairs.Add(new LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair(
+                    location,
+                    outsidePoint,
+                    location,
+                    insidePoint,
+                    outsidePoint.Position.DistanceTo(insidePoint.Position),
+                    RuntimeGunStoreDoorMappingBasis));
+            }
+
+            _interiorAccessPairsCacheCatalog = _locationCatalog;
+            _interiorAccessPairsIncludingGunStores = accessPairs;
+            return _interiorAccessPairsIncludingGunStores;
         }
 
         internal bool TryGetActorInteriorId(Ped actor, out int interiorId)
@@ -878,6 +1091,22 @@ namespace LSImmersiveLife
                 interiorId = Function.Call<int>(Hash.GET_INTERIOR_FROM_ENTITY, actor);
                 if (interiorId == 0)
                     interiorId = GetInteriorAt(actor.Position);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal bool TryGetDispatchPlayerInteriorId(
+            Vector3 playerPosition,
+            out int interiorId)
+        {
+            interiorId = 0;
+            try
+            {
+                interiorId = GetInteriorAt(playerPosition);
                 return true;
             }
             catch
@@ -927,6 +1156,16 @@ namespace LSImmersiveLife
             doorEntity = null;
             doorHash = 0;
             reason = string.Empty;
+
+            if (route != null && route.Pair != null
+                && string.Equals(route.Pair.MappingBasis,
+                    RuntimeGunStoreDoorMappingBasis,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return TryFindGunStoreEndpointDoor(
+                    actor, route, out doorEntity, out doorHash, out reason);
+            }
+
             float[] rayHeights = { 0.82f, 1.08f, 1.42f };
             for (int index = 0; index < rayHeights.Length; index++)
             {
@@ -957,23 +1196,8 @@ namespace LSImmersiveLife
                 Entity candidate = hit.HitEntity;
                 try
                 {
-                    if (Function.Call<int>(Hash.GET_ENTITY_TYPE, candidate) != 3)
-                        continue;
-
                     int candidateDoorHash;
-                    bool found;
-                    using (var doorOutput = new OutputArgument())
-                    {
-                        found = Function.Call<bool>(
-                            Hash.DOOR_SYSTEM_FIND_EXISTING_DOOR,
-                            candidate.Position.X,
-                            candidate.Position.Y,
-                            candidate.Position.Z,
-                            candidate.Model.Hash,
-                            doorOutput);
-                        candidateDoorHash = doorOutput.GetResult<int>();
-                    }
-                    if (!found || candidateDoorHash == 0)
+                    if (!TryGetExistingDoorHash(candidate, out candidateDoorHash))
                         continue;
 
                     doorEntity = candidate;
@@ -987,8 +1211,256 @@ namespace LSImmersiveLife
                 }
             }
 
-            reason = "No registered physical door was found across the mapped outside/inside threshold.";
+            Vector3 outsidePoint = route.Pair.OutsidePoint.Position;
+            Vector3 insidePoint = route.Pair.InsidePoint.Position;
+            Vector3 thresholdCenter = new Vector3(
+                (outsidePoint.X + insidePoint.X) * 0.5f,
+                (outsidePoint.Y + insidePoint.Y) * 0.5f,
+                (outsidePoint.Z + insidePoint.Z) * 0.5f);
+            Prop[] nearbyProps;
+            try
+            {
+                nearbyProps = World.GetNearbyProps(
+                    thresholdCenter,
+                    InteriorAccessDoorPropSearchRadius);
+            }
+            catch (Exception ex)
+            {
+                reason = "The nearby doorway-object scan failed: " + ex.Message;
+                return false;
+            }
+
+            if (nearbyProps == null)
+                nearbyProps = new Prop[0];
+
+            int registeredDoorCount = 0;
+            float nearestRegisteredDoorDistance = float.MaxValue;
+            Prop nearestRegisteredDoor = null;
+            int nearestRegisteredDoorHash = 0;
+            string doorLookupFailure = string.Empty;
+            for (int index = 0; index < nearbyProps.Length; index++)
+            {
+                Prop candidate = nearbyProps[index];
+                if (candidate == null || !candidate.Exists())
+                    continue;
+
+                int candidateDoorHash;
+                try
+                {
+                    if (!TryGetExistingDoorHash(candidate, out candidateDoorHash))
+                        continue;
+                }
+                catch (Exception ex)
+                {
+                    if (string.IsNullOrWhiteSpace(doorLookupFailure))
+                        doorLookupFailure = ex.Message;
+                    continue;
+                }
+
+                registeredDoorCount++;
+                float distanceToThreshold = DistanceToSegment(
+                    candidate.Position,
+                    outsidePoint,
+                    insidePoint);
+                if (distanceToThreshold < nearestRegisteredDoorDistance)
+                {
+                    nearestRegisteredDoorDistance = distanceToThreshold;
+                    nearestRegisteredDoor = candidate;
+                    nearestRegisteredDoorHash = candidateDoorHash;
+                }
+            }
+
+            if (nearestRegisteredDoor != null
+                && nearestRegisteredDoorDistance <= InteriorAccessDoorMaxSegmentDistance)
+            {
+                doorEntity = nearestRegisteredDoor;
+                doorHash = nearestRegisteredDoorHash;
+                Log("AMBIENT_WORLD_INTERIOR_DOOR_FOUND_NEAR_THRESHOLD",
+                    "Actor=" + actor.Handle
+                    + "; DoorEntity=" + doorEntity.Handle
+                    + "; DoorHash=" + doorHash
+                    + "; Location=" + route.Pair.InsideLocation.Id
+                    + "; NearbyProps=" + nearbyProps.Length
+                    + "; RegisteredDoorCandidates=" + registeredDoorCount
+                    + "; SegmentDistance=" + nearestRegisteredDoorDistance.ToString("0.00", CultureInfo.InvariantCulture));
+                return true;
+            }
+
+            reason = "No registered physical door was found across the mapped outside/inside threshold. "
+                + "NearbyProps=" + nearbyProps.Length
+                + "; RegisteredDoorCandidates=" + registeredDoorCount
+                + "; NearestRegisteredDoorDistance="
+                + (nearestRegisteredDoor == null
+                    ? "none"
+                    : nearestRegisteredDoorDistance.ToString("0.00", CultureInfo.InvariantCulture))
+                + (string.IsNullOrWhiteSpace(doorLookupFailure)
+                    ? string.Empty
+                    : "; DoorLookupError=" + doorLookupFailure);
             return false;
+        }
+
+        private bool TryFindGunStoreEndpointDoor(
+            Ped actor,
+            AmbientInteriorAccessRoute route,
+            out Entity doorEntity,
+            out int doorHash,
+            out string reason)
+        {
+            doorEntity = null;
+            doorHash = 0;
+            reason = string.Empty;
+            if (actor == null || !actor.Exists() || route == null
+                || route.Pair == null || route.Pair.OutsidePoint == null
+                || route.Pair.InsidePoint == null
+                || route.Pair.InsideLocation == null
+                || !string.Equals(route.Pair.InsideLocation.PhysicalType,
+                    "GunStore", StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "The Gun Store door candidate is incomplete.";
+                return false;
+            }
+
+            Vector3 entranceAnchor = route.EntryPosition;
+            Prop[] nearbyProps;
+            try
+            {
+                nearbyProps = World.GetNearbyProps(
+                    entranceAnchor,
+                    GunStoreEndpointDoorPropSearchRadius);
+            }
+            catch (Exception ex)
+            {
+                reason = "The Gun Store endpoint-object scan failed: " + ex.Message;
+                return false;
+            }
+
+            if (nearbyProps == null)
+                nearbyProps = new Prop[0];
+
+            int registeredDoorCount = 0;
+            float nearestRegisteredDoorDistance = float.MaxValue;
+            Prop nearestRegisteredDoor = null;
+            int nearestRegisteredDoorHash = 0;
+            string doorLookupFailure = string.Empty;
+            for (int index = 0; index < nearbyProps.Length; index++)
+            {
+                Prop candidate = nearbyProps[index];
+                if (candidate == null || !candidate.Exists())
+                    continue;
+
+                int candidateDoorHash;
+                try
+                {
+                    if (!TryGetExistingDoorHash(candidate, out candidateDoorHash))
+                        continue;
+                }
+                catch (Exception ex)
+                {
+                    if (string.IsNullOrWhiteSpace(doorLookupFailure))
+                        doorLookupFailure = ex.Message;
+                    continue;
+                }
+
+                registeredDoorCount++;
+                float distanceToAnchor = candidate.Position.DistanceTo(entranceAnchor);
+                if (distanceToAnchor < nearestRegisteredDoorDistance)
+                {
+                    nearestRegisteredDoorDistance = distanceToAnchor;
+                    nearestRegisteredDoor = candidate;
+                    nearestRegisteredDoorHash = candidateDoorHash;
+                }
+            }
+
+            if (nearestRegisteredDoor != null
+                && nearestRegisteredDoorDistance <= GunStoreEndpointDoorMaxDistance)
+            {
+                doorEntity = nearestRegisteredDoor;
+                doorHash = nearestRegisteredDoorHash;
+                Log("AMBIENT_WORLD_GUN_STORE_DOOR_FOUND_AT_ENDPOINT",
+                    "Actor=" + actor.Handle
+                    + "; DoorEntity=" + doorEntity.Handle
+                    + "; DoorHash=" + doorHash
+                    + "; Location=" + route.Pair.InsideLocation.Id
+                    + "; CatalogInteriorId=" + route.Pair.InteriorId
+                    + "; Endpoint=" + (route.EnteringInterior
+                        ? "ExteriorEntrance" : "InteriorEgress")
+                    + "; NearbyProps=" + nearbyProps.Length
+                    + "; RegisteredDoorCandidates=" + registeredDoorCount
+                    + "; EndpointDistance=" + nearestRegisteredDoorDistance.ToString("0.00", CultureInfo.InvariantCulture));
+                return true;
+            }
+
+            reason = "No registered physical Gun Store door was found at the actor's catalogued entrance/egress anchor. "
+                + "NearbyProps=" + nearbyProps.Length
+                + "; RegisteredDoorCandidates=" + registeredDoorCount
+                + "; NearestRegisteredDoorDistance="
+                + (nearestRegisteredDoor == null
+                    ? "none"
+                    : nearestRegisteredDoorDistance.ToString("0.00", CultureInfo.InvariantCulture))
+                + (string.IsNullOrWhiteSpace(doorLookupFailure)
+                    ? string.Empty
+                    : "; DoorLookupError=" + doorLookupFailure);
+            Log("AMBIENT_WORLD_GUN_STORE_DOOR_NOT_FOUND_AT_ENDPOINT",
+                "Actor=" + actor.Handle
+                + "; Location=" + route.Pair.InsideLocation.Id
+                + "; CatalogInteriorId=" + route.Pair.InteriorId
+                + "; Endpoint=" + (route.EnteringInterior
+                    ? "ExteriorEntrance" : "InteriorEgress")
+                + "; NearbyProps=" + nearbyProps.Length
+                + "; RegisteredDoorCandidates=" + registeredDoorCount
+                + "; NearestRegisteredDoorDistance="
+                + (nearestRegisteredDoor == null
+                    ? "none"
+                    : nearestRegisteredDoorDistance.ToString("0.00", CultureInfo.InvariantCulture))
+                + "; Reason=" + reason);
+            return false;
+        }
+
+        private static bool TryGetExistingDoorHash(Entity candidate, out int doorHash)
+        {
+            doorHash = 0;
+            if (candidate == null || !candidate.Exists()
+                || Function.Call<int>(Hash.GET_ENTITY_TYPE, candidate) != 3)
+                return false;
+
+            bool found;
+            using (var doorOutput = new OutputArgument())
+            {
+                found = Function.Call<bool>(
+                    Hash.DOOR_SYSTEM_FIND_EXISTING_DOOR,
+                    candidate.Position.X,
+                    candidate.Position.Y,
+                    candidate.Position.Z,
+                    candidate.Model.Hash,
+                    doorOutput);
+                doorHash = doorOutput.GetResult<int>();
+            }
+            return found && doorHash != 0;
+        }
+
+        private static float DistanceToSegment(
+            Vector3 point,
+            Vector3 segmentStart,
+            Vector3 segmentEnd)
+        {
+            float segmentX = segmentEnd.X - segmentStart.X;
+            float segmentY = segmentEnd.Y - segmentStart.Y;
+            float segmentZ = segmentEnd.Z - segmentStart.Z;
+            float segmentLengthSquared = segmentX * segmentX
+                + segmentY * segmentY + segmentZ * segmentZ;
+            float projection = segmentLengthSquared <= 0.0001f
+                ? 0f
+                : ((point.X - segmentStart.X) * segmentX
+                    + (point.Y - segmentStart.Y) * segmentY
+                    + (point.Z - segmentStart.Z) * segmentZ)
+                    / segmentLengthSquared;
+            projection = Math.Max(0f, Math.Min(1f, projection));
+
+            Vector3 closestPoint = new Vector3(
+                segmentStart.X + projection * segmentX,
+                segmentStart.Y + projection * segmentY,
+                segmentStart.Z + projection * segmentZ);
+            return point.DistanceTo(closestPoint);
         }
 
         private void ReleaseInteriorAccessSession(int actorHandle, string reason)
@@ -1052,7 +1524,11 @@ namespace LSImmersiveLife
             Vector3 playerPosition,
             bool requiresVehicle,
             out AmbientDispatchSceneResolution scene,
-            out string reason)
+            out string reason,
+            string requiredInteriorLocationId = null,
+            string requiredPhysicalType = null,
+            string requiredLocationContext = null,
+            bool requiresMappedInterior = false)
         {
             scene = null;
             reason = string.Empty;
@@ -1062,14 +1538,91 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            List<LSPDDispatchLocationDefinition> eligibleAreas = (eventAreas
+            List<LSPDDispatchLocationDefinition> registeredAreas = (eventAreas
                 ?? Enumerable.Empty<LSPDDispatchLocationDefinition>())
-                .Where(area => area != null && area.IsEligibleFor(playerPosition))
+                .Where(area => area != null)
+                .GroupBy(area => area.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(group => group.First())
                 .ToList();
-            if (eligibleAreas.Count == 0)
+            List<LSPDDispatchLocationDefinition> eligibleAreas = registeredAreas
+                .Where(area => area.IsEligibleFor(playerPosition))
+                .ToList();
+            // Exterior dispatch can resolve directly from any compatible
+            // catalog site near the Player. This runs before geographic anchor
+            // fallback; named interiors remain bound to their authored access
+            // pair and are never inferred from an exterior point.
+            bool useNearbyCatalogFallback = string.IsNullOrWhiteSpace(requiredInteriorLocationId);
+
+            if (!string.IsNullOrWhiteSpace(requiredInteriorLocationId))
             {
-                reason = "The selected event has no area anchor in its player-distance window.";
-                return false;
+                var namedInteriorAreas = new List<LSPDDispatchLocationDefinition>(eligibleAreas);
+                foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
+                    in GetInteriorAccessPairsIncludingGunStores())
+                {
+                    if (pair == null || pair.InsideLocation == null
+                        || pair.OutsidePoint == null || pair.InsidePoint == null
+                        || !string.Equals(pair.InsideLocation.Id, requiredInteriorLocationId,
+                            StringComparison.OrdinalIgnoreCase)
+                        || IsRejectedSurveyRecord(pair.InsideLocation)
+                        || !MatchesRequiredPhysicalType(pair.InsideLocation, requiredPhysicalType)
+                        || !IsCompatibleWithIncident(pair.InsideLocation, incidentType)
+                        || !MatchesDispatchLocationContextMetadata(
+                            pair.InsideLocation, requiredLocationContext))
+                        continue;
+
+                    float nearbyInteriorDistance = Math.Min(
+                        Distance2D(pair.OutsidePoint.Position, playerPosition),
+                        Distance2D(pair.InsidePoint.Position, playerPosition));
+                    if (nearbyInteriorDistance
+                        > LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance)
+                        continue;
+
+                    bool hasAuthoredAreaForThreshold = eligibleAreas.Any(area =>
+                        IsWithinPlayerDistance(area, pair.InsidePoint.Position, playerPosition));
+                    if (!hasAuthoredAreaForThreshold)
+                    {
+                        // A named interior is intentionally requestable from
+                        // its mapped doorway. Its broad survey anchor may have
+                        // a minimum player distance that excludes the Player
+                        // standing at the entrance; use the exact inside point
+                        // as a bounded nearby fallback while keeping all live
+                        // door, floor, and scene validation below.
+                        namedInteriorAreas.Add(
+                            LSPDDispatchLocationDefinition.ForNearbyCatalogCandidate(
+                                requiredInteriorLocationId,
+                                pair.InsidePoint.Position,
+                                requiredLocationContext));
+                    }
+                }
+
+                if (namedInteriorAreas.Count == 0)
+                {
+                    reason = "The authored interior site is outside its area window and no matching mapped doorway is within the nearby Dispatch range.";
+                    return false;
+                }
+
+                return TryResolveNamedInteriorDispatchScene(
+                    namedInteriorAreas,
+                    incidentType,
+                    playerPosition,
+                    requiredInteriorLocationId,
+                    requiresVehicle,
+                    false,
+                    out scene,
+                    out reason,
+                    requiredPhysicalType);
+            }
+
+            if (requiresMappedInterior)
+            {
+                return TryResolveMappedInteriorDispatchScene(
+                    incidentType,
+                    playerPosition,
+                    requiresVehicle,
+                    requiredPhysicalType,
+                    requiredLocationContext,
+                    out scene,
+                    out reason);
             }
 
             // When the Player is already inside a matched location, resolve a
@@ -1077,7 +1630,10 @@ namespace LSImmersiveLife
             // survey points. The Player crosses the door themselves; this only
             // validates the floor and supplies a placement plan for Dispatch.
             int playerInteriorId = GetInteriorAt(playerPosition);
-            if (playerInteriorId != 0)
+            bool mayUseCurrentInterior = playerInteriorId != 0
+                && (string.IsNullOrWhiteSpace(requiredPhysicalType)
+                    || !string.IsNullOrWhiteSpace(requiredInteriorLocationId));
+            if (mayUseCurrentInterior)
             {
                 AmbientDispatchSceneResolution interiorScene;
                 string interiorFailure;
@@ -1088,8 +1644,13 @@ namespace LSImmersiveLife
                     playerInteriorId,
                     requiresVehicle,
                     null,
+                    false,
+                    false,
                     out interiorScene,
-                    out interiorFailure))
+                    out interiorFailure,
+                    requiredPhysicalType,
+                    requiredLocationContext,
+                    false))
                 {
                     scene = interiorScene;
                     RememberLocation(interiorScene.LocationId);
@@ -1103,31 +1664,50 @@ namespace LSImmersiveLife
             }
 
             var candidates = new List<DispatchLocationCandidate>();
+            var nearbyFallbackCandidates = new List<DispatchLocationCandidate>();
+            IEnumerable<LSImmersiveLocationCatalog.LSImmersiveLocationDefinition> dispatchCatalogLocations =
+                _locationCatalog.FindByCategory("SurveyedCandidate");
+            if (useNearbyCatalogFallback)
+                dispatchCatalogLocations = dispatchCatalogLocations.Concat(
+                    _locationCatalog.FindByCategory("AreaCandidate"));
+
             foreach (LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location
-                in _locationCatalog.FindByCategory("SurveyedCandidate"))
+                in dispatchCatalogLocations)
             {
                 if (IsRejectedSurveyRecord(location)
-                    || !IsCompatibleWithIncident(location, incidentType))
+                    || !IsCompatibleWithIncident(location, incidentType)
+                    || !MatchesRequiredPhysicalType(location, requiredPhysicalType))
                     continue;
 
+                bool surveyedLocation = string.Equals(
+                    location.Category, "SurveyedCandidate", StringComparison.OrdinalIgnoreCase);
+                string pointRole = surveyedLocation
+                    ? "ObservedCoordinateCandidate" : "AreaSearchAnchor";
                 foreach (LSImmersiveLocationCatalog.LSImmersiveLocationPoint point
-                    in location.FindPoints("ObservedCoordinateCandidate", false))
+                    in location.FindPoints(pointRole, false))
                 {
                     if (HasObservedNonZeroInterior(point.InteriorId))
                         continue;
 
+                    float playerPointDistance = Distance2D(point.Position, playerPosition);
+                    bool nearbyContextMatch = useNearbyCatalogFallback
+                        && playerPointDistance <= LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance
+                        && MatchesDispatchLocationContextMetadata(location, requiredLocationContext);
+
                     LSPDDispatchLocationDefinition nearestArea = null;
                     float nearestAreaDistance = float.MaxValue;
-                    foreach (LSPDDispatchLocationDefinition area in eligibleAreas)
+                    foreach (LSPDDispatchLocationDefinition area in registeredAreas)
                     {
                         float distance = Distance2D(point.Position, area.Position);
-                        if (distance > SurveyPointAreaRadius
-                            || !IsWithinPlayerDistance(area, point.Position, playerPosition)
-                            || distance >= nearestAreaDistance)
-                            continue;
+                        if (distance <= SurveyPointAreaRadius
+                            && area.IsEligibleFor(playerPosition)
+                            && IsWithinPlayerDistance(area, point.Position, playerPosition)
+                            && distance < nearestAreaDistance)
+                        {
+                            nearestArea = area;
+                            nearestAreaDistance = distance;
+                        }
 
-                        nearestArea = area;
-                        nearestAreaDistance = distance;
                     }
 
                     if (nearestArea != null)
@@ -1140,7 +1720,104 @@ namespace LSImmersiveLife
                             AreaDistance = nearestAreaDistance
                         });
                     }
+
+                    if (nearbyContextMatch)
+                    {
+                        nearbyFallbackCandidates.Add(new DispatchLocationCandidate
+                        {
+                            Location = location,
+                            Point = point,
+                            Area = LSPDDispatchLocationDefinition.ForNearbyCatalogCandidate(
+                                location.Id,
+                                point.Position,
+                                requiredLocationContext),
+                            AreaDistance = playerPointDistance
+                        });
+                    }
                 }
+            }
+
+            int checkedNearbyFallbackCandidates = 0;
+            if (useNearbyCatalogFallback)
+            {
+                List<DispatchLocationCandidate> fallbackCandidates = nearbyFallbackCandidates
+                    .Where(candidate => !_recentLocationIdSet.Contains(candidate.Location.Id))
+                    .ToList();
+                if (fallbackCandidates.Count == 0)
+                    fallbackCandidates = nearbyFallbackCandidates;
+                Shuffle(fallbackCandidates);
+
+                foreach (DispatchLocationCandidate candidate in fallbackCandidates)
+                {
+                    if (checkedNearbyFallbackCandidates++ >= MaximumSurveyCandidatesToValidate)
+                        break;
+
+                    if (!MatchesDispatchLocationContext(
+                        candidate.Location,
+                        requiredLocationContext,
+                        candidate.Point.Position))
+                        continue;
+
+                    bool surveyedPoint = string.Equals(
+                        candidate.Point.Role, "ObservedCoordinateCandidate",
+                        StringComparison.OrdinalIgnoreCase);
+
+                    AmbientDispatchSceneResolution resolved;
+                    string candidateFailure;
+                    if (!TryBuildDispatchScene(
+                        candidate.Area,
+                        candidate.Location.Id,
+                        candidate.Location.Name,
+                        candidate.Location.Category,
+                        candidate.Point.Id,
+                        candidate.Point.SourceRecord,
+                        candidate.Point.Position,
+                        candidate.Point.HasHeading ? candidate.Point.Heading : 0f,
+                        surveyedPoint,
+                        surveyedPoint
+                            ? MaximumSurveyPedSnapDistance
+                            : MaximumAreaAnchorSnapDistance,
+                        playerPosition,
+                        false,
+                        requiresVehicle,
+                        out resolved,
+                        out candidateFailure)
+                        || resolved == null
+                        || Distance2D(resolved.SceneCenter, playerPosition)
+                            > LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance)
+                        continue;
+
+                    scene = resolved;
+                    scene.LocationReviewStatus = candidate.Location.ReviewStatus;
+                    scene.Area = LSPDDispatchLocationDefinition.ForNearbyCatalogCandidate(
+                        candidate.Location.Id,
+                        resolved.SceneCenter,
+                        requiredLocationContext);
+                    scene.AreaLocationId = candidate.Location.Id;
+                    scene.AreaAnchorPosition = resolved.SceneCenter;
+                    RememberLocation(candidate.Location.Id);
+                    Log("AMBIENT_WORLD_NEARBY_DISPATCH_CATALOG_FALLBACK",
+                        "IncidentType=" + (incidentType ?? string.Empty)
+                        + "; Location=" + candidate.Location.Id
+                        + "; Point=" + candidate.Point.Id
+                        + "; PlayerDistance=" + Distance2D(scene.SceneCenter, playerPosition).ToString("0.0")
+                        + "; MaximumPlayerDistance=" + LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance
+                        + "; ReviewStatus=" + (candidate.Location.ReviewStatus ?? "Unknown"));
+                    LogLocationResolution(scene, requiresVehicle);
+                    return true;
+                }
+
+                Log("AMBIENT_WORLD_NEARBY_DISPATCH_CATALOG_FALLBACK_UNAVAILABLE",
+                    "IncidentType=" + (incidentType ?? string.Empty)
+                    + "; CompatibleCatalogPointCount=" + nearbyFallbackCandidates.Count
+                    + "; MaximumPlayerDistance=" + LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance
+                    + "; Reason=NoNearCatalogPointPassedRuntimeValidation");
+            }
+
+            if (eligibleAreas.Count == 0)
+            {
+                reason = "No compatible surveyed Dispatch catalog point within 100m of the Player passed runtime scene validation.";
+                return false;
             }
 
             // Prefer a different surveyed physical site when the catalog has one;
@@ -1152,7 +1829,7 @@ namespace LSImmersiveLife
                 candidates = freshCandidates;
             Shuffle(candidates);
 
-            if (RequiresNamedLocation(incidentType) && candidates.Count == 0)
+            if (RequiresNamedLocation(incidentType, requiredPhysicalType) && candidates.Count == 0)
             {
                 reason = "No surveyed point matched the exact physical type required for this named-site event.";
                 Log("AMBIENT_WORLD_LOCATION_QUERY_REJECTED",
@@ -1163,10 +1840,10 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            int checkedCandidates = 0;
+            int checkedAreaCandidates = 0;
             foreach (DispatchLocationCandidate candidate in candidates)
             {
-                if (checkedCandidates++ >= MaximumSurveyCandidatesToValidate)
+                if (checkedAreaCandidates++ >= MaximumSurveyCandidatesToValidate)
                     break;
 
                 AmbientDispatchSceneResolution resolved;
@@ -1202,7 +1879,8 @@ namespace LSImmersiveLife
             // points may fail current nav/ground checks. A safe, local runtime
             // position around the existing AreaSearchAnchor is an explicitly
             // lower-confidence fallback, never mislabeled as a surveyed site.
-            foreach (LSPDDispatchLocationDefinition area in RequiresNamedLocation(incidentType)
+            foreach (LSPDDispatchLocationDefinition area in RequiresNamedLocation(
+                incidentType, requiredPhysicalType)
                 ? Enumerable.Empty<LSPDDispatchLocationDefinition>()
                 : ShuffleCopy(eligibleAreas))
             {
@@ -1254,7 +1932,10 @@ namespace LSImmersiveLife
             Vector3 playerPosition,
             bool requiresVehicle,
             out AmbientDispatchSceneResolution refreshed,
-            out string reason)
+            out string reason,
+            string requiredInteriorLocationId = null,
+            string requiredPhysicalType = null,
+            string requiredLocationContext = null)
         {
             refreshed = null;
             reason = string.Empty;
@@ -1266,6 +1947,20 @@ namespace LSImmersiveLife
 
             if (previous.IsInteriorScene)
             {
+                if (!string.IsNullOrWhiteSpace(requiredInteriorLocationId))
+                {
+                    return TryResolveNamedInteriorDispatchScene(
+                        new[] { previous.Area },
+                        previous.IncidentType,
+                        playerPosition,
+                        requiredInteriorLocationId,
+                        requiresVehicle,
+                        true,
+                        out refreshed,
+                        out reason,
+                        requiredPhysicalType);
+                }
+
                 return TryResolveInteriorDispatchScene(
                     new[] { previous.Area },
                     previous.IncidentType,
@@ -1273,8 +1968,23 @@ namespace LSImmersiveLife
                     previous.InteriorId,
                     requiresVehicle,
                     previous.InteriorAccessPair,
+                    true,
+                    false,
                     out refreshed,
-                    out reason);
+                    out reason,
+                    requiredPhysicalType,
+                    requiredLocationContext,
+                    previous.IsMappedInteriorDispatchScene);
+            }
+
+            LSImmersiveLocationCatalog.LSImmersiveLocationDefinition previousLocation;
+            if (!string.IsNullOrWhiteSpace(requiredPhysicalType)
+                && (_locationCatalog == null
+                    || !_locationCatalog.TryGetLocation(previous.LocationId, out previousLocation)
+                    || !MatchesRequiredPhysicalType(previousLocation, requiredPhysicalType)))
+            {
+                reason = "The selected site no longer matches the event's required physical type.";
+                return false;
             }
 
             bool resolved = TryBuildDispatchScene(
@@ -1326,7 +2036,449 @@ namespace LSImmersiveLife
                     scene.InteriorId,
                     out safePosition,
                     out reason);
-            return TryResolveNearbyPedPosition(preferredPosition, out safePosition, out reason);
+
+            // Try the authored participant point first, then a small fixed
+            // cross around that point. Tight urban/alley scenes often have a
+            // wall, prop, or ambient Ped exactly on one formation point even
+            // though a nearby walkable point is clear. Keep every fallback
+            // inside the same local scene and run the same ground, road,
+            // interior, slope, and occupancy checks before returning it.
+            safePosition = preferredPosition;
+            string lastFailure = "No nearby pedestrian position was checked.";
+            for (int index = -1; index < DispatchParticipantFallbackDirections.Length; index++)
+            {
+                Vector3 candidate = preferredPosition;
+                float correctionLimit = 2.75f;
+                if (index >= 0)
+                {
+                    Vector2 offset = DispatchParticipantFallbackDirections[index];
+                    candidate = new Vector3(
+                        preferredPosition.X + offset.X,
+                        preferredPosition.Y + offset.Y,
+                        preferredPosition.Z);
+                    correctionLimit = DispatchParticipantFallbackOffset;
+                }
+
+                Vector3 resolved;
+                string candidateFailure;
+                if (!TryValidateOutdoorPedPosition(
+                        candidate,
+                        correctionLimit,
+                        out resolved,
+                        out candidateFailure))
+                {
+                    lastFailure = candidateFailure;
+                    continue;
+                }
+
+                if (resolved.DistanceTo(preferredPosition)
+                    > DispatchParticipantMaximumTotalOffset)
+                {
+                    lastFailure = "A safe pedestrian point was found outside the participant's local scene radius.";
+                    continue;
+                }
+
+                safePosition = resolved;
+                reason = string.Empty;
+                return true;
+            }
+
+            reason = "No safe pedestrian position was found at the authored participant point "
+                + "or within " + DispatchParticipantMaximumTotalOffset.ToString("0.##", CultureInfo.InvariantCulture)
+                + "m. Last check: " + lastFailure;
+            return false;
+        }
+
+        private bool TryResolveDispatchVictimPosition(
+            Vector3 preferredPosition,
+            AmbientDispatchSceneResolution scene,
+            out Vector3 safePosition,
+            out string reason)
+        {
+            if (TryResolveDispatchParticipantPosition(
+                    preferredPosition, scene, out safePosition, out reason))
+                return true;
+
+            // Keep interior victims on the validated mapped interior path. The
+            // wider search is only for exterior scenes and remains anchored to
+            // the already validated scene center; each point still passes the
+            // same ground, slope, road, interior, and occupancy checks.
+            if (scene == null || scene.IsInteriorScene)
+                return false;
+
+            string lastFailure = reason;
+            for (int index = 0; index < DispatchVictimFallbackDirections.Length; index++)
+            {
+                Vector2 offset = DispatchVictimFallbackDirections[index];
+                Vector3 candidate = new Vector3(
+                    preferredPosition.X + offset.X,
+                    preferredPosition.Y + offset.Y,
+                    preferredPosition.Z);
+                Vector3 resolved;
+                string candidateFailure;
+                if (!TryValidateOutdoorPedPosition(
+                        candidate,
+                        DispatchVictimFallbackCorrectionDistance,
+                        out resolved,
+                        out candidateFailure))
+                {
+                    lastFailure = candidateFailure;
+                    continue;
+                }
+
+                if (Distance2D(resolved, scene.SceneCenter)
+                    > DispatchVictimMaximumSceneDistance)
+                {
+                    lastFailure = "The safe victim point is outside the validated local scene radius.";
+                    continue;
+                }
+
+                safePosition = resolved;
+                reason = string.Empty;
+                return true;
+            }
+
+            safePosition = preferredPosition;
+            reason = "No safe exterior victim point was found within "
+                + DispatchVictimMaximumSceneDistance.ToString("0.##", CultureInfo.InvariantCulture)
+                + "m of the validated scene. Last check: " + lastFailure;
+            return false;
+        }
+
+        internal bool TryCreateDispatchSceneVictim(
+            string incidentId,
+            string victimPoolId,
+            Model model,
+            Vector3 preferredPosition,
+            AmbientDispatchSceneResolution scene,
+            bool startsDead,
+            out Ped victim,
+            out string reason)
+        {
+            victim = null;
+            reason = "The victim model, pool, or validated scene is unavailable.";
+            if (string.IsNullOrWhiteSpace(incidentId)
+                || string.IsNullOrWhiteSpace(victimPoolId)
+                || _npcDatabase == null
+                || !_npcDatabase.IsLoaded
+                || !model.IsValid
+                || !model.IsInCdImage
+                || !model.IsLoaded
+                || !_npcDatabase.IsDispatchPedModelInPool(victimPoolId, model.Hash)
+                || scene == null)
+                return false;
+
+            Vector3 safePosition;
+            if (!TryResolveDispatchVictimPosition(
+                preferredPosition,
+                scene,
+                out safePosition,
+                out reason))
+                return false;
+
+            try
+            {
+                victim = World.CreatePed(model, safePosition);
+                if (victim == null || !victim.Exists())
+                {
+                    reason = "GTA did not create the validated Dispatch victim.";
+                    return false;
+                }
+
+                victim.IsPersistent = true;
+                victim.BlockPermanentEvents = true;
+                if (startsDead)
+                    Function.Call(Hash.SET_ENTITY_HEALTH, victim, 0, 0);
+
+                if (!LSPDDispatchEventDefinition.IsVictimStateReady(
+                    startsDead, victim.IsDead, victim.Health))
+                {
+                    reason = startsDead
+                        ? "The created scene victim did not enter the catalog-defined dead state."
+                        : "The created scene victim is not alive.";
+                    try { if (victim.Exists()) victim.Delete(); } catch { }
+                    victim = null;
+                    return false;
+                }
+
+                Log("AMBIENT_WORLD_DISPATCH_SCENE_VICTIM_CREATED",
+                    "Incident=" + incidentId
+                    + "; Ped=" + victim.Handle
+                    + "; Pool=" + victimPoolId
+                    + "; Model=" + victim.Model.Hash
+                    + "; StartsDead=" + startsDead
+                    + "; Interior=" + scene.IsInteriorScene
+                    + "; InteriorId=" + scene.InteriorId);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (victim != null)
+                {
+                    try { if (victim.Exists()) victim.Delete(); } catch { }
+                    victim = null;
+                }
+                reason = "Dispatch scene victim creation failed: " + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_SCENE_VICTIM_CREATE_FAILED",
+                    "Incident=" + incidentId + "; Pool=" + victimPoolId
+                    + "; Reason=" + reason);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Claims one safe, nearby ambient civilian as a Dispatch scene victim.
+        /// The scan is limited to a single scene-preparation call and excludes
+        /// registered actors, mission entities, active scenarios, and actors in
+        /// protected gameplay states. Dispatch remains the behavior owner while
+        /// the claim is active; ReleaseDispatchCivilian restores the original
+        /// entity flags without deleting the ambient Ped.
+        /// </summary>
+        internal bool TryClaimDispatchCivilian(
+            string incidentId,
+            string victimPoolId,
+            Vector3 preferredPosition,
+            AmbientDispatchSceneResolution scene,
+            IEnumerable<Ped> protectedActors,
+            out Ped civilian,
+            out string reason)
+        {
+            civilian = null;
+            reason = "No safe ambient civilian was found at the prepared scene.";
+            if (string.IsNullOrWhiteSpace(incidentId)
+                || string.IsNullOrWhiteSpace(victimPoolId)
+                || _npcDatabase == null
+                || !_npcDatabase.IsLoaded
+                || scene == null)
+            {
+                reason = "The Dispatch occurrence, victim pool, loaded NPC catalog, or validated scene is missing.";
+                return false;
+            }
+
+            if (scene.IsInteriorScene)
+            {
+                if (scene.InteriorId == 0
+                    || GetInteriorAt(preferredPosition) != scene.InteriorId)
+                {
+                    reason = "The requested victim position is outside the validated interior.";
+                    return false;
+                }
+            }
+            else if (GetInteriorAt(preferredPosition) != 0)
+            {
+                reason = "The requested victim position is inside an unvalidated interior.";
+                return false;
+            }
+
+            var protectedHandles = new HashSet<int>();
+            var protectedPositions = new List<Vector3>();
+            if (protectedActors != null)
+            {
+                foreach (Ped actor in protectedActors)
+                {
+                    if (actor == null || !actor.Exists())
+                        continue;
+                    protectedHandles.Add(actor.Handle);
+                    protectedPositions.Add(actor.Position);
+                }
+            }
+
+            Ped[] nearby;
+            try
+            {
+                nearby = World.GetNearbyPeds(preferredPosition, DispatchCivilianSearchRadius);
+            }
+            catch (Exception ex)
+            {
+                reason = "The local ambient Ped query failed: " + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_QUERY_FAILED", reason);
+                return false;
+            }
+
+            if (nearby == null || nearby.Length == 0)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_UNAVAILABLE",
+                    "Incident=" + incidentId + "; Reason=NO_LOCAL_PED_CANDIDATES");
+                return false;
+            }
+
+            Ped selected = null;
+            float selectedDistance = float.MaxValue;
+            int inspected = 0;
+            foreach (Ped candidate in nearby)
+            {
+                if (inspected++ >= MaximumDispatchCivilianCandidatesToInspect)
+                    break;
+                if (!IsEligibleDispatchCivilian(
+                    candidate,
+                    preferredPosition,
+                    scene,
+                    protectedHandles,
+                    protectedPositions))
+                    continue;
+                if (!_npcDatabase.IsDispatchPedModelInPool(victimPoolId, candidate.Model.Hash))
+                    continue;
+
+                float distance = Distance2D(candidate.Position, preferredPosition);
+                if (distance < selectedDistance)
+                {
+                    selected = candidate;
+                    selectedDistance = distance;
+                }
+            }
+
+            if (selected == null)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_UNAVAILABLE",
+                    "Incident=" + incidentId
+                    + "; CandidatesInspected=" + inspected
+                    + "; Reason=NO_SAFE_UNOWNED_CIVILIAN");
+                return false;
+            }
+
+            DispatchCivilianClaim claim = null;
+            try
+            {
+                claim = new DispatchCivilianClaim
+                {
+                    IncidentId = incidentId,
+                    PedHandle = selected.Handle,
+                    WasPersistent = selected.IsPersistent,
+                    BlockedPermanentEvents = selected.BlockPermanentEvents
+                };
+                _dispatchCivilianClaims.Add(selected.Handle, claim);
+                selected.IsPersistent = true;
+                selected.BlockPermanentEvents = true;
+                civilian = selected;
+                Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_CLAIMED",
+                    "Incident=" + incidentId
+                    + "; Ped=" + selected.Handle
+                    + "; Distance=" + selectedDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Interior=" + scene.InteriorId
+                    + "; Location=" + (scene.LocationId ?? string.Empty));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (claim != null)
+                {
+                    _dispatchCivilianClaims.Remove(selected.Handle);
+                    try
+                    {
+                        if (selected.Exists())
+                        {
+                            selected.BlockPermanentEvents = claim.BlockedPermanentEvents;
+                            selected.IsPersistent = claim.WasPersistent;
+                        }
+                    }
+                    catch { }
+                }
+                reason = "The ambient civilian could not be claimed: " + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_CLAIM_FAILED", reason);
+                return false;
+            }
+        }
+
+        internal bool ReleaseDispatchCivilian(Ped civilian, string incidentId)
+        {
+            if (civilian == null || string.IsNullOrWhiteSpace(incidentId))
+                return false;
+
+            DispatchCivilianClaim claim;
+            if (!_dispatchCivilianClaims.TryGetValue(civilian.Handle, out claim)
+                || claim == null
+                || !string.Equals(claim.IncidentId, incidentId, StringComparison.Ordinal)
+                || claim.PedHandle != civilian.Handle)
+                return false;
+
+            _dispatchCivilianClaims.Remove(civilian.Handle);
+            if (civilian.Exists())
+            {
+                try
+                {
+                    if (!civilian.IsDead)
+                        civilian.Task.ClearAll();
+                    civilian.BlockPermanentEvents = claim.BlockedPermanentEvents;
+                    civilian.IsPersistent = claim.WasPersistent;
+                }
+                catch (Exception ex)
+                {
+                    Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_RESTORE_FAILED",
+                        "Incident=" + incidentId
+                        + "; Ped=" + claim.PedHandle
+                        + "; Reason=" + ex.GetType().Name);
+                    return false;
+                }
+            }
+
+            Log("AMBIENT_WORLD_DISPATCH_CIVILIAN_RELEASED",
+                "Incident=" + incidentId + "; Ped=" + claim.PedHandle);
+            return true;
+        }
+
+        private bool IsEligibleDispatchCivilian(
+            Ped ped,
+            Vector3 preferredPosition,
+            AmbientDispatchSceneResolution scene,
+            HashSet<int> protectedHandles,
+            List<Vector3> protectedPositions)
+        {
+            if (ped == null || !ped.Exists() || ped.IsDead || !ped.IsHuman
+                || ped.Health <= 0 || ped.IsPersistent || ped.BlockPermanentEvents
+                || ped.IsInVehicle() || ped.IsInCombat || ped.IsShooting || ped.IsFleeing
+                || ped.IsInPoliceVehicle || _actors.ContainsKey(ped.Handle)
+                || _dispatchCivilianClaims.ContainsKey(ped.Handle)
+                || protectedHandles.Contains(ped.Handle))
+                return false;
+
+            if (Distance2D(ped.Position, preferredPosition) > DispatchCivilianSearchRadius)
+                return false;
+            foreach (Vector3 protectedPosition in protectedPositions)
+            {
+                if (Distance2D(ped.Position, protectedPosition)
+                    < DispatchCivilianMinimumSuspectDistance)
+                    return false;
+            }
+
+            int interiorId = GetInteriorAt(ped.Position);
+            if (scene.IsInteriorScene
+                ? interiorId != scene.InteriorId
+                : interiorId != 0)
+                return false;
+
+            try
+            {
+                int model = ped.Model.Hash;
+                if (model == unchecked((int)StringHash.AtStringHash("s_m_y_cop_01", 0))
+                    || model == unchecked((int)StringHash.AtStringHash("s_f_y_cop_01", 0))
+                    || model == unchecked((int)StringHash.AtStringHash("s_m_y_sheriff_01", 0))
+                    || model == unchecked((int)StringHash.AtStringHash("s_f_y_sheriff_01", 0))
+                    || Function.Call<bool>(Hash.IS_PED_ARMED, ped, 7))
+                    return false;
+
+                // Mission actors and scenario workers belong to the game or a
+                // separate mission/script, even when their visible behavior is idle.
+                if (Function.Call<bool>(Hash.IS_ENTITY_A_MISSION_ENTITY, ped)
+                    || Function.Call<bool>(Hash.IS_PED_USING_ANY_SCENARIO, ped))
+                    return false;
+
+                Vector3 safePosition;
+                if (!World.GetSafePositionForPed(
+                    ped.Position,
+                    out safePosition,
+                    (GetSafePositionFlags)0)
+                    || safePosition.DistanceTo(ped.Position) > 1.25f
+                    || GetInteriorAt(safePosition) != interiorId)
+                    return false;
+            }
+            catch
+            {
+                // A candidate is skipped if its protection/navigation state
+                // cannot be checked reliably.
+                return false;
+            }
+
+            return true;
         }
 
         internal bool TryResolveInteriorNearbyPedPosition(
@@ -1371,7 +2523,9 @@ namespace LSImmersiveLife
                         Vector3 groundNormal;
                         if (!World.GetGroundHeightAndNormal(safe, out groundZ, out groundNormal)
                             || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
-                            || groundNormal.Z < 0.55f || Math.Abs(safe.Z - groundZ) > 2.5f)
+                            || groundNormal.Z < 0.55f || Math.Abs(safe.Z - groundZ) > 2.5f
+                            || Math.Abs(groundZ - preferredPosition.Z)
+                                > InteriorFloorAlignmentTolerance)
                             continue;
                         safe.Z = groundZ;
                         if (GetInteriorAt(safe) != expectedInteriorId
@@ -1403,6 +2557,173 @@ namespace LSImmersiveLife
             }
         }
 
+        private bool TryResolveMappedInteriorDispatchScene(
+            string incidentType,
+            Vector3 playerPosition,
+            bool requiresVehicle,
+            string requiredPhysicalType,
+            string requiredLocationContext,
+            out AmbientDispatchSceneResolution scene,
+            out string reason)
+        {
+            scene = null;
+            reason = "No nearby catalog location has a runtime-valid mapped interior and entrance.";
+            if (_locationCatalog == null)
+            {
+                reason = "The shared location catalog is unavailable.";
+                return false;
+            }
+
+            int playerInteriorId = GetInteriorAt(playerPosition);
+            var candidates = new List<Tuple<
+                LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair,
+                float>>();
+            foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
+                in GetInteriorAccessPairsIncludingGunStores())
+            {
+                if (pair == null || pair.InsideLocation == null
+                    || pair.OutsidePoint == null || pair.InsidePoint == null
+                    || IsRejectedSurveyRecord(pair.InsideLocation)
+                    || !MatchesRequiredPhysicalType(pair.InsideLocation, requiredPhysicalType)
+                    || !IsCompatibleWithIncident(pair.InsideLocation, incidentType)
+                    || !MatchesDispatchLocationContextMetadata(
+                        pair.InsideLocation, requiredLocationContext))
+                    continue;
+
+                float distance = playerInteriorId != 0
+                    ? Distance2D(pair.InsidePoint.Position, playerPosition)
+                    : Distance2D(pair.OutsidePoint.Position, playerPosition);
+                if (distance > LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance)
+                    continue;
+
+                if (!HasCatalogedMappedInteriorReference(pair))
+                    continue;
+                candidates.Add(Tuple.Create(pair, distance));
+            }
+
+            // Interior floor probes call several GTA natives per candidate.
+            // Keep live validation bounded to the nearest three pairs during
+            // offer preparation; this resolver is never called from the tick.
+            // A building can contribute several door points to the catalog.
+            // Do not spend the bounded live-validation budget on multiple doors
+            // from the same site before trying another nearby compatible site.
+            foreach (var candidate in candidates
+                .GroupBy(value => value.Item1.InsideLocation.Id,
+                    StringComparer.OrdinalIgnoreCase)
+                .Select(group => group
+                    .OrderBy(value => value.Item2)
+                    .ThenBy(value => value.Item1.DistanceMeters)
+                    .First())
+                .OrderBy(value => value.Item2)
+                .Take(MaximumMappedInteriorDispatchCandidates))
+            {
+                int liveInteriorId = GetInteriorAt(candidate.Item1.InsidePoint.Position);
+                if (liveInteriorId == 0
+                    || (playerInteriorId != 0
+                        && liveInteriorId != playerInteriorId))
+                    continue;
+
+                LSPDDispatchLocationDefinition area =
+                    LSPDDispatchLocationDefinition.ForNearbyCatalogCandidate(
+                        candidate.Item1.InsideLocation.Id,
+                        candidate.Item1.OutsidePoint.Position,
+                        requiredLocationContext);
+                AmbientDispatchSceneResolution candidateScene;
+                string candidateFailure;
+                if (!TryResolveInteriorDispatchScene(
+                    new[] { area },
+                    incidentType,
+                    playerPosition,
+                    liveInteriorId,
+                    requiresVehicle,
+                    candidate.Item1,
+                    false,
+                    false,
+                    out candidateScene,
+                    out candidateFailure,
+                    requiredPhysicalType,
+                    requiredLocationContext,
+                    true))
+                {
+                    reason = candidateFailure;
+                    continue;
+                }
+
+                candidateScene.IsMappedInteriorDispatchScene = true;
+                scene = candidateScene;
+                RememberLocation(candidateScene.LocationId);
+                Log("AMBIENT_WORLD_MAPPED_INTERIOR_DISPATCH_SELECTED",
+                    "Location=" + candidateScene.LocationId
+                    + "; InsidePoint=" + candidateScene.PointId
+                    + "; OutsidePoint=" + candidateScene.InteriorAccessPair.OutsidePoint.Id
+                    + "; InteriorId=" + candidateScene.InteriorId
+                    + "; MappingBasis=" + candidateScene.InteriorAccessPair.MappingBasis
+                    + "; PlayerDistance=" + candidate.Item2.ToString(
+                        "0.0", CultureInfo.InvariantCulture)
+                    + "; VehicleStaging=" + candidateScene.HasVehicleStagingPosition);
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool TryResolveNamedInteriorDispatchScene(
+            IEnumerable<LSPDDispatchLocationDefinition> eventAreas,
+            string incidentType,
+            Vector3 playerPosition,
+            string requiredInteriorLocationId,
+            bool requiresVehicle,
+            bool previouslySelected,
+            out AmbientDispatchSceneResolution scene,
+            out string reason,
+            string requiredPhysicalType = null)
+        {
+            scene = null;
+            reason = "The authored interior site has no usable mapped threshold pair.";
+            if (_locationCatalog == null
+                || string.IsNullOrWhiteSpace(requiredInteriorLocationId))
+                return false;
+
+            foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
+                in GetInteriorAccessPairsIncludingGunStores().Where(value => value != null
+                    && value.InsideLocation != null
+                    && string.Equals(value.InsideLocation.Id, requiredInteriorLocationId,
+                        StringComparison.OrdinalIgnoreCase)))
+            {
+                int liveInteriorId = GetInteriorAt(pair.InsidePoint.Position);
+                if (liveInteriorId == 0)
+                    continue;
+
+                string candidateFailure;
+                if (TryResolveInteriorDispatchScene(
+                    eventAreas,
+                    incidentType,
+                    playerPosition,
+                    liveInteriorId,
+                    requiresVehicle,
+                    pair,
+                    previouslySelected,
+                    true,
+                    out scene,
+                    out candidateFailure,
+                    requiredPhysicalType))
+                {
+                    Log("AMBIENT_WORLD_MAPPED_INTERIOR_DISPATCH_SELECTED",
+                        "Location=" + requiredInteriorLocationId
+                        + "; Point=" + pair.InsidePoint.Id
+                        + "; Threshold=" + pair.OutsidePoint.Id
+                        + "; InteriorId=" + liveInteriorId
+                        + "; MappingBasis=" + pair.MappingBasis
+                        + "; PairDistance=" + pair.DistanceMeters
+                        + "; PreviouslySelected=" + previouslySelected);
+                    return true;
+                }
+                reason = candidateFailure;
+            }
+
+            return false;
+        }
+
         private bool TryResolveInteriorDispatchScene(
             IEnumerable<LSPDDispatchLocationDefinition> eventAreas,
             string incidentType,
@@ -1410,21 +2731,38 @@ namespace LSImmersiveLife
             int interiorId,
             bool requiresVehicle,
             LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair requiredPair,
+            bool previouslySelected,
+            bool allowUnclassifiedRequiredSite,
             out AmbientDispatchSceneResolution scene,
-            out string reason)
+            out string reason,
+            string requiredPhysicalType = null,
+            string requiredLocationContext = null,
+            bool allowMappedThresholdProximity = false)
         {
             scene = null;
             reason = "No validated interior threshold and eligible event area matched the Player's current location.";
+            bool playerInside = interiorId != 0
+                && GetInteriorAt(playerPosition) == interiorId;
             if (_locationCatalog == null || interiorId == 0
-                || GetInteriorAt(playerPosition) != interiorId)
+                || (!playerInside && !allowUnclassifiedRequiredSite
+                    && !allowMappedThresholdProximity))
             {
-                reason = "The Player is no longer in the requested mapped interior.";
+                reason = "The Player is not inside the requested mapped interior.";
                 return false;
             }
 
             List<LSPDDispatchLocationDefinition> eligibleAreas = (eventAreas
                 ?? Enumerable.Empty<LSPDDispatchLocationDefinition>())
-                .Where(area => area != null && area.IsEligibleFor(playerPosition))
+                .Where(area => area != null
+                    && (previouslySelected
+                        || area.IsEligibleFor(playerPosition)
+                        || (allowMappedThresholdProximity
+                            && requiredPair != null
+                            && area.IsWithinNearbyCatalogFallbackDistance(
+                                playerInside
+                                    ? requiredPair.InsidePoint.Position
+                                    : requiredPair.OutsidePoint.Position,
+                                playerPosition))))
                 .ToList();
             if (eligibleAreas.Count == 0)
             {
@@ -1436,27 +2774,51 @@ namespace LSImmersiveLife
                 LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair,
                 LSPDDispatchLocationDefinition,
                 float>>();
-            foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
-                in _locationCatalog.InteriorAccessPairs)
+            List<LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair> accessPairs =
+                requiredPair == null ? GetInteriorAccessPairsIncludingGunStores() : null;
+            int accessPairCount = requiredPair == null ? accessPairs.Count : 1;
+            for (int accessPairIndex = 0; accessPairIndex < accessPairCount; accessPairIndex++)
             {
+                LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair =
+                    requiredPair ?? accessPairs[accessPairIndex];
                 if (pair == null || pair.InsideLocation == null || pair.InsidePoint == null
                     || (requiredPair != null && !ReferenceEquals(pair, requiredPair))
                     || IsRejectedSurveyRecord(pair.InsideLocation)
-                    || !IsCompatibleWithIncident(pair.InsideLocation, incidentType))
+                    || !MatchesRequiredPhysicalType(pair.InsideLocation, requiredPhysicalType)
+                    || !MatchesDispatchLocationContextMetadata(
+                        pair.InsideLocation, requiredLocationContext)
+                    || (!IsCompatibleWithIncident(pair.InsideLocation, incidentType)
+                        && !(allowUnclassifiedRequiredSite && requiredPair != null
+                            && ReferenceEquals(pair, requiredPair))))
                     continue;
 
                 Vector3 outsideProbe = ResolveOutsideInteriorProbe(pair);
                 int liveOutsideInteriorId = GetInteriorAt(outsideProbe);
                 int liveInsideInteriorId = GetInteriorAt(pair.InsidePoint.Position);
-                if (liveInsideInteriorId != interiorId
-                    || liveOutsideInteriorId == liveInsideInteriorId)
+                if (!IsMappedInteriorThresholdRuntimeValid(
+                    interiorId,
+                    liveOutsideInteriorId,
+                    liveInsideInteriorId))
                     continue;
 
                 foreach (LSPDDispatchLocationDefinition area in eligibleAreas)
                 {
                     float areaDistance = Distance2D(pair.OutsidePoint.Position, area.Position);
+                    Vector3 playerDistanceReference = allowMappedThresholdProximity
+                        && !playerInside
+                        ? pair.OutsidePoint.Position
+                        : pair.InsidePoint.Position;
+                    float playerDistance = playerDistanceReference.DistanceTo(playerPosition);
+                    bool playerWithinArea = allowMappedThresholdProximity
+                        && requiredPair != null
+                        ? area.IsWithinNearbyCatalogFallbackDistance(
+                            playerDistanceReference, playerPosition)
+                        : previouslySelected
+                            ? playerDistance <= area.MaximumPlayerDistance
+                            : IsWithinPlayerDistance(
+                                area, playerDistanceReference, playerPosition);
                     if (areaDistance > SurveyPointAreaRadius
-                        || !IsWithinPlayerDistance(area, pair.InsidePoint.Position, playerPosition))
+                        || !playerWithinArea)
                         continue;
                     candidates.Add(Tuple.Create(pair, area, areaDistance));
                 }
@@ -1486,7 +2848,7 @@ namespace LSImmersiveLife
                         candidate.Item1.OutsidePoint.Position,
                         candidate.Item2,
                         playerPosition,
-                        true,
+                        !allowMappedThresholdProximity,
                         out vehiclePosition,
                         out vehicleHeading,
                         out reason))
@@ -1517,6 +2879,7 @@ namespace LSImmersiveLife
                     ValidationStatus = "RuntimeValidatedInsideMappedInterior",
                     LocationReviewStatus = candidate.Item1.InsideLocation.ReviewStatus,
                     IsInteriorScene = true,
+                    IsMappedInteriorDispatchScene = allowMappedThresholdProximity,
                     InteriorId = interiorId,
                     InteriorAccessPair = candidate.Item1,
                     IncidentType = incidentType ?? string.Empty
@@ -1705,68 +3068,159 @@ namespace LSImmersiveLife
         {
             stagingPosition = Vector3.Zero;
             heading = 0f;
-            reason = string.Empty;
+            reason = "No nearby roadside candidate passed vehicle-staging validation.";
+            string lastFailure = reason;
+            Vector3 previousRoadside = Vector3.Zero;
+            bool hasPreviousRoadside = false;
             try
             {
-                Vector3 roadside = Vector3.Zero;
-                if (!World.GetPositionOnRoadside(scenePosition, Direction.Any, out roadside))
+                // A single GTA roadside result may be blocked by a Ped/vehicle,
+                // sit on a steep curb, or land outside the event area. Probe two
+                // nearby origins as a bounded recovery while keeping the van
+                // close to the validated scene and away from alley obstacles.
+                for (int probeIndex = 0;
+                    probeIndex < DispatchVehicleStagingProbeOffsets.Length;
+                    probeIndex++)
                 {
-                    reason = "GTA did not provide a roadside vehicle-staging position.";
-                    return false;
+                    Vector2 offset = DispatchVehicleStagingProbeOffsets[probeIndex];
+                    Vector3 probeOrigin = new Vector3(
+                        scenePosition.X + offset.X,
+                        scenePosition.Y + offset.Y,
+                        scenePosition.Z);
+                    Vector3 roadside = Vector3.Zero;
+                    if (!World.GetPositionOnRoadside(
+                        probeOrigin, Direction.Any, out roadside))
+                    {
+                        lastFailure = "GTA did not provide a roadside vehicle-staging position.";
+                        continue;
+                    }
+                    if (hasPreviousRoadside
+                        && Distance2D(previousRoadside, roadside) < 1f)
+                    {
+                        lastFailure = "Nearby roadside probes resolved to the same blocked position.";
+                        continue;
+                    }
+                    previousRoadside = roadside;
+                    hasPreviousRoadside = true;
+
+                    int interiorId = Function.Call<int>(
+                        Hash.GET_INTERIOR_AT_COORDS, roadside.X, roadside.Y, roadside.Z);
+                    float groundZ;
+                    Vector3 groundNormal;
+                    if (interiorId != 0
+                        || !World.GetGroundHeightAndNormal(
+                            roadside, out groundZ, out groundNormal)
+                        || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                        || groundNormal.Z < 0.65f
+                        || Math.Abs(roadside.Z - groundZ) > 3f)
+                    {
+                        lastFailure = "The roadside candidate is interior or lacks suitable ground support.";
+                        continue;
+                    }
+                    roadside.Z = groundZ;
+
+                    float roadHeading;
+                    Vector3 roadNode = World.GetNextPositionOnStreetWithHeading(
+                        roadside, out roadHeading);
+                    float roadSeparation = Distance2D(roadside, roadNode);
+                    if (roadSeparation < 1.25f || roadSeparation > 14f
+                        || Math.Abs(roadside.Z - roadNode.Z) > 3f)
+                    {
+                        lastFailure = "No distinct nearby roadside position was found away from the road node.";
+                        continue;
+                    }
+                    if (area == null
+                        || (enforcePlayerDistanceWindow
+                            && (!area.IsEligibleFor(playerPosition)
+                                || !IsWithinPlayerDistance(area, roadside, playerPosition))))
+                    {
+                        lastFailure = "The vehicle staging point falls outside the event area distance window.";
+                        continue;
+                    }
+                    if (HasOverlappingVehicle(roadside, 2.35f))
+                    {
+                        lastFailure = "A vehicle currently occupies the roadside staging position.";
+                        continue;
+                    }
+                    if (HasOverlappingPed(roadside, 2.0f))
+                    {
+                        lastFailure = "A pedestrian currently occupies the roadside staging position.";
+                        continue;
+                    }
+
+                    stagingPosition = roadside;
+                    heading = roadHeading;
+                    reason = string.Empty;
+                    return true;
                 }
 
-                int interiorId = Function.Call<int>(
-                    Hash.GET_INTERIOR_AT_COORDS, roadside.X, roadside.Y, roadside.Z);
-                float groundZ;
-                Vector3 groundNormal;
-                if (interiorId != 0
-                    || !World.GetGroundHeightAndNormal(roadside, out groundZ, out groundNormal)
-                    || groundNormal.Z < 0.65f
-                    || Math.Abs(roadside.Z - groundZ) > 3f)
-                {
-                    reason = "The roadside candidate is interior or lacks suitable ground support.";
-                    return false;
-                }
-                roadside.Z = groundZ;
-
-                float roadHeading;
-                Vector3 roadNode = World.GetNextPositionOnStreetWithHeading(
-                    roadside, out roadHeading);
-                float roadSeparation = Distance2D(roadside, roadNode);
-                if (roadSeparation < 1.25f || roadSeparation > 14f
-                    || Math.Abs(roadside.Z - roadNode.Z) > 3f)
-                {
-                    reason = "No distinct nearby roadside position was found away from the road node.";
-                    return false;
-                }
-                if (area == null
-                    || (enforcePlayerDistanceWindow
-                        && (!area.IsEligibleFor(playerPosition)
-                            || !IsWithinPlayerDistance(area, roadside, playerPosition))))
-                {
-                    reason = "The vehicle staging point falls outside the event area distance window.";
-                    return false;
-                }
-                if (HasOverlappingVehicle(roadside, 2.35f))
-                {
-                    reason = "A vehicle currently occupies the roadside staging position.";
-                    return false;
-                }
-                if (HasOverlappingPed(roadside, 2.0f))
-                {
-                    reason = "A pedestrian currently occupies the roadside staging position.";
-                    return false;
-                }
-
-                stagingPosition = roadside;
-                heading = roadHeading;
-                return true;
+                reason = lastFailure;
+                return false;
             }
             catch (Exception ex)
             {
                 reason = "Runtime vehicle staging validation failed: " + ex.GetType().Name;
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Resolves one additional, physically valid roadside position for a
+        /// bounded Dispatch multi-vehicle test scene. The caller owns the
+        /// returned vehicle; this method only validates a separate staging
+        /// point and never scans beyond the nearby ground/occupancy queries.
+        /// </summary>
+        internal bool TryResolveAdditionalDispatchVehicleStaging(
+            AmbientDispatchSceneResolution scene,
+            out Vector3 stagingPosition,
+            out float heading,
+            out string reason)
+        {
+            stagingPosition = Vector3.Zero;
+            heading = 0f;
+            reason = string.Empty;
+            if (scene == null || scene.Area == null || !scene.HasVehicleStagingPosition)
+            {
+                reason = "The first Dispatch roadside staging point is unavailable.";
+                return false;
+            }
+
+            float radians = scene.VehicleHeading * (float)Math.PI / 180f;
+            Vector3 forward = new Vector3((float)Math.Sin(radians),
+                (float)Math.Cos(radians), 0f);
+            Vector3 lateral = new Vector3(forward.Y, -forward.X, 0f);
+            Vector3[] offsets =
+            {
+                forward * 7f,
+                forward * -7f,
+                lateral * 6f,
+                lateral * -6f
+            };
+            for (int index = 0; index < offsets.Length; index++)
+            {
+                Vector3 candidate = scene.VehicleStagingPosition + offsets[index];
+                Vector3 resolved;
+                float resolvedHeading;
+                string candidateReason;
+                if (!TryResolveVehicleStaging(
+                    candidate,
+                    scene.Area,
+                    scene.SceneCenter,
+                    false,
+                    out resolved,
+                    out resolvedHeading,
+                    out candidateReason))
+                    continue;
+                if (Distance2D(resolved, scene.VehicleStagingPosition) < 5f)
+                    continue;
+                stagingPosition = resolved;
+                heading = resolvedHeading;
+                reason = string.Empty;
+                return true;
+            }
+
+            reason = "No separate roadside point passed ground, road-offset, pedestrian, vehicle, and interior checks.";
+            return false;
         }
 
         private static bool HasOverlappingPed(Vector3 position, float minimumSeparation)
@@ -1802,10 +3256,24 @@ namespace LSImmersiveLife
                 || IsRejectedSurveyStatus(location.PotentialMisclick);
         }
 
-        private static bool RequiresNamedLocation(string incidentType)
+        private static bool RequiresNamedLocation(
+            string incidentType,
+            string requiredPhysicalType = null)
         {
-            return string.Equals(incidentType, "bank_robbery", StringComparison.OrdinalIgnoreCase)
+            return !string.IsNullOrWhiteSpace(requiredPhysicalType)
+                || string.Equals(incidentType, "bank_robbery", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(incidentType, "store_robbery", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool MatchesRequiredPhysicalType(
+            LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location,
+            string requiredPhysicalType)
+        {
+            return string.IsNullOrWhiteSpace(requiredPhysicalType)
+                || (location != null && string.Equals(
+                    location.PhysicalType,
+                    requiredPhysicalType,
+                    StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool IsCompatibleWithIncident(
@@ -1832,8 +3300,250 @@ namespace LSImmersiveLife
                 string.Equals(value, "Store", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "Storefront", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "ConvenienceStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "ClothingStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "GunStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "LiquorStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "PawnShop", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "HardwareStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "SportingGoodsStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Pharmacy", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "Retail", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(value, "GasStation", StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static bool MatchesDispatchLocationContext(
+            LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location,
+            string context,
+            Vector3 candidatePosition)
+        {
+            if (!MatchesDispatchLocationContextMetadata(location, context))
+                return false;
+
+            string normalizedContext = (context ?? string.Empty).Trim().ToLowerInvariant();
+            return normalizedContext != "road_foot"
+                && normalizedContext != "road_vehicle"
+                || IsNearValidatedDispatchRoad(candidatePosition);
+        }
+
+        private static bool MatchesDispatchLocationContextMetadata(
+            LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location,
+            string context)
+        {
+            if (location == null || string.IsNullOrWhiteSpace(context)
+                || string.Equals(context, "any", StringComparison.OrdinalIgnoreCase))
+                return location != null;
+
+            string[] types =
+            {
+                location.PhysicalType,
+                location.Category,
+                location.Subcategory
+            };
+            switch (context.Trim().ToLowerInvariant())
+            {
+                case "financial":
+                    return types.Any(value =>
+                        string.Equals(value, "Bank", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(value, "BankBranch", StringComparison.OrdinalIgnoreCase));
+
+                case "commercial":
+                    return types.Any(IsCommercialDispatchLocationType);
+
+                case "residential":
+                    return types.Any(value =>
+                        string.Equals(value, "ForSaleRental", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(value, "ApartmentBuilding", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(value, "Residential", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(value, "House", StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(value, "Apartment", StringComparison.OrdinalIgnoreCase));
+
+                case "alley":
+                    return new[]
+                    {
+                        location.Name, location.Street, location.Environment,
+                        location.PhysicalType, location.Category, location.Subcategory
+                    }.Any(value => !string.IsNullOrWhiteSpace(value)
+                        && value.IndexOf("alley", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                case "road_foot":
+                case "road_vehicle":
+                    // Road proximity is checked only after candidates are
+                    // bounded to the Player's local catalog window.
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        private static bool HasCatalogedMappedInteriorReference(
+            LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair)
+        {
+            int mappedInteriorId;
+            return pair != null
+                && int.TryParse(pair.InteriorId, NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out mappedInteriorId)
+                && mappedInteriorId != 0;
+        }
+
+        private static bool IsDispatchInteriorPairWithinPlayerRange(
+            LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair,
+            Vector3 playerPosition,
+            int playerInteriorId)
+        {
+            if (pair == null || pair.OutsidePoint == null || pair.InsidePoint == null
+                || !HasCatalogedMappedInteriorReference(pair))
+                return false;
+
+            float distance = playerInteriorId != 0
+                ? Distance2D(pair.InsidePoint.Position, playerPosition)
+                : Math.Min(
+                    Distance2D(pair.OutsidePoint.Position, playerPosition),
+                    Distance2D(pair.InsidePoint.Position, playerPosition));
+            return distance
+                <= LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance;
+        }
+
+        internal bool HasNearbyCompatibleDispatchCatalogLocation(
+            LSPDDispatchEventDefinition definition,
+            Vector3 playerPosition,
+            int playerInteriorId,
+            bool playerInteriorIdAvailable)
+        {
+            if (definition == null
+                || _locationCatalog == null)
+                return false;
+
+            bool interiorDefinition = definition.RequiresMappedInterior
+                || !string.IsNullOrWhiteSpace(definition.InteriorLocationId);
+            if (interiorDefinition && !playerInteriorIdAvailable)
+                return false;
+
+            if (!string.IsNullOrWhiteSpace(definition.InteriorLocationId))
+            {
+                foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
+                    in GetInteriorAccessPairsIncludingGunStores())
+                {
+                    if (pair == null || pair.InsideLocation == null
+                        || pair.OutsidePoint == null || pair.InsidePoint == null
+                        || !string.Equals(pair.InsideLocation.Id,
+                            definition.InteriorLocationId,
+                            StringComparison.OrdinalIgnoreCase)
+                        || IsRejectedSurveyRecord(pair.InsideLocation)
+                        || !MatchesRequiredPhysicalType(
+                            pair.InsideLocation, definition.RequiredPhysicalType)
+                        || !IsCompatibleWithIncident(
+                            pair.InsideLocation, definition.IncidentType)
+                        || !MatchesDispatchLocationContextMetadata(
+                            pair.InsideLocation, definition.LocationContext))
+                        continue;
+
+                    if (IsDispatchInteriorPairWithinPlayerRange(
+                        pair, playerPosition, playerInteriorId))
+                        return true;
+                }
+
+                return false;
+            }
+
+            if (definition.RequiresMappedInterior)
+            {
+                // Eligibility checks run before Dispatch selects an event.
+                // Include every cataloged threshold pair here so a mapped
+                // bank, store, home, or other accessible interior is not
+                // hidden by the event's broad geographic area references.
+                // This is metadata-only; live interior, floor, and doorway
+                // validation remains capped in TryResolveMappedInteriorDispatchScene.
+                foreach (LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair
+                    in GetInteriorAccessPairsIncludingGunStores())
+                {
+                    if (pair == null || pair.InsideLocation == null
+                        || pair.OutsidePoint == null || pair.InsidePoint == null
+                        || IsRejectedSurveyRecord(pair.InsideLocation)
+                        || !MatchesRequiredPhysicalType(
+                            pair.InsideLocation, definition.RequiredPhysicalType)
+                        || !IsCompatibleWithIncident(
+                            pair.InsideLocation, definition.IncidentType)
+                        || !MatchesDispatchLocationContextMetadata(
+                            pair.InsideLocation, definition.LocationContext))
+                        continue;
+
+                    if (IsDispatchInteriorPairWithinPlayerRange(
+                        pair, playerPosition, playerInteriorId))
+                        return true;
+                }
+                return false;
+            }
+
+            IEnumerable<LSImmersiveLocationCatalog.LSImmersiveLocationDefinition> locations =
+                _locationCatalog.FindByCategory("SurveyedCandidate").Concat(
+                    _locationCatalog.FindByCategory("AreaCandidate"));
+            foreach (LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location in locations)
+            {
+                if (IsRejectedSurveyRecord(location)
+                    || !IsCompatibleWithIncident(location, definition.IncidentType)
+                    || !MatchesRequiredPhysicalType(location, definition.RequiredPhysicalType)
+                    || !MatchesDispatchLocationContextMetadata(
+                        location, definition.LocationContext))
+                    continue;
+
+                string pointRole = string.Equals(
+                    location.Category, "SurveyedCandidate", StringComparison.OrdinalIgnoreCase)
+                    ? "ObservedCoordinateCandidate" : "AreaSearchAnchor";
+                foreach (LSImmersiveLocationCatalog.LSImmersiveLocationPoint point
+                    in location.FindPoints(pointRole, false))
+                {
+                    if (HasObservedNonZeroInterior(point.InteriorId)
+                        || Distance2D(point.Position, playerPosition)
+                            > LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance)
+                        continue;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsCommercialDispatchLocationType(string value)
+        {
+            return string.Equals(value, "Store", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Storefront", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "ConvenienceStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "ClothingStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "GunStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "LiquorStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "GasStation", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "PawnShop", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "HardwareStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "SportingGoodsStore", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Pharmacy", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Retail", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Business", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Restaurant", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Bar", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "FoodStand", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "Dealership", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(value, "ModShop", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsNearValidatedDispatchRoad(Vector3 position)
+        {
+            try
+            {
+                float heading;
+                Vector3 roadNode = World.GetNextPositionOnStreetWithHeading(
+                    position, out heading);
+                return roadNode != Vector3.Zero
+                    && !float.IsNaN(heading)
+                    && !float.IsInfinity(heading)
+                    && Distance2D(position, roadNode) <= 45f
+                    && Math.Abs(position.Z - roadNode.Z) <= 8f
+                    && Function.Call<bool>(Hash.IS_POINT_ON_ROAD,
+                        roadNode.X, roadNode.Y, roadNode.Z, 0);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool IsRejectedSurveyStatus(string status)
@@ -1858,6 +3568,11 @@ namespace LSImmersiveLife
         {
             if (scene == null)
                 return;
+            string identity = string.Equals(scene.LocationReviewStatus, "OwnerConfirmed",
+                    StringComparison.OrdinalIgnoreCase)
+                ? "OwnerConfirmedMapReference"
+                : scene.IsSurveyedPoint
+                    ? "SurveyedCandidate" : "AreaCandidate_NotNamedSite";
             Log("AMBIENT_WORLD_LOCATION_RESOLVED",
                 "Location=" + scene.LocationId
                 + "; Name=" + scene.LocationName
@@ -1876,7 +3591,10 @@ namespace LSImmersiveLife
                 + "; VehicleRequired=" + requiresVehicle
                 + "; VehicleStaging=" + (scene.HasVehicleStagingPosition
                     ? scene.VehicleStagingPosition.ToString() : "Unavailable")
-                + "; Identity=" + (scene.IsSurveyedPoint ? "SurveyedCandidate" : "AreaCandidate_NotNamedSite"));
+                + "; Identity=" + identity
+                + "; RuntimeValidation=" + (scene.ValidationStatus ?? "Unknown")
+                + "; InteriorPair=" + (scene.InteriorAccessPair == null
+                    ? "None" : scene.InteriorAccessPair.MappingBasis));
         }
 
         private void RememberLocation(string locationId)
@@ -1929,7 +3647,23 @@ namespace LSImmersiveLife
         private void Log(string category, string message)
         {
             if (_log != null)
-                _log.Runtime(category, message);
+            {
+                bool recurringLocationFailure =
+                    string.Equals(category,
+                        "AMBIENT_WORLD_INTERIOR_SCENE_REJECTED",
+                        StringComparison.Ordinal)
+                    || string.Equals(category,
+                        "AMBIENT_WORLD_NEARBY_DISPATCH_CATALOG_FALLBACK_UNAVAILABLE",
+                        StringComparison.Ordinal)
+                    || string.Equals(category,
+                        "AMBIENT_WORLD_LOCATION_QUERY_REJECTED",
+                        StringComparison.Ordinal);
+                if (recurringLocationFailure)
+                    _log.RuntimeThrottled(category, message,
+                        TimeSpan.FromSeconds(30));
+                else
+                    _log.Runtime(category, message);
+            }
         }
 
         private sealed class DispatchLocationCandidate
@@ -1938,6 +3672,14 @@ namespace LSImmersiveLife
             internal LSImmersiveLocationCatalog.LSImmersiveLocationPoint Point;
             internal LSPDDispatchLocationDefinition Area;
             internal float AreaDistance;
+        }
+
+        private sealed class DispatchCivilianClaim
+        {
+            internal string IncidentId;
+            internal int PedHandle;
+            internal bool WasPersistent;
+            internal bool BlockedPermanentEvents;
         }
 
         internal int RegisteredActorCount
@@ -2738,6 +4480,7 @@ namespace LSImmersiveLife
         internal bool IsSurveyedPoint { get; set; }
         internal float MaximumSnapDistance { get; set; }
         internal bool IsInteriorScene { get; set; }
+        internal bool IsMappedInteriorDispatchScene { get; set; }
         internal int InteriorId { get; set; }
         internal string IncidentType { get; set; }
         internal LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair InteriorAccessPair { get; set; }

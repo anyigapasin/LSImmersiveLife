@@ -569,12 +569,19 @@ namespace LSImmersiveLife
 
         private void LogRuntime(string category, string message)
         {
-            // This awareness pass is intentionally event-based. It does not
-            // write a per-frame trace while a gang member remains nearby.
-            // The adapter's shared logger handles the actual runtime sink.
-            // The method is kept local so the response remains an observer.
             if (_log != null)
-                _log.Runtime(category, message);
+            {
+                bool recurringAwarenessState = string.Equals(
+                        category, "POLICE_GANG_AWARENESS_STEALTH",
+                        StringComparison.Ordinal)
+                    || string.Equals(category, "POLICE_GANG_AWARENESS_WARY",
+                        StringComparison.Ordinal);
+                if (recurringAwarenessState)
+                    _log.RuntimeThrottled(category, message,
+                        TimeSpan.FromSeconds(30));
+                else
+                    _log.Runtime(category, message);
+            }
         }
 
         private void LogException(string category, Exception ex)

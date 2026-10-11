@@ -647,6 +647,9 @@ namespace LSImmersiveLife
     /// </summary>
     internal sealed class LSPDDispatchLocationDefinition
     {
+        internal const float NearbyCatalogFallbackTriggerDistance = 250f;
+        internal const float NearbyCatalogFallbackMaximumDistance = 100f;
+
         internal string Id { get; private set; }
         internal Vector3 Position { get; private set; }
         internal float MinimumPlayerDistance { get; private set; }
@@ -679,10 +682,50 @@ namespace LSImmersiveLife
             };
         }
 
+        internal static LSPDDispatchLocationDefinition ForNearbyCatalogCandidate(
+            string id,
+            Vector3 position,
+            string context)
+        {
+            return new LSPDDispatchLocationDefinition
+            {
+                Id = string.IsNullOrWhiteSpace(id) ? "nearby-catalog-candidate" : id.Trim(),
+                Position = position,
+                MinimumPlayerDistance = 0f,
+                MaximumPlayerDistance = NearbyCatalogFallbackMaximumDistance,
+                Contexts = string.IsNullOrWhiteSpace(context)
+                    ? new List<string>()
+                    : new List<string> { context.Trim() }
+            };
+        }
+
         internal bool IsEligibleFor(Vector3 playerPosition)
         {
             float distance = Position.DistanceTo(playerPosition);
             return distance >= MinimumPlayerDistance && distance <= MaximumPlayerDistance;
+        }
+
+        internal bool IsFarFromDispatchArea(Vector3 playerPosition)
+        {
+            return HorizontalDistance(Position, playerPosition)
+                >= NearbyCatalogFallbackTriggerDistance;
+        }
+
+        internal bool IsWithinNearbyCatalogFallbackDistance(
+            Vector3 position,
+            Vector3 playerPosition)
+        {
+            float distance = HorizontalDistance(position, playerPosition);
+            return distance >= 0f
+                && distance <= NearbyCatalogFallbackMaximumDistance
+                && distance <= MaximumPlayerDistance;
+        }
+
+        private static float HorizontalDistance(Vector3 first, Vector3 second)
+        {
+            float x = first.X - second.X;
+            float y = first.Y - second.Y;
+            return (float)Math.Sqrt((x * x) + (y * y));
         }
 
         internal bool SupportsContext(string context)
@@ -779,35 +822,68 @@ namespace LSImmersiveLife
         internal List<string> LocationIds { get; private set; }
         internal List<string> BranchIds { get; private set; }
         internal string LocationContext { get; private set; }
+        internal string RequiredPhysicalType { get; private set; }
         internal string SceneBehavior { get; private set; }
+        internal string InteriorLocationId { get; private set; }
+        internal bool RequiresMappedInterior { get; private set; }
         internal string SceneAnimationDictionary { get; private set; }
         internal string SceneAnimationPrimaryClip { get; private set; }
         internal string SceneAnimationSecondaryClip { get; private set; }
+        internal string PreArrivalActivity { get; private set; }
+        internal List<string> SuspectResponseBranches { get; private set; }
+        internal List<string> VictimResponseBranches { get; private set; }
         internal bool Enabled { get; private set; }
         internal bool RequiresVehicle { get; private set; }
+        internal bool VehicleStagingRequired { get; private set; }
         internal bool Mobile { get; private set; }
+        internal bool StartPursuitOnAccept { get; private set; }
         internal bool Armed { get; private set; }
         // Authored group size. A Dispatch group is not represented by idle
         // decoration peds: every counted member is a real suspect tracked by
         // Dispatch and can enter compliance, custody, or a terminal outcome.
         internal int SuspectCount { get; private set; }
+        internal int MinimumSuspects { get; private set; }
+        internal int MaximumSuspects { get; private set; }
+        internal string VictimPoolId { get; private set; }
+        internal int MinimumVictims { get; private set; }
+        internal int MaximumVictims { get; private set; }
+        internal bool VictimStartsDead { get; private set; }
         internal int Severity { get; private set; }
+        internal int SelectionWeight { get; private set; }
         internal int MinimumCooldownSeconds { get; private set; }
         internal float SpawnDistance { get; private set; }
+        internal int MinimumSuspectVehicles { get; private set; }
+        internal int MaximumSuspectVehicles { get; private set; }
+        internal Dictionary<string, int> SuspectResponseWeights { get; private set; }
+        internal Dictionary<string, int> VictimResponseWeights { get; private set; }
 
         internal static LSPDDispatchEventDefinition FromXml(XElement node)
         {
             string locationContext = Optional(node, "locationContext", "any");
-            if (!new[] { "any", "commercial", "financial", "alley", "road_foot", "road_vehicle" }
+            if (!new[] { "any", "commercial", "financial", "residential", "alley", "road_foot", "road_vehicle" }
                 .Contains(locationContext, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException(
                     "Dispatch event has an unsupported locationContext: " + locationContext);
 
             string sceneBehavior = Optional(node, "sceneBehavior", "standard");
-            if (!new[] { "standard", "paired_meeting", "paired_exchange" }
+            if (!new[] { "standard", "paired_meeting", "paired_exchange", "interior_store_custody", "interior_robbery_custody", "interior_attack_attempt", "murder_victim_alley", "murder_victim_interior" }
                 .Contains(sceneBehavior, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException(
                     "Dispatch event has an unsupported sceneBehavior: " + sceneBehavior);
+
+            string requiredPhysicalType = Optional(node, "requiredPhysicalType", string.Empty);
+            if (!string.IsNullOrWhiteSpace(requiredPhysicalType)
+                && !new[] { "Bank", "BankBranch", "Store", "Storefront",
+                    "ConvenienceStore", "ClothingStore", "GunStore", "LiquorStore",
+                    "GasStation", "PawnShop", "HardwareStore", "SportingGoodsStore", "Pharmacy" }
+                    .Contains(requiredPhysicalType, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported requiredPhysicalType: " + requiredPhysicalType);
+            if (!string.IsNullOrWhiteSpace(requiredPhysicalType)
+                && !string.Equals(Required(node, "type"), "bank_robbery", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(Required(node, "type"), "store_robbery", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "A required physical store or bank type can only be used by a matching robbery event.");
 
             string sceneAnimationDictionary = Optional(node, "sceneAnimationDictionary", string.Empty);
             string sceneAnimationPrimaryClip = Optional(node, "sceneAnimationPrimaryClip", string.Empty);
@@ -819,7 +895,9 @@ namespace LSImmersiveLife
                 && hasSceneAnimation)
                 throw new InvalidDataException(
                     "Standard Dispatch scenes cannot declare a paired ambient animation.");
-            if (!string.Equals(sceneBehavior, "standard", StringComparison.OrdinalIgnoreCase)
+            bool pairedScene = string.Equals(sceneBehavior, "paired_meeting", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sceneBehavior, "paired_exchange", StringComparison.OrdinalIgnoreCase);
+            if (pairedScene
                 && (string.IsNullOrWhiteSpace(sceneAnimationDictionary)
                     || string.IsNullOrWhiteSpace(sceneAnimationPrimaryClip)
                     || string.IsNullOrWhiteSpace(sceneAnimationSecondaryClip)))
@@ -839,10 +917,233 @@ namespace LSImmersiveLife
                     "The documented paired exchange animation must use the authored giver/receiver clip pair.");
 
             int suspectCount = Math.Max(1, Integer(node, "suspectCount", 1));
-            if (!string.Equals(sceneBehavior, "standard", StringComparison.OrdinalIgnoreCase)
-                && suspectCount < 2)
+            if (suspectCount > 15)
+                throw new InvalidDataException(
+                    "Dispatch suspect count cannot exceed the configured maximum of fifteen.");
+            int minimumSuspects = IntegerInRange(
+                node, "minimumSuspects", suspectCount, 1, 15);
+            int maximumSuspects = IntegerInRange(
+                node, "maximumSuspects", suspectCount, minimumSuspects, 15);
+            if (pairedScene && minimumSuspects < 2)
                 throw new InvalidDataException(
                     "A paired Dispatch scene requires at least two tracked suspects.");
+
+            string victimPoolId = Optional(node, "victimPool", string.Empty);
+            int minimumVictims = IntegerInRange(node, "minimumVictims", 0, 0, 1);
+            int maximumVictims = IntegerInRange(
+                node, "maximumVictims", minimumVictims, minimumVictims, 1);
+            bool victimStartsDead = Bool(node, "victimStartsDead", false);
+            if (maximumVictims > 0 && string.IsNullOrWhiteSpace(victimPoolId))
+                throw new InvalidDataException(
+                    "A Dispatch event requiring a victim must declare its victimPool.");
+            if (maximumVictims == 0 && !string.IsNullOrWhiteSpace(victimPoolId))
+                throw new InvalidDataException(
+                    "A Dispatch event cannot declare a victimPool when it has no victim role.");
+            bool alleyMurderScene = string.Equals(
+                sceneBehavior, "murder_victim_alley", StringComparison.OrdinalIgnoreCase);
+            bool interiorMurderScene = string.Equals(
+                sceneBehavior, "murder_victim_interior", StringComparison.OrdinalIgnoreCase);
+            bool murderVictimScene = alleyMurderScene || interiorMurderScene;
+            if (victimStartsDead != murderVictimScene
+                || (victimStartsDead
+                    && (minimumVictims != 1 || maximumVictims != 1
+                        || (alleyMurderScene
+                            && !string.Equals(locationContext, "alley", StringComparison.OrdinalIgnoreCase))
+                        || !string.Equals(Required(node, "type"), "violent_disturbance", StringComparison.OrdinalIgnoreCase))))
+                throw new InvalidDataException(
+                    "A pre-existing dead victim is supported only by a documented one-victim alley or mapped-interior murder scene.");
+
+            string preArrivalActivity = Optional(node, "preArrivalActivity", "none");
+            if (!new[] { "none", "guard", "disturbance", "murder_scene", "victim_threat" }
+                .Contains(preArrivalActivity, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported preArrivalActivity: " + preArrivalActivity);
+            if (string.Equals(preArrivalActivity, "murder_scene", StringComparison.OrdinalIgnoreCase)
+                != murderVictimScene)
+                throw new InvalidDataException(
+                    "The murder_scene pre-arrival activity requires a documented alley or mapped-interior murder scene.");
+            if (string.Equals(preArrivalActivity, "victim_threat", StringComparison.OrdinalIgnoreCase)
+                && (minimumVictims != 1 || maximumVictims != 1 || victimStartsDead
+                    || string.IsNullOrWhiteSpace(victimPoolId)
+                    || !Bool(node, "armed", false)))
+                throw new InvalidDataException(
+                    "The victim_threat activity requires one living victim and an armed suspect profile.");
+
+            List<string> victimResponseBranches = IdList(node, "victimResponseBranches");
+            var supportedVictimResponses = new HashSet<string>(
+                new[] { "attempt_escape", "remain_threatened" },
+                StringComparer.OrdinalIgnoreCase);
+            if (victimResponseBranches.Any(value => !supportedVictimResponses.Contains(value)))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported victim response branch: "
+                    + victimResponseBranches.First(value => !supportedVictimResponses.Contains(value)));
+            if (victimResponseBranches.Count > 0
+                && (!string.Equals(Required(node, "type"), "kidnapping", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(locationContext, "alley", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(preArrivalActivity, "victim_threat", StringComparison.OrdinalIgnoreCase)
+                    || minimumVictims != 1 || maximumVictims != 1 || victimStartsDead
+                    || Bool(node, "requiresVehicle", false)))
+                throw new InvalidDataException(
+                    "Victim escape responses require one living victim in a foot kidnapping scene.");
+
+            List<string> suspectResponseBranches = IdList(node, "suspectResponseBranches");
+            var supportedSuspectResponses = new HashSet<string>(
+                new[] { "comply", "resist", "flee" },
+                StringComparer.OrdinalIgnoreCase);
+            if (suspectResponseBranches.Any(value => !supportedSuspectResponses.Contains(value)))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported suspect response branch: "
+                    + suspectResponseBranches.First(value => !supportedSuspectResponses.Contains(value)));
+            if (alleyMurderScene
+                && !new[] { "comply", "resist", "flee" }.All(value =>
+                    suspectResponseBranches.Contains(value, StringComparer.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    "The documented alley-murder scene must retain compliance, armed resistance, and flight outcomes.");
+            if (victimResponseBranches.Count > 0
+                && !suspectResponseBranches.Contains("flee", StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Victim escape responses require a documented suspect flight branch.");
+
+            string interiorLocationId = Optional(node, "interiorLocationId", string.Empty);
+            bool vehicleStagingRequired = Bool(node, "vehicleStagingRequired", false);
+            bool requiresVehicle = Bool(node, "requiresVehicle", false);
+            int minimumSuspectVehicles = IntegerInRange(
+                node, "minimumSuspectVehicles", requiresVehicle ? 1 : 0, 0, 2);
+            int maximumSuspectVehicles = IntegerInRange(
+                node, "maximumSuspectVehicles", minimumSuspectVehicles, minimumSuspectVehicles, 2);
+            if ((requiresVehicle && minimumSuspectVehicles < 1)
+                || (!requiresVehicle && maximumSuspectVehicles > 0)
+                || minimumSuspects < minimumSuspectVehicles)
+                throw new InvalidDataException(
+                    "Dispatch suspect-vehicle counts must be supported by the vehicle requirement and suspect range.");
+            if (maximumSuspectVehicles > 1 && (!requiresVehicle || !Bool(node, "mobile", false)))
+                throw new InvalidDataException(
+                    "Multi-vehicle Dispatch scenes must be mobile vehicle incidents.");
+
+            var responseWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (string branch in supportedSuspectResponses)
+            {
+                bool allowed = suspectResponseBranches.Contains(branch, StringComparer.OrdinalIgnoreCase);
+                string attribute = "response" + char.ToUpperInvariant(branch[0]) + branch.Substring(1) + "Weight";
+                int weight = IntegerInRange(node, attribute, allowed ? 1 : 0, 0, 1000);
+                if (!allowed && weight > 0)
+                    throw new InvalidDataException(
+                        "A Dispatch response weight cannot enable a behavior outside suspectResponseBranches: " + branch);
+                if (allowed)
+                    responseWeights[branch] = weight;
+            }
+            if (responseWeights.Count > 0 && responseWeights.Values.All(value => value == 0))
+                throw new InvalidDataException(
+                    "A Dispatch event with suspect response branches requires at least one positive response weight.");
+
+            var victimResponseWeights = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (string branch in supportedVictimResponses)
+            {
+                bool allowed = victimResponseBranches.Contains(branch, StringComparer.OrdinalIgnoreCase);
+                string attribute = branch == "attempt_escape"
+                    ? "victimAttemptEscapeWeight" : "victimRemainThreatenedWeight";
+                int weight = IntegerInRange(node, attribute, allowed ? 1 : 0, 0, 1000);
+                if (!allowed && weight > 0)
+                    throw new InvalidDataException(
+                        "A Dispatch victim response weight cannot enable a behavior outside victimResponseBranches: " + branch);
+                if (allowed)
+                    victimResponseWeights[branch] = weight;
+            }
+            if (victimResponseWeights.Count > 0
+                && victimResponseWeights.Values.All(value => value == 0))
+                throw new InvalidDataException(
+                    "A Dispatch event with victim response branches requires at least one positive response weight.");
+
+            bool interiorStoreCustody = string.Equals(
+                sceneBehavior, "interior_store_custody", StringComparison.OrdinalIgnoreCase);
+            bool mappedInteriorRobberyCustody = string.Equals(
+                sceneBehavior, "interior_robbery_custody", StringComparison.OrdinalIgnoreCase);
+            bool mappedInteriorAttackAttempt = string.Equals(
+                sceneBehavior, "interior_attack_attempt", StringComparison.OrdinalIgnoreCase);
+            bool mappedInteriorMurderScene = interiorMurderScene;
+            bool inferredMappedInterior = mappedInteriorRobberyCustody
+                || mappedInteriorAttackAttempt
+                || mappedInteriorMurderScene;
+            bool requiresMappedInterior = Bool(
+                node, "requiresMappedInterior", inferredMappedInterior);
+            if (requiresMappedInterior != inferredMappedInterior)
+                throw new InvalidDataException(
+                    "requiresMappedInterior must match a mapped interior robbery, attack, or murder scene behavior.");
+            if ((interiorStoreCustody || mappedInteriorRobberyCustody
+                    || mappedInteriorAttackAttempt || mappedInteriorMurderScene)
+                && suspectResponseBranches.Any(value => string.Equals(
+                    value, "flee", StringComparison.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    "A mapped interior scene cannot allow a suspect to flee before its physical doorway pursuit path is implemented.");
+            if (interiorStoreCustody
+                && (!string.Equals(Required(node, "type"), "store_robbery", StringComparison.OrdinalIgnoreCase)
+                    || string.IsNullOrWhiteSpace(interiorLocationId)
+                    || suspectCount != 1
+                    || minimumVictims != 1
+                    || maximumVictims != 1
+                    || !string.Equals(victimPoolId, "shop_clerk", StringComparison.OrdinalIgnoreCase)
+                    || !Bool(node, "armed", false)
+                    || Bool(node, "requiresVehicle", false)
+                    || hasSceneAnimation))
+                throw new InvalidDataException(
+                    "An interior store-custody scene requires one armed store suspect, one shop-clerk victim, an exact interior site, no suspect vehicle, and no paired animation.");
+            if (mappedInteriorRobberyCustody
+                && ((!string.Equals(Required(node, "type"), "store_robbery", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(Required(node, "type"), "bank_robbery", StringComparison.OrdinalIgnoreCase))
+                    || !string.IsNullOrWhiteSpace(interiorLocationId)
+                    || suspectCount != 1
+                    || minimumSuspects != 1
+                    || maximumSuspects != 1
+                    || minimumVictims != 1
+                    || maximumVictims != 1
+                    || !string.Equals(victimPoolId,
+                        string.Equals(Required(node, "type"), "bank_robbery", StringComparison.OrdinalIgnoreCase)
+                            ? "ambient_civilian" : "shop_clerk",
+                        StringComparison.OrdinalIgnoreCase)
+                    || !Bool(node, "armed", false)
+                    || Bool(node, "requiresVehicle", false)
+                    || !vehicleStagingRequired
+                    || hasSceneAnimation
+                    || !new[] { "comply", "resist" }.All(value =>
+                        suspectResponseBranches.Contains(value, StringComparer.OrdinalIgnoreCase))))
+                throw new InvalidDataException(
+                    "A mapped interior robbery requires one armed bank/store suspect, one matching civilian victim, compliance and resistance branches, roadside staging, no suspect vehicle, and no paired animation.");
+            if (mappedInteriorAttackAttempt
+                && (!string.Equals(Required(node, "type"), "violent_disturbance", StringComparison.OrdinalIgnoreCase)
+                    || !string.IsNullOrWhiteSpace(interiorLocationId)
+                    || minimumSuspects < 1
+                    || maximumSuspects > 3
+                    || minimumVictims != 1
+                    || maximumVictims != 1
+                    || victimStartsDead
+                    || !Bool(node, "armed", false)
+                    || Bool(node, "requiresVehicle", false)
+                    || !vehicleStagingRequired
+                    || hasSceneAnimation
+                    || !new[] { "comply", "resist" }.All(value =>
+                        suspectResponseBranches.Contains(value, StringComparer.OrdinalIgnoreCase))))
+                throw new InvalidDataException(
+                    "A mapped interior attack-attempt scene requires an armed suspect group, one living victim, compliance and resistance branches, roadside staging, no suspect vehicle, and no paired animation.");
+            if (mappedInteriorMurderScene
+                && (!string.Equals(Required(node, "type"), "violent_disturbance", StringComparison.OrdinalIgnoreCase)
+                    || minimumSuspects < 1
+                    || maximumSuspects > 3
+                    || minimumVictims != 1
+                    || maximumVictims != 1
+                    || !victimStartsDead
+                    || !Bool(node, "armed", false)
+                    || Bool(node, "requiresVehicle", false)
+                    || !vehicleStagingRequired
+                    || hasSceneAnimation
+                    || !new[] { "comply", "resist" }.All(value =>
+                        suspectResponseBranches.Contains(value, StringComparer.OrdinalIgnoreCase))))
+                throw new InvalidDataException(
+                    "A mapped interior murder scene requires an armed suspect group, one catalog-defined dead victim, compliance and resistance branches, roadside staging, no suspect vehicle, and no paired animation.");
+            if (!interiorStoreCustody && !mappedInteriorRobberyCustody
+                && !mappedInteriorAttackAttempt && !mappedInteriorMurderScene
+                && (!string.IsNullOrWhiteSpace(interiorLocationId) || vehicleStagingRequired))
+                throw new InvalidDataException(
+                    "Only a scene with an explicit interior behavior may declare an interior site or separate vehicle staging.");
 
             return new LSPDDispatchEventDefinition
             {
@@ -855,30 +1156,137 @@ namespace LSImmersiveLife
                 LocationIds = IdList(node, "locationIds"),
                 BranchIds = IdList(node, "branchIds"),
                 LocationContext = locationContext,
+                RequiredPhysicalType = requiredPhysicalType,
                 SceneBehavior = sceneBehavior,
+                InteriorLocationId = interiorLocationId,
+                RequiresMappedInterior = requiresMappedInterior,
                 SceneAnimationDictionary = sceneAnimationDictionary,
                 SceneAnimationPrimaryClip = sceneAnimationPrimaryClip,
                 SceneAnimationSecondaryClip = sceneAnimationSecondaryClip,
+                PreArrivalActivity = preArrivalActivity,
+                SuspectResponseBranches = suspectResponseBranches,
+                VictimResponseBranches = victimResponseBranches,
+                SuspectResponseWeights = responseWeights,
+                VictimResponseWeights = victimResponseWeights,
                 Enabled = Bool(node, "enabled", true),
-                RequiresVehicle = Bool(node, "requiresVehicle", false),
+                RequiresVehicle = requiresVehicle,
+                VehicleStagingRequired = vehicleStagingRequired,
                 Mobile = Bool(node, "mobile", false),
+                StartPursuitOnAccept = Bool(node, "startPursuitOnAccept", false),
                 Armed = Bool(node, "armed", false),
                 SuspectCount = suspectCount,
+                MinimumSuspects = minimumSuspects,
+                MaximumSuspects = maximumSuspects,
+                VictimPoolId = victimPoolId,
+                MinimumVictims = minimumVictims,
+                MaximumVictims = maximumVictims,
+                VictimStartsDead = victimStartsDead,
                 Severity = Integer(node, "severity", 1),
+                SelectionWeight = IntegerInRange(node, "selectionWeight", 1, 1, 1000),
                 MinimumCooldownSeconds = Integer(node, "minimumCooldownSeconds", 90),
-                SpawnDistance = Float(node, "spawnDistance", 90f)
+                SpawnDistance = Float(node, "spawnDistance", 90f),
+                MinimumSuspectVehicles = minimumSuspectVehicles,
+                MaximumSuspectVehicles = maximumSuspectVehicles
             };
+        }
+
+        internal int ChooseSuspectCount(Random random, int maximumAllowed)
+        {
+            int maximum = Math.Min(MaximumSuspects, Math.Max(1, Math.Min(15, maximumAllowed)));
+            if (MinimumSuspects > maximum)
+                return 0;
+            return MinimumSuspects >= maximum || random == null
+                ? MinimumSuspects
+                : random.Next(MinimumSuspects, maximum + 1);
+        }
+
+        internal int ChooseVictimCount(Random random)
+        {
+            if (MaximumVictims <= MinimumVictims || random == null)
+                return MinimumVictims;
+            return random.Next(MinimumVictims, MaximumVictims + 1);
+        }
+
+        internal static bool IsVictimStateReady(
+            bool victimStartsDead,
+            bool victimIsDead,
+            int victimHealth)
+        {
+            return victimStartsDead
+                ? victimIsDead || victimHealth <= 0
+                : !victimIsDead && victimHealth > 0;
+        }
+
+        internal int ChooseSuspectVehicleCount(Random random, int maximumAllowed)
+        {
+            int maximum = Math.Min(MaximumSuspectVehicles, Math.Max(0, Math.Min(2, maximumAllowed)));
+            if (MinimumSuspectVehicles > maximum)
+                return -1;
+            return MinimumSuspectVehicles >= maximum || random == null
+                ? MinimumSuspectVehicles
+                : random.Next(MinimumSuspectVehicles, maximum + 1);
+        }
+
+        internal string ChooseSuspectResponse(Random random, IEnumerable<string> eligibleBranches)
+        {
+            if (eligibleBranches == null || SuspectResponseWeights == null)
+                return string.Empty;
+            List<string> candidates = eligibleBranches
+                .Where(value => !string.IsNullOrWhiteSpace(value)
+                    && SuspectResponseWeights.ContainsKey(value)
+                    && SuspectResponseWeights[value] > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            int total = candidates.Sum(value => SuspectResponseWeights[value]);
+            if (total <= 0)
+                return string.Empty;
+            int roll = random == null ? 0 : random.Next(total);
+            foreach (string candidate in candidates)
+            {
+                roll -= SuspectResponseWeights[candidate];
+                if (roll < 0)
+                    return candidate;
+            }
+            return candidates[candidates.Count - 1];
+        }
+
+        internal string ChooseVictimResponse(Random random, IEnumerable<string> eligibleBranches)
+        {
+            if (eligibleBranches == null || VictimResponseWeights == null)
+                return string.Empty;
+            List<string> candidates = eligibleBranches
+                .Where(value => !string.IsNullOrWhiteSpace(value)
+                    && VictimResponseWeights.ContainsKey(value)
+                    && VictimResponseWeights[value] > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            int total = candidates.Sum(value => VictimResponseWeights[value]);
+            if (total <= 0)
+                return string.Empty;
+            int roll = random == null ? 0 : random.Next(total);
+            foreach (string candidate in candidates)
+            {
+                roll -= VictimResponseWeights[candidate];
+                if (roll < 0)
+                    return candidate;
+            }
+            return candidates[candidates.Count - 1];
         }
 
         internal bool CanUseArea(
             LSPDDispatchLocationDefinition area,
             Vector3 playerPosition)
         {
+            return CanUseAreaContext(area)
+                && area.IsEligibleFor(playerPosition);
+        }
+
+        internal bool CanUseAreaContext(LSPDDispatchLocationDefinition area)
+        {
             return area != null
                 && LocationIds != null
                 && LocationIds.Contains(area.Id, StringComparer.OrdinalIgnoreCase)
-                && area.SupportsContext(LocationContext)
-                && area.IsEligibleFor(playerPosition);
+                && area.SupportsContext(LocationContext);
         }
 
         internal LSPDCriminalProfileDefinition ChooseCriminalProfile(
@@ -957,6 +1365,23 @@ namespace LSImmersiveLife
                 CultureInfo.InvariantCulture, out value) ? Math.Max(0, value) : fallback;
         }
 
+        private static int IntegerInRange(
+            XElement node,
+            string attribute,
+            int fallback,
+            int minimum,
+            int maximum)
+        {
+            int value;
+            if (!int.TryParse((string)node.Attribute(attribute), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out value))
+                return fallback;
+            if (value < minimum || value > maximum)
+                throw new InvalidDataException(
+                    "Dispatch event attribute is outside range: " + attribute);
+            return value;
+        }
+
         private static float Float(XElement node, string attribute, float fallback)
         {
             float value;
@@ -978,10 +1403,15 @@ namespace LSImmersiveLife
         internal string AudioIncidentType { get; set; }
         internal List<string> BranchIds { get; set; }
         internal string LocationContext { get; set; }
+        internal string RequiredPhysicalType { get; set; }
         internal string SceneBehavior { get; set; }
+        internal string InteriorLocationId { get; set; }
         internal string SceneAnimationDictionary { get; set; }
         internal string SceneAnimationPrimaryClip { get; set; }
         internal string SceneAnimationSecondaryClip { get; set; }
+        internal string PreArrivalActivity { get; set; }
+        internal List<string> SuspectResponseBranches { get; set; }
+        internal List<string> VictimResponseBranches { get; set; }
         internal string CriminalProfileId { get; set; }
         internal string CriminalDisposition { get; set; }
         internal string SuspectModel { get; set; }
@@ -991,10 +1421,33 @@ namespace LSImmersiveLife
         internal string WeaponName { get; set; }
         internal List<string> WeaponNameCandidates { get; set; }
         internal bool RequiresVehicle { get; set; }
+        internal bool VehicleStagingRequired { get; set; }
         internal bool Mobile { get; set; }
+        internal bool StartPursuitOnAccept { get; set; }
         internal bool Armed { get; set; }
         internal int Severity { get; set; }
+        internal Dictionary<string, int> SuspectResponseWeights { get; set; }
+        internal Dictionary<string, int> VictimResponseWeights { get; set; }
         internal int SuspectCount { get; set; }
+        internal int SuspectVehicleCount { get; set; }
+        internal string VictimPoolId { get; set; }
+        internal int MinimumVictims { get; set; }
+        internal int MaximumVictims { get; set; }
+        internal int VictimCount { get; set; }
+        internal bool VictimStartsDead { get; set; }
+        internal bool VictimInvestigated { get; set; }
+        internal bool VictimEncounterResponseStarted { get; set; }
+        internal string VictimEncounterResponse { get; set; }
+        internal string VictimModelName { get; set; }
+        internal bool PreArrivalSceneBehaviorInitialized { get; set; }
+        internal bool PreArrivalVictimThreatStarted { get; set; }
+        internal bool VictimAmbientReuseEvaluated { get; set; }
+        internal bool PlayerEncounterResponseStarted { get; set; }
+        internal DateTime LastPursuitWaypointAt { get; set; }
+        internal DateTime LastPursuitRadioUpdateAt { get; set; }
+        internal Vector3 LastPursuitWaypointPosition { get; set; }
+        internal int PursuitLocationUpdateCount { get; set; }
+        internal DateTime LastEncounterResponseCheckAt { get; set; }
         internal Vector3 Origin { get; set; }
         internal AmbientDispatchSceneResolution SceneResolution { get; set; }
         internal Ped Suspect { get; set; }
@@ -1004,19 +1457,32 @@ namespace LSImmersiveLife
         internal List<Ped> Suspects { get; private set; } = new List<Ped>();
         internal List<Ped> ArrestedSuspects { get; private set; } = new List<Ped>();
         internal List<Ped> CompliantSuspects { get; private set; } = new List<Ped>();
+        // A wounded/downed suspect is still owned by Dispatch and remains
+        // arrestable, but must no longer be selected as a live pursuit target.
+        internal HashSet<int> PursuitContainedSuspectHandles { get; private set; } =
+            new HashSet<int>();
+        internal Dictionary<int, string> SuspectResponses { get; private set; } = new Dictionary<int, string>();
         // Some urgent callouts have a second Police-owned participant.  The
         // victim/witness stays in the scene until the officer has investigated
         // it, so a carjacking or robbery is visibly different from a lone
         // fleeing suspect.
         internal Ped Victim { get; set; }
+        internal bool VictimWasExistingAmbient { get; set; }
         internal List<Ped> AdditionalParticipants { get; private set; } = new List<Ped>();
         internal Vehicle SuspectVehicle { get; set; }
+        internal List<Vehicle> SuspectVehicles { get; private set; } = new List<Vehicle>();
+        internal Dictionary<int, int> SuspectVehicleByPedHandle { get; private set; } = new Dictionary<int, int>();
+        internal Vehicle ParkedPlayerUtility { get; set; }
         internal bool OwnedByDispatch { get; set; }
         internal bool HasConvoyCustodyHandoff { get; set; }
         internal bool ScenePreparationRequested { get; set; }
         internal bool ScenePreparationCompleted { get; set; }
         internal DateTime ScenePreparationDeadline { get; set; }
+        internal DateTime ScenePreparationNextRetryAt { get; set; }
+        internal int ScenePreparationActorRetryCount { get; set; }
         internal bool SceneBehaviorInitialized { get; set; }
+        internal bool SuspectEscalationTriggered { get; set; }
+        internal bool SuspectGunfireReported { get; set; }
         internal bool SceneAnimationRequested { get; set; }
         internal DateTime SceneAnimationDeadline { get; set; }
         // Robbery and kidnapping scenes use a short task sequence so a
@@ -1037,12 +1503,26 @@ namespace LSImmersiveLife
         internal bool GroupComplianceRequested { get; set; }
         internal string ActiveAudioScope { get; set; }
         internal string LastAudioStage { get; set; }
+        internal bool SceneApproachReported { get; set; }
+        internal bool SceneArrivalReported { get; set; }
+        internal DateTime NextEnRouteStatusAt { get; set; }
+        internal int EnRouteStatusUpdateCount { get; set; }
+        internal bool InvestigationReported { get; set; }
         internal LSPDDispatchState State { get; set; }
         internal DateTime CreatedAt { get; set; }
         internal DateTime StateChangedAt { get; set; }
         internal Vector3 LastSuspectPosition { get; set; }
         internal DateTime LastMovementSampleAt { get; set; }
         internal bool SuspectMovementConfirmed { get; set; }
+        internal int LastMovementSampleTargetHandle { get; set; }
+        internal Dictionary<int, int> PursuitVehicleHealthAtStart { get; private set; } =
+            new Dictionary<int, int>();
+        internal Dictionary<int, DateTime> PursuitVehicleStoppedAt { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal Dictionary<int, DateTime> PursuitVehicleExitTaskAt { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal HashSet<int> PursuitVehicleExitRequestedHandles { get; private set; } =
+            new HashSet<int>();
         // Dispatch owns a suspect's interior pursuit until the suspect has
         // physically crossed its mapped door. Each phase is retained here so
         // maintenance cannot replace the navigation/door task with ReactAndFlee.
@@ -1059,7 +1539,10 @@ namespace LSImmersiveLife
         internal static LSPDDispatchEvent FromDefinition(
             LSPDDispatchEventDefinition definition,
             Vector3 origin,
-            LSPDCriminalProfileDefinition criminalProfile)
+            LSPDCriminalProfileDefinition criminalProfile,
+            int suspectCount,
+            int victimCount,
+            int suspectVehicleCount)
         {
             if (definition == null || criminalProfile == null
                 || string.IsNullOrWhiteSpace(criminalProfile.ModelName)
@@ -1079,10 +1562,23 @@ namespace LSImmersiveLife
                 BranchIds = definition.BranchIds == null
                     ? new List<string>() : new List<string>(definition.BranchIds),
                 LocationContext = definition.LocationContext,
+                RequiredPhysicalType = definition.RequiredPhysicalType,
                 SceneBehavior = definition.SceneBehavior,
+                InteriorLocationId = definition.InteriorLocationId,
                 SceneAnimationDictionary = definition.SceneAnimationDictionary,
                 SceneAnimationPrimaryClip = definition.SceneAnimationPrimaryClip,
                 SceneAnimationSecondaryClip = definition.SceneAnimationSecondaryClip,
+                PreArrivalActivity = definition.PreArrivalActivity,
+                SuspectResponseBranches = definition.SuspectResponseBranches == null
+                    ? new List<string>() : new List<string>(definition.SuspectResponseBranches),
+                VictimResponseBranches = definition.VictimResponseBranches == null
+                    ? new List<string>() : new List<string>(definition.VictimResponseBranches),
+                SuspectResponseWeights = definition.SuspectResponseWeights == null
+                    ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, int>(definition.SuspectResponseWeights, StringComparer.OrdinalIgnoreCase),
+                VictimResponseWeights = definition.VictimResponseWeights == null
+                    ? new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, int>(definition.VictimResponseWeights, StringComparer.OrdinalIgnoreCase),
                 CriminalProfileId = criminalProfile.Id,
                 CriminalDisposition = criminalProfile.Disposition,
                 SuspectModel = criminalProfile.ModelName,
@@ -1098,9 +1594,22 @@ namespace LSImmersiveLife
                     criminalProfile.WeaponNameCandidates,
                     criminalProfile.WeaponName),
                 RequiresVehicle = definition.RequiresVehicle,
+                VehicleStagingRequired = definition.VehicleStagingRequired,
                 Mobile = definition.Mobile,
+                StartPursuitOnAccept = definition.StartPursuitOnAccept,
                 Armed = definition.Armed || profileArmed,
-                SuspectCount = Math.Max(1, definition.SuspectCount),
+                SuspectCount = Math.Max(1, Math.Min(15, suspectCount)),
+                SuspectVehicleCount = Math.Max(0, Math.Min(2, suspectVehicleCount)),
+                VictimPoolId = definition.VictimPoolId,
+                MinimumVictims = definition.MinimumVictims,
+                MaximumVictims = definition.MaximumVictims,
+                VictimCount = Math.Max(
+                    definition.MinimumVictims,
+                    Math.Min(definition.MaximumVictims, victimCount)),
+                VictimStartsDead = definition.VictimStartsDead,
+                VictimInvestigated = false,
+                VictimEncounterResponseStarted = false,
+                VictimEncounterResponse = string.Empty,
                 Severity = definition.Severity,
                 Origin = origin,
                 // Dispatch owns the live assignment before its physical scene entities exist.
@@ -1109,11 +1618,23 @@ namespace LSImmersiveLife
                 CreatedAt = now,
                 StateChangedAt = now,
                 ScenePreparationDeadline = DateTime.MinValue,
+                ScenePreparationNextRetryAt = DateTime.MinValue,
+                ScenePreparationActorRetryCount = 0,
                 SceneAnimationRequested = false,
                 SceneAnimationDeadline = DateTime.MinValue,
+                PreArrivalSceneBehaviorInitialized = false,
+                PreArrivalVictimThreatStarted = false,
+                PlayerEncounterResponseStarted = false,
+                LastPursuitWaypointAt = DateTime.MinValue,
+                LastPursuitRadioUpdateAt = DateTime.MinValue,
+                LastPursuitWaypointPosition = origin,
+                PursuitLocationUpdateCount = 0,
+                LastEncounterResponseCheckAt = DateTime.MinValue,
                 SceneBehaviorStage = 0,
                 SceneBehaviorNextStepAt = DateTime.MinValue,
                 SurrenderRequestedAt = DateTime.MinValue,
+                NextEnRouteStatusAt = DateTime.MinValue,
+                EnRouteStatusUpdateCount = 0,
                 LastMovementSampleAt = now,
                 LastSuspectPosition = origin,
                 InteriorExitPhase = 0,
@@ -1127,6 +1648,125 @@ namespace LSImmersiveLife
                 ArrestedSuspects = new List<Ped>(),
                 CompliantSuspects = new List<Ped>()
             };
+        }
+
+        internal string ChooseSuspectResponse(Random random, IEnumerable<string> eligibleBranches)
+        {
+            if (eligibleBranches == null || SuspectResponseWeights == null)
+                return string.Empty;
+            List<string> candidates = eligibleBranches
+                .Where(value => !string.IsNullOrWhiteSpace(value)
+                    && SuspectResponseWeights.ContainsKey(value)
+                    && SuspectResponseWeights[value] > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            int total = candidates.Sum(value => SuspectResponseWeights[value]);
+            if (total <= 0)
+                return string.Empty;
+            int roll = random == null ? 0 : random.Next(total);
+            foreach (string candidate in candidates)
+            {
+                roll -= SuspectResponseWeights[candidate];
+                if (roll < 0)
+                    return candidate;
+            }
+            return candidates[candidates.Count - 1];
+        }
+
+        internal string ChooseVictimResponse(Random random, IEnumerable<string> eligibleBranches)
+        {
+            if (eligibleBranches == null || VictimResponseWeights == null)
+                return string.Empty;
+            List<string> candidates = eligibleBranches
+                .Where(value => !string.IsNullOrWhiteSpace(value)
+                    && VictimResponseWeights.ContainsKey(value)
+                    && VictimResponseWeights[value] > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            int total = candidates.Sum(value => VictimResponseWeights[value]);
+            if (total <= 0)
+                return string.Empty;
+            int roll = random == null ? 0 : random.Next(total);
+            foreach (string candidate in candidates)
+            {
+                roll -= VictimResponseWeights[candidate];
+                if (roll < 0)
+                    return candidate;
+            }
+            return candidates[candidates.Count - 1];
+        }
+
+        internal Vehicle VehicleForSuspect(Ped suspect)
+        {
+            if (suspect == null || !suspect.Exists())
+                return null;
+            int vehicleHandle;
+            if (!SuspectVehicleByPedHandle.TryGetValue(suspect.Handle, out vehicleHandle))
+                return null;
+            return SuspectVehicles.FirstOrDefault(value => value != null
+                && value.Exists() && value.Handle == vehicleHandle);
+        }
+
+        internal Ped CurrentPursuitTarget
+        {
+            get
+            {
+                IEnumerable<Ped> active = Suspects.Where(ped => ped != null
+                    && ped.Exists() && !ped.IsDead && ped.Health > 0
+                    && !ArrestedSuspects.Any(arrested => arrested != null
+                        && arrested.Exists() && arrested.Handle == ped.Handle)
+                    && !PursuitContainedSuspectHandles.Contains(ped.Handle)
+                    && !CompliantSuspects.Any(compliant => compliant != null
+                        && compliant.Exists() && compliant.Handle == ped.Handle));
+                Ped vehicleRunner = active.FirstOrDefault(ped =>
+                    string.Equals(SuspectResponses.ContainsKey(ped.Handle)
+                            ? SuspectResponses[ped.Handle] : string.Empty,
+                        "flee", StringComparison.OrdinalIgnoreCase)
+                        && VehicleForSuspect(ped) != null && ped.IsInVehicle());
+                if (vehicleRunner != null)
+                    return vehicleRunner;
+                Ped fleeing = active.FirstOrDefault(ped =>
+                    string.Equals(SuspectResponses.ContainsKey(ped.Handle)
+                            ? SuspectResponses[ped.Handle] : string.Empty,
+                        "flee", StringComparison.OrdinalIgnoreCase));
+                if (fleeing != null)
+                    return fleeing;
+                return null;
+            }
+        }
+
+        internal IReadOnlyList<Ped> CurrentVehiclePursuitTargets
+        {
+            get
+            {
+                var targets = new List<Ped>();
+                var seenVehicles = new HashSet<int>();
+                if (Suspects == null)
+                    return targets;
+
+                foreach (Ped ped in Suspects)
+                {
+                    if (ped == null || !ped.Exists() || ped.IsDead || ped.Health <= 0
+                        || !ped.IsInVehicle()
+                        || !string.Equals(SuspectResponses.ContainsKey(ped.Handle)
+                                ? SuspectResponses[ped.Handle] : string.Empty,
+                            "flee", StringComparison.OrdinalIgnoreCase)
+                        || ArrestedSuspects.Any(arrested => arrested != null
+                            && arrested.Exists() && arrested.Handle == ped.Handle)
+                        || PursuitContainedSuspectHandles.Contains(ped.Handle)
+                        || CompliantSuspects.Any(compliant => compliant != null
+                            && compliant.Exists() && compliant.Handle == ped.Handle))
+                        continue;
+
+                    Vehicle vehicle = VehicleForSuspect(ped);
+                    if (vehicle == null || !vehicle.Exists()
+                        || !seenVehicles.Add(vehicle.Handle))
+                        continue;
+                    targets.Add(ped);
+                }
+
+                return targets;
+            }
         }
 
         private static List<string> CandidateValues(

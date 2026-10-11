@@ -2349,6 +2349,15 @@
     <Ped id="ped_1116" model="u_m_o_finguru_01" hashHex="0x46E39E63" hashUnsigned="1189322339" hashSigned="1189322339" role="unique_or_scenario" gender="male" citizenEligible="true" weight="1" />
     <Ped id="ped_1117" model="u_m_o_tramp_01" hashHex="0x6A8F1F9B" hashUnsigned="1787764635" hashSigned="1787764635" role="unique_or_scenario" gender="male" citizenEligible="true" weight="1" />
   </PedModelCatalog>
+  <DispatchPedPools version="1" purpose="data-driven-dispatch-victim-models">
+    <Pool id="ambient_civilian" sourceRole="ambient_civilian" requireCitizenEligible="true" />
+    <Pool id="shop_clerk" requireCitizenEligible="true">
+      <Ped model="s_f_m_shop_high" />
+      <Ped model="s_f_y_shop_low" />
+      <Ped model="s_f_y_shop_mid" />
+      <Ped model="s_m_y_ammucity_01" />
+    </Pool>
+  </DispatchPedPools>
   <ConsistencyRules>
     <Rule id="clean_no_warrant" whenFamily="clean" allowedWarrants="none" text="Clean usually means none, except witness, victim, welfare, or administrative branches." />
     <Rule id="active_record" whenFamily="high_alert" allowedWarrants="active" text="High alert may use a non-none warrant, but false-hit and identity-theft victim branches remain possible." />

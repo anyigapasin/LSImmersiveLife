@@ -47,10 +47,6 @@ namespace LSImmersiveLife
         private bool _gangIncidentWasActive;
         private bool _crimeActivityWasActive;
         private bool _npcInteractionWasActive;
-        // One automatic group-support request per accepted Dispatch incident.
-        // This makes the central AutomaticGroupSupport setting a real gameplay
-        // decision without turning every Core tick into another backup spawn.
-        private string _automaticGroupBackupIncidentId = string.Empty;
         private bool _patrolKeyDown;
         private bool _resetKeyDown;
         private bool _transportKeyDown;
@@ -81,6 +77,7 @@ namespace LSImmersiveLife
         private DateTime _nextPendingProfileApply = DateTime.MinValue;
         private DateTime _pendingProfileApplyDeadline = DateTime.MinValue;
         private long _radioTest;
+        private const float PersonalUtilityRecoveryDistance = 150f;
 
         internal LSImmersivePoliceCore(
             LSImmersiveLog log,
@@ -113,6 +110,7 @@ namespace LSImmersiveLife
                 _config.Police.Dispatch,
                 _config.Police.Cleanup,
                 _config.Ui);
+            Dispatch.ConfigureSuspectInjurySettings(_config.Police.SuspectInjury);
             // AmbientWorld is the shared location/scene-preparation owner. It
             // receives the same parsed location catalog as Dispatch; no second
             // XML database or independent coordinate list is created.
@@ -132,6 +130,7 @@ namespace LSImmersiveLife
             Backup.AttachAmbientWorld(AmbientWorld);
             _gangData = new LSPDGangDataIntegration(_paths, _log);
             _npcDatabase = new LSNPCDatabase(_paths, _log);
+            AmbientWorld.AttachNpcDatabase(_npcDatabase);
             _gangResponse = new LSPDGangAdapterResponse(Audio, _log, _gangData);
             NpcResponse = new LSPDNPCResponse(
                 log,
@@ -141,6 +140,7 @@ namespace LSImmersiveLife
                 _config.Police.NpcResponse,
                 _config.Police.Traffic,
                 _npcDatabase);
+            NpcResponse.ConfigureSuspectInjurySettings(_config.Police.SuspectInjury);
             CrimeActivity = new LSPDCrimeActivity(
                 Audio,
                 paths,
@@ -184,6 +184,19 @@ namespace LSImmersiveLife
         internal bool HasPendingPreferredUtilityTransportChoice
         {
             get { return IsPendingPreferredUtilityTransportChoiceCurrent(); }
+        }
+        internal bool CanRecoverPersonalUtility
+        {
+            get
+            {
+                return IsPoliceAuthorityActive
+                    && Patrol.IsPatrolling
+                    && !Convoy.Active
+                    && !CrimeActivity.BlocksOtherPoliceActivities
+                    && !_gangResponse.HasActiveIncident
+                    && !NpcResponse.HasActiveInteraction
+                    && !string.IsNullOrWhiteSpace(_profile.SelectedVehicleModelName);
+            }
         }
         internal int NearbyCrimeActivityCount { get { return CrimeActivity.NearbyIntel.Count; } }
         internal string CrimeActivityStatus
@@ -289,8 +302,8 @@ namespace LSImmersiveLife
             LastOperationMessage = !_profile.StationSetupComplete
                 ? "Go to a Preferred Station and Apply a Police Duty."
                 : profileApplied
-                    ? "Police Authority activated. Saved Police profile applied."
-                    : "Police Authority activated. Some saved assets could not be applied.";
+                    ? "Police Mode is active. Press P to start Patrol."
+                    : "Police Mode is active. Some saved assets could not be applied. Press P to start Patrol.";
             return true;
         }
 
@@ -304,7 +317,6 @@ namespace LSImmersiveLife
             Audio.SetActive(false);
             Patrol.Reset();
             Dispatch.Reset();
-            _automaticGroupBackupIncidentId = string.Empty;
             Convoy.Reset();
             Response.Reset();
             Backup.Reset();
@@ -533,9 +545,6 @@ namespace LSImmersiveLife
                 }
             }
 
-            if (!paused)
-                EnsureAutomaticGroupBackup(player);
-
             // Backup is a dedicated player-requested support owner. It follows
             // the same Dispatch case without sharing Response's restrained
             // one-unit ambient support lifecycle.
@@ -651,6 +660,15 @@ namespace LSImmersiveLife
                 LastOperationMessage = Dispatch.CompletePhysicalSuspectRelease(
                     releasedDispatchSuspect);
 
+            if (Convoy.ConsumeDispatchCrewCustodyHandoffReady()
+                && Dispatch.HasConvoyCustodyHandoff)
+            {
+                LastOperationMessage = Dispatch.CompleteTransportCrewHandoff();
+                Response.ReleaseAll();
+                Backup.BeginStandDown(
+                    "Player declined the station drive; Convoy crew is departing with loaded Dispatch custody.");
+            }
+
             // Convoy owns the physical custody trip. Mirror only its terminal
             // transport states into Dispatch so the two owners remain separate
             // while the player drives the prisoner to the chosen destination.
@@ -683,38 +701,6 @@ namespace LSImmersiveLife
             }
 
             Audio.Process(paused);
-        }
-
-        private void EnsureAutomaticGroupBackup(Ped player)
-        {
-            if (player == null || !player.Exists())
-                return;
-            if (!Dispatch.HasIncident)
-            {
-                _automaticGroupBackupIncidentId = string.Empty;
-                return;
-            }
-            LSPDDispatchEvent incident = Dispatch.Current;
-            if (!_config.Police.Backup.Enabled
-                || !_config.Police.Backup.AutomaticGroupSupport
-                || Convoy.Active
-                || incident == null
-                || incident.State == LSPDDispatchState.Offered
-                || incident.SuspectCount <= 1)
-                return;
-            if (string.Equals(_automaticGroupBackupIncidentId, incident.Id, StringComparison.Ordinal))
-                return;
-
-            // Record the attempted incident even if streaming fails. The
-            // officer can still open Back Up Response with B, while the
-            // automatic producer never retries every frame.
-            _automaticGroupBackupIncidentId = incident.Id ?? string.Empty;
-            string result = Backup.Request(Dispatch, player, true);
-            _log.Runtime(
-                "POLICE_GROUP_BACKUP_AUTO_REQUEST",
-                "Incident=" + _automaticGroupBackupIncidentId
-                + "; Suspects=" + incident.SuspectCount
-                + "; Result=" + result);
         }
 
         /// <summary>
@@ -752,7 +738,10 @@ namespace LSImmersiveLife
 
                 if (!Dispatch.HasConvoyCustodyHandoff)
                 {
-                    Convoy.Reset();
+                    if (Convoy.DispatchClosedAfterCrewCustodyHandoff)
+                        Convoy.ConsumeFailedCrewBackgroundState();
+                    else
+                        Convoy.Reset();
                     _log.Runtime("POLICE_CONVOY_STALE_FAILURE_CLEARED",
                         "A completed or failed Convoy state had no linked Dispatch custody handoff.");
                     return;
@@ -779,8 +768,9 @@ namespace LSImmersiveLife
                     return;
                 }
 
-                IList<Ped> prisoners = Convoy.ConsumeFailedPrisoners();
-                if (Dispatch.RecoverCustodyFromConvoy(prisoners, reason))
+                IList<LSPDSuspectInjuryState> injuryStates;
+                IList<Ped> prisoners = Convoy.ConsumeFailedPrisoners(out injuryStates);
+                if (Dispatch.RecoverCustodyFromConvoy(prisoners, reason, injuryStates))
                 {
                     LastOperationMessage = "Transport was interrupted. The prisoner remains secured; request transport again when ready.";
                     Response.ReleaseAll();
@@ -945,6 +935,12 @@ namespace LSImmersiveLife
             }
             if (WasPoliceKey(controls.TransportKey, ref _transportKeyDown))
             {
+                bool transportInputOwned = Convoy.PlayerOwnsPhysicalCustodyInteraction
+                    || Convoy.HoldingAtStation
+                    || Dispatch.State == LSPDDispatchState.Arrested;
+                if (transportInputOwned)
+                    LSPDPlayerControlSuppression.SuppressMeleeThisFrame();
+
                 // R is an approval action only when the prisoner is waiting at
                 // the station or the arrest has just been secured. Do not emit
                 // a misleading rejection while the officer is still driving.
@@ -977,10 +973,10 @@ namespace LSImmersiveLife
                 ref _convoyRejectKeyDown);
 
             // Dispatch already owns the same Y/N pair while a callout offer is
-            // active. This second, narrow gate is only for the distinct station
-            // prison-transfer offer. Keep the keyboard edge states synchronized
-            // even while no offer exists so a held key cannot approve a future
-            // transfer accidentally.
+            // active. This narrow gate handles the post-load station-transport
+            // choice and the later station prison-transfer offer. Keep the
+            // keyboard edge states synchronized while no choice exists so a
+            // held key cannot approve a future transport stage accidentally.
             bool decisionInputAllowed = allowGameplayInput || Convoy.HoldingAtStation;
             bool controllerInput = decisionInputAllowed
                 && !paused
@@ -989,6 +985,25 @@ namespace LSImmersiveLife
                 && Game.IsControlJustPressed(GTA.Control.FrontendCancel);
             bool controllerReject = controllerInput
                 && Game.IsControlJustPressed(GTA.Control.FrontendAccept);
+
+            if (Convoy.DispatchStationTransportDecisionPending)
+            {
+                if (paused || !allowGameplayInput)
+                    return string.Empty;
+                if (controllerAccept || acceptKeyPressed)
+                {
+                    string result = Convoy.AcceptDispatchStationTransport();
+                    Notify(result);
+                    return result;
+                }
+                if (controllerReject || rejectKeyPressed)
+                {
+                    string result = Convoy.DeclineDispatchStationTransport();
+                    Notify(result);
+                    return result;
+                }
+                return string.Empty;
+            }
 
             if (HasPendingPreferredUtilityTransportChoice)
             {
@@ -1045,6 +1060,8 @@ namespace LSImmersiveLife
 
             _configurationRefreshPending = false;
             _config.NormalizeSettings();
+            Dispatch.ConfigureSuspectInjurySettings(_config.Police.SuspectInjury);
+            NpcResponse.ConfigureSuspectInjurySettings(_config.Police.SuspectInjury);
             _log.Configure(
                 _config.Logging.RuntimeEnabled,
                 _config.Logging.DebugEnabled,
@@ -1186,7 +1203,6 @@ namespace LSImmersiveLife
 
                 Patrol.End();
                 Dispatch.Reset();
-                _automaticGroupBackupIncidentId = string.Empty;
                 Convoy.Reset();
                 Response.Reset();
                 Backup.Reset();
@@ -1207,10 +1223,8 @@ namespace LSImmersiveLife
                     + "; Result=" + dispatchStatus);
                 return Succeed("POLICE_PATROL_AVAILABILITY",
                     (vehicleReady
-                        ? "Patrol active. Your current Police vehicle was retained or prepared."
-                        : "Patrol active. A Police vehicle could not be prepared; you may continue on foot.")
-                    + " " + dispatchStatus
-                    + " Use Request a Dispatch in Police Radio to request a call immediately.");
+                        ? "Your Police Utility is ready. Dispatch is standing by."
+                        : "Patrol is active, but your Police Utility is not ready yet. Dispatch is standing by."));
             }
             return Succeed("POLICE_PATROL_AVAILABILITY",
                 "Patrol availability ended.");
@@ -1307,6 +1321,65 @@ namespace LSImmersiveLife
             }
 
             LastOperationMessage = Dispatch.RequestOfferNow(Game.Player.Character);
+            return LastOperationMessage;
+        }
+
+        internal string RecoverPersonalUtility()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            if (!Patrol.IsPatrolling)
+            {
+                LastOperationMessage = "Start Police Patrol before recovering the Personal Utility.";
+                return LastOperationMessage;
+            }
+            if (Convoy.Active || CrimeActivity.BlocksOtherPoliceActivities
+                || _gangResponse.HasActiveIncident || NpcResponse.HasActiveInteraction)
+            {
+                LastOperationMessage = "Finish the current custody or Police activity before recovering the Personal Utility.";
+                return LastOperationMessage;
+            }
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+            {
+                LastOperationMessage = "The Player is unavailable, so the Personal Utility cannot be recovered.";
+                return LastOperationMessage;
+            }
+
+            Vehicle existing = _managedPoliceVehicle;
+            if (existing != null && existing.Exists())
+            {
+                float distance = existing.Position.DistanceTo(player.Position);
+                if (distance <= PersonalUtilityRecoveryDistance)
+                {
+                    EnsurePreferredPoliceVehicleBlip(existing);
+                    if (_config.ShowWaypoint)
+                    {
+                        try { World.WaypointPosition = existing.Position; }
+                        catch (Exception ex) { _log.Exception("POLICE_PERSONAL_UTILITY_ROUTE_FAILED", ex); }
+                    }
+                    LastOperationMessage = "Your Personal Utility is "
+                        + distance.ToString("0", CultureInfo.InvariantCulture)
+                        + " metres away and remains available. Its map marker is active.";
+                    _log.Runtime(
+                        "POLICE_PERSONAL_UTILITY_RETAINED",
+                        "Vehicle=" + existing.Handle
+                        + "; Distance=" + distance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; RecoveryThreshold=" + PersonalUtilityRecoveryDistance.ToString("0", CultureInfo.InvariantCulture));
+                    return LastOperationMessage;
+                }
+            }
+
+            if (!SpawnPoliceVehicle(_profile.SelectedVehicleModelName, true, true))
+                return LastOperationMessage;
+
+            LastOperationMessage = "Your Personal Utility has been recovered to safe parked ground nearby.";
+            _log.Runtime(
+                "POLICE_PERSONAL_UTILITY_RECOVERED",
+                "PreviousVehicle=" + (existing == null ? "none" : existing.Handle.ToString(CultureInfo.InvariantCulture))
+                + "; RecoveryThreshold=" + PersonalUtilityRecoveryDistance.ToString("0", CultureInfo.InvariantCulture)
+                + "; ActiveDispatch=" + Dispatch.HasIncident);
             return LastOperationMessage;
         }
 
@@ -1422,6 +1495,12 @@ namespace LSImmersiveLife
                 return LastOperationMessage;
             }
 
+            if (Dispatch.HasPendingVictimInvestigation)
+            {
+                LastOperationMessage = "Investigate the murder victim at the scene before requesting prisoner transport.";
+                return LastOperationMessage;
+            }
+
             List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
             Ped pickupPrisoner = arrestedSuspects.FirstOrDefault();
             if (arrestedSuspects.Count == 0 || pickupPrisoner == null)
@@ -1436,6 +1515,21 @@ namespace LSImmersiveLife
                     : Dispatch.Current.Origin;
             Ped player = Game.Player.Character;
             Vehicle playerVehicle = player == null ? null : player.CurrentVehicle;
+            bool usingManagedPreferredUtilityOnFoot = false;
+            if ((playerVehicle == null || !playerVehicle.Exists())
+                && player != null && player.Exists() && !player.IsInVehicle()
+                && _managedPoliceVehicle != null && _managedPoliceVehicle.Exists()
+                && _profile != null
+                && !string.IsNullOrWhiteSpace(_profile.SelectedVehicleModelName)
+                && _managedPoliceVehicle.Model.Hash
+                    == ResolveModelHash(_profile.SelectedVehicleModelName))
+            {
+                // The project already owns the selected parked Police Utility.
+                // Reuse that exact entity when the Player is on foot; do not
+                // search all streamed vehicles for a same-model car.
+                playerVehicle = _managedPoliceVehicle;
+                usingManagedPreferredUtilityOnFoot = true;
+            }
 
             if (arrestedSuspects.Count == 1)
             {
@@ -1460,8 +1554,14 @@ namespace LSImmersiveLife
                         "Incident=" + _pendingDispatchTransportIncidentId
                         + "; Prisoner=" + pickupPrisoner.Handle
                         + "; Vehicle=" + playerVehicle.Handle
-                        + "; Seat=" + custodySeat);
-                    LastOperationMessage = "Your saved Police Utility can carry this suspect. Press Y to use it or N to request a transport van, or choose either action in Dispatch Activity.";
+                        + "; Seat=" + custodySeat
+                        + "; Source=" + (usingManagedPreferredUtilityOnFoot
+                            ? "ManagedPreferredUtilityOnFoot" : "CurrentPoliceVehicle")
+                        + "; DistanceFromPlayer="
+                        + player.Position.DistanceTo(playerVehicle.Position).ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; DistanceFromSuspect="
+                        + pickupPrisoner.Position.DistanceTo(playerVehicle.Position).ToString("0.0", CultureInfo.InvariantCulture));
+                    LastOperationMessage = "Your saved Police Utility is within 150 metres and has a free rear seat. Press Y to walk the suspect to it or N to request a transport van, or choose either action in Dispatch Activity.";
                     return LastOperationMessage;
                 }
 
@@ -1567,7 +1667,7 @@ namespace LSImmersiveLife
                 return custody;
             }
 
-            if (!Dispatch.TransferCustodyOwnershipToConvoy())
+            if (!TransferDispatchCustodyToConvoy())
             {
                 Convoy.Reset();
                 ClearPendingPreferredUtilityTransportChoice();
@@ -1608,6 +1708,24 @@ namespace LSImmersiveLife
                 "PlayerRequestedTransportVan");
         }
 
+        private bool TransferDispatchCustodyToConvoy()
+        {
+            IList<LSPDSuspectInjuryState> injuryStates =
+                Dispatch.CreateCustodyInjuryHandoff();
+            if (injuryStates == null || injuryStates.Count == 0
+                || !Convoy.AdoptDispatchCustodyInjuryStates(injuryStates))
+                return false;
+
+            if (!Dispatch.TransferCustodyOwnershipToConvoy(injuryStates))
+            {
+                Convoy.DiscardUncommittedDispatchInjuryHandoff();
+                return false;
+            }
+
+            Convoy.ConfirmDispatchInjuryHandoff();
+            return true;
+        }
+
         private string StartDispatchTransportVan(
             IList<Ped> arrestedSuspects,
             Vector3 pickupPosition,
@@ -1629,7 +1747,7 @@ namespace LSImmersiveLife
                 return custody;
             }
 
-            if (!Dispatch.TransferCustodyOwnershipToConvoy())
+            if (!TransferDispatchCustodyToConvoy())
             {
                 Convoy.Reset();
                 ClearPendingPreferredUtilityTransportChoice();
@@ -2091,7 +2209,6 @@ namespace LSImmersiveLife
             _gangResponse.Reset();
             ClearPendingPreferredUtilityTransportChoice();
             string result = Dispatch.Cancel("Cancelled by officer recovery control.");
-            _automaticGroupBackupIncidentId = string.Empty;
             Response.ReleaseAll();
             LastOperationMessage = result;
             return result;
@@ -2105,7 +2222,6 @@ namespace LSImmersiveLife
             ClearPendingPreferredUtilityTransportChoice();
             Convoy.Reset();
             Dispatch.Reset();
-            _automaticGroupBackupIncidentId = string.Empty;
             Response.Reset();
             Backup.Reset();
             _gangResponse.Reset();
@@ -3709,7 +3825,10 @@ namespace LSImmersiveLife
                     "Model=" + modelName + "; ReusedOrPrepared=true");
             return ready;
         }
-        private bool SpawnPoliceVehicle(string modelName, bool reportFailure)
+        private bool SpawnPoliceVehicle(
+            string modelName,
+            bool reportFailure,
+            bool forceReplaceManagedVehicle = false)
         {
             Model model = new Model(modelName);
             bool releaseModel = false;
@@ -3763,6 +3882,7 @@ namespace LSImmersiveLife
 
                 if (_managedPoliceVehicle != null && _managedPoliceVehicle.Exists()
                     && _managedPoliceVehicle.Model.Hash == model.Hash
+                    && !forceReplaceManagedVehicle
                     && (reportFailure
                         || _config.Police.Patrol.PreventDuplicatePersonalVehicle))
                 {

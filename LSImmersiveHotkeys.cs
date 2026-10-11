@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Windows.Forms;
+using GTA;
 using GTA.UI;
 using LemonUI.Menus;
 
@@ -152,6 +153,24 @@ namespace LSImmersiveLife
         private void LogException(string eventName, Exception exception)
         {
             if (_log != null) _log.Exception(eventName, exception);
+        }
+    }
+
+    /// <summary>
+    /// Masks native attack controls only while a Police action owns the
+    /// current input frame or a physical custody interaction is in progress.
+    /// </summary>
+    internal static class LSPDPlayerControlSuppression
+    {
+        internal static void SuppressMeleeThisFrame()
+        {
+            Game.DisableControlThisFrame(GTA.Control.Attack);
+            Game.DisableControlThisFrame(GTA.Control.Attack2);
+            Game.DisableControlThisFrame(GTA.Control.MeleeAttackLight);
+            Game.DisableControlThisFrame(GTA.Control.MeleeAttackHeavy);
+            Game.DisableControlThisFrame(GTA.Control.MeleeAttackAlternate);
+            Game.DisableControlThisFrame(GTA.Control.MeleeAttack1);
+            Game.DisableControlThisFrame(GTA.Control.MeleeAttack2);
         }
     }
 }

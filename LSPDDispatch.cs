@@ -13,6 +13,47 @@ using System.Xml.Linq;
 
 namespace LSImmersiveLife
 {
+    // A controlled suspect's injury state follows the same Ped across
+    // Dispatch/Convoy ownership. The current owner alone may process it.
+    internal sealed class LSPDSuspectInjuryState
+    {
+        internal Ped Actor;
+        internal int OriginalHealth;
+        internal int OriginalMaximumHealth;
+        internal int OriginalSelectedWeaponHash;
+        internal int LastHealth;
+        internal int DamageTaken;
+        internal int RegisteredHits;
+        internal int KnownDamageHits;
+        internal int DownedHits;
+        internal int KnownDownedHits;
+        internal int MeleeHits;
+        internal int ManagedMaximumHealth;
+        internal int ArrestableWoundedHealthFloor;
+        internal int HeadHits;
+        internal int ChestHits;
+        internal int StomachHits;
+        internal int LastValidDamageBone;
+        internal DateTime LastValidDamageBoneAt = DateTime.MinValue;
+        internal DateTime LastConvoyHealthCheckAt = DateTime.MinValue;
+        internal string OccurrenceId;
+        internal string LastDamageKind;
+        internal int LastDamageWeaponHash;
+        internal int LastDamageAttackerHandle;
+        internal int LastDamageGameTime;
+        internal string RuntimeOwner = "Dispatch";
+        internal bool OriginalCanSufferCriticalHits;
+        internal bool OriginalCanSwitchWeapons;
+        internal bool Wounded;
+        internal bool Fatal;
+        internal bool WeaponDisabledByInjury;
+        internal bool WritheTaskStarted;
+        internal bool MeleeReactionPending;
+        internal bool ConvoyTerminalLogged;
+        internal DateTime MeleeReactionUntil = DateTime.MinValue;
+        internal DateTime NextMeleeRecoveryCheckAt = DateTime.MinValue;
+    }
+
     /// <summary>
     /// Owns the sparse, XML-defined universal Police callout loop. It offers
     /// one incident at a time during an explicitly started patrol, creates only
@@ -33,10 +74,13 @@ namespace LSImmersiveLife
         internal const int InitialPatrolOfferDelaySeconds = 30;
         private const int ArrestRadius = 5;
         private const int SurrenderSettleSeconds = 2;
+        private const int HandcuffedPedConfigFlag = 120;
         // Keep GTA's authored arrest task alive through the visible handcuff
         // motion before Dispatch takes custody of the secured suspect.
         private const int PlayerHandcuffAnimationMilliseconds = 6500;
         private const int PlayerHandcuffMaximumAttempts = 2;
+        private const int PlayerHandcuffAnimationLoadTimeoutSeconds = 6;
+        private const float SynchronizedArrestMaximumDistance = 2.6f;
         private const int CompliantTaskRefreshMilliseconds = 7000;
         private const int SecuredPoseRefreshMilliseconds = 2500;
         private const int DefaultDeferredCleanupGraceSeconds = 8;
@@ -44,9 +88,18 @@ namespace LSImmersiveLife
         private const float DefaultDeferredCleanupDistance = 200f;
         private const int MaintenanceMilliseconds = 750;
         private const int ScenePreparationTimeoutSeconds = 15;
+        private const int SceneActorSetupRetryLimit = 2;
+        private const int SceneActorSetupRetryDelayMilliseconds = 1000;
         private const int PairedSceneAnimationLoadTimeoutSeconds = 10;
         private const float PairedSceneAnimationApproachDistance = 38f;
+        private const float PursuitWaypointMovementMeters = 35f;
+        private const int PursuitWaypointRefreshSeconds = 4;
+        private const int PursuitLocationRadioGapSeconds = 20;
         private const int MaxCriminalAssetSelectionAttempts = 12;
+        // Location compatibility is metadata-only until AmbientWorld checks
+        // the streamed ground/interior/occupancy state. Let a request fall
+        // Validate alternate authored definitions only during an offer-time
+        // request pass; this is never a per-frame catalog scan.
         private const int InteriorExitMaximumRecoveries = 3;
         private const int InteriorExitNavigationTimeoutSeconds = 60;
         private const int InteriorExitVehicleEntryTimeoutSeconds = 12;
@@ -83,21 +136,39 @@ namespace LSImmersiveLife
             new Dictionary<int, DateTime>();
         private readonly Dictionary<int, DateTime> _lastSecuredPoseTaskAt =
             new Dictionary<int, DateTime>();
-        private readonly Dictionary<int, DispatchSuspectInjuryState> _suspectInjuries =
-            new Dictionary<int, DispatchSuspectInjuryState>();
+        private readonly Dictionary<int, LSPDSuspectInjuryState> _suspectInjuries =
+            new Dictionary<int, LSPDSuspectInjuryState>();
 
         private LSPDDispatchEvent _incident;
+        private LSPDDispatchEvent _pendingOffer;
         private Blip _sceneBlip;
         private Blip _suspectBlip;
         private DateTime _cooldownUntil = DateTime.MinValue;
         private DateTime _nextOfferAt = DateTime.MinValue;
+        private DateTime _manualRequestRetryAt = DateTime.MinValue;
         private DateTime _nextMaintenance = DateTime.MinValue;
         private DateTime _playerHandcuffHoldUntil = DateTime.MinValue;
         private int _playerHandcuffAttempts;
+        private DateTime _playerHandcuffAnimationLoadUntil = DateTime.MinValue;
+        private string _playerHandcuffWaitingDictionary;
+        private bool _playerHandcuffWaitingForAnimation;
+        private bool _playerHandcuffPairedAnimationStarted;
+        private int _playerHandcuffSceneId = -1;
+        private DateTime _playerHandcuffAnimationVerifyAt = DateTime.MinValue;
+        private bool _playerHandcuffAnimationVerified;
+        private bool _playerHandcuffPreserveTargetPosture;
+        private string _playerHandcuffDictionary;
+        private string _playerHandcuffOfficerClip;
+        private string _playerHandcuffSuspectClip;
+        private Vector3 _playerHandcuffSceneOrigin = Vector3.Zero;
+        private float _playerHandcuffSceneHeading;
         private DateTime _lastPatrolObserved = DateTime.MinValue;
         private DateTime _lastOfferAudioAt = DateTime.MinValue;
         private bool _patrolSessionStarted;
         private bool _dispatchProducerEnabled;
+        private bool _pendingOfferBypassesAutomaticQuietPeriod;
+        private bool _pendingOfferWaitingLogged;
+        private int _pendingOfferMinimumCooldownSeconds;
         private bool _acceptKeyDown;
         private bool _rejectKeyDown;
         private bool _investigateKeyDown;
@@ -154,28 +225,22 @@ namespace LSImmersiveLife
             Stomach
         }
 
-        private sealed class DispatchSuspectInjuryState
+        private enum ControlledDamageKind
         {
-            internal Ped Actor;
-            internal int OriginalHealth;
-            internal int OriginalMaximumHealth;
-            internal int LastHealth;
-            internal int DamageTaken;
-            internal int HeadHits;
-            internal int ChestHits;
-            internal int StomachHits;
-            internal bool OriginalNoCriticalHits;
-            internal bool Wounded;
-            internal bool Fatal;
-            internal bool WritheTaskStarted;
-            internal DateTime NextWritheAt = DateTime.MinValue;
-            internal int NonfatalRecoveryAttempts;
-            internal DateTime NextNonfatalRecoveryAt = DateTime.MinValue;
-            internal bool NonfatalRecoveryExhaustionLogged;
-            internal bool NonfatalResurrectionAttempted;
+            Unknown,
+            Weapon,
+            Melee
         }
 
-        private const int NonfatalInjuryRecoveryMaximumAttempts = 8;
+        private enum SceneOfferPreflightStatus
+        {
+            Failed,
+            Pending,
+            Ready
+        }
+
+        private LSPoliceSuspectInjurySettings _injurySettings =
+            LSPoliceSuspectInjurySettings.Default();
 
         internal LSPDDispatch(LSPDAudioDispatch audio)
             : this(audio, null, null, null, null, null)
@@ -243,6 +308,13 @@ namespace LSImmersiveLife
                 _ambientWorld.UpdateLocationCatalog(_locationCatalog);
         }
 
+        internal void ConfigureSuspectInjurySettings(
+            LSPoliceSuspectInjurySettings settings)
+        {
+            _injurySettings = settings ?? LSPoliceSuspectInjurySettings.Default();
+            _injurySettings.Normalize();
+        }
+
         internal bool HasOffer
         {
             get { return _incident != null && _incident.State == LSPDDispatchState.Offered; }
@@ -258,6 +330,16 @@ namespace LSImmersiveLife
             get { return _incident == null ? LSPDDispatchState.None : _incident.State; }
         }
 
+        internal bool HasPendingVictimInvestigation
+        {
+            get
+            {
+                return _incident != null
+                    && _incident.VictimStartsDead
+                    && !_incident.VictimInvestigated;
+            }
+        }
+
         internal LSPDDispatchEvent Current
         {
             get { return _incident; }
@@ -266,6 +348,11 @@ namespace LSImmersiveLife
         internal Ped CurrentSuspect
         {
             get { return _incident == null ? null : _incident.Suspect; }
+        }
+
+        internal Ped CurrentPursuitTarget
+        {
+            get { return _incident == null ? null : _incident.CurrentPursuitTarget; }
         }
 
         /// <summary>
@@ -280,6 +367,16 @@ namespace LSImmersiveLife
                 return _incident == null || _incident.Suspects == null
                     ? Enumerable.Empty<Ped>()
                     : _incident.Suspects.Where(ped => ped != null && ped.Exists());
+            }
+        }
+
+        internal IEnumerable<Vehicle> CurrentSuspectVehicles
+        {
+            get
+            {
+                return _incident == null || _incident.SuspectVehicles == null
+                    ? Enumerable.Empty<Vehicle>()
+                    : _incident.SuspectVehicles.Where(vehicle => vehicle != null && vehicle.Exists());
             }
         }
 
@@ -499,11 +596,15 @@ namespace LSImmersiveLife
                 return;
             }
 
+            if (_incident != null && _incident.PlayerHandcuffInProgress)
+                LSPDPlayerControlSuppression.SuppressMeleeThisFrame();
+
             if (!allowGameplayInput || _incident == null)
                 SynchronizeKeyboardInputStates();
 
             if (!isPatrolling)
             {
+                CancelPendingOffer("Patrol ended before scene preparation completed.");
                 MaintainTrackedSuspectInjuries(now, Game.Player.Character);
                 _patrolSessionStarted = false;
                 _dispatchProducerEnabled = false;
@@ -526,6 +627,7 @@ namespace LSImmersiveLife
 
             if (_incident != null)
             {
+                CancelPendingOffer("Another Dispatch assignment became active.");
                 if (allowGameplayInput)
                     ProcessControllerInput(suppressEnterInput);
                 if (now < _nextMaintenance)
@@ -534,13 +636,16 @@ namespace LSImmersiveLife
                     return;
                 }
                 _nextMaintenance = now.AddMilliseconds(MaintenanceMilliseconds);
-                MaintainIncident(now, Game.Player.Character);
+                // Classify any fresh damage before scene maintenance can
+                // reach its ordinary death/conclusion checks.
                 MaintainTrackedSuspectInjuries(now, Game.Player.Character);
+                MaintainIncident(now, Game.Player.Character);
                 return;
             }
 
             if (!_settings.Enabled)
             {
+                CancelPendingOffer("Dispatch was disabled before scene preparation completed.");
                 _dispatchProducerEnabled = false;
                 return;
             }
@@ -549,6 +654,26 @@ namespace LSImmersiveLife
                 _dispatchProducerEnabled = true;
                 _nextOfferAt = now.AddSeconds(NextQuietPatrolSeconds());
                 LogRuntime("POLICE_DISPATCH_ENABLED", "Dispatch producer re-armed after configuration enabled it.");
+                return;
+            }
+
+            if (_pendingOffer != null)
+            {
+                if (npcInteractionActive || otherPoliceIncidentActive)
+                {
+                    CancelPendingOffer("Another Police activity took priority during scene preparation.");
+                    return;
+                }
+                if (now >= _nextOfferAt)
+                {
+                    Ped pendingPlayer = Game.Player.Character;
+                    if (pendingPlayer == null || !pendingPlayer.Exists())
+                    {
+                        CancelPendingOffer("The player character became unavailable during scene preparation.");
+                        return;
+                    }
+                    TryAdvancePendingOffer(pendingPlayer, now);
+                }
                 return;
             }
 
@@ -578,21 +703,38 @@ namespace LSImmersiveLife
             }
             if (_incident != null)
                 return "A Dispatch assignment is already active.";
+            if (_pendingOffer != null)
+                return "Dispatch is preparing the scene. The call will appear in Police Radio when it is ready.";
             if (player == null || !player.Exists())
                 return "The player character is unavailable.";
+            if (now < _manualRequestRetryAt)
+                return "Dispatch just checked nearby locations. Wait a few seconds before requesting again.";
 
             if (!TryCreateOffer(player, now, true))
+            {
+                if (_pendingOffer != null)
+                    return "Dispatch is preparing the scene. The call will appear in Police Radio when it is ready.";
+                _manualRequestRetryAt = now.AddSeconds(5);
                 return _definitions.Count == 0
                     ? "Dispatch has no usable callout definitions in its XML catalog."
-                    : "No new Dispatch callout is currently eligible from the authored catalog.";
-            LogRuntime("POLICE_DISPATCH_MANUAL_REQUESTED", "A player-requested Dispatch offer was created.");
+                    : "Dispatch could not validate a complete scene at a nearby catalog location.";
+            }
             return "Dispatch request received. Review the new call in Police Radio.";
         }
 
-        private bool TryCreateOffer(Ped player, DateTime now, bool bypassAutomaticQuietPeriod)
+        private bool TryCreateOffer(
+            Ped player,
+            DateTime now,
+            bool bypassAutomaticQuietPeriod)
         {
-            LSPDDispatchEventDefinition definition = ChooseDefinition(player);
-            if (definition == null)
+            if (_pendingOffer != null)
+                return TryAdvancePendingOffer(player, now);
+
+            List<LSPDDispatchEventDefinition> locationCandidates =
+                ChooseLocationDefinitionCandidates(
+                    player,
+                    Math.Max(1, _definitions.Count));
+            if (locationCandidates.Count == 0)
             {
                 _nextOfferAt = _definitions.Count == 0
                     ? now.AddSeconds(30)
@@ -602,6 +744,61 @@ namespace LSImmersiveLife
                 return false;
             }
 
+            LSPDDispatchEventDefinition definition = null;
+            AmbientDispatchSceneResolution sceneResolution = null;
+            string locationFailure = "AmbientWorld is not attached by PoliceCore.";
+            var locationFailures = new List<string>();
+            foreach (LSPDDispatchEventDefinition candidateDefinition in locationCandidates)
+            {
+                List<LSPDDispatchLocationDefinition> eventAreas =
+                    new List<LSPDDispatchLocationDefinition>();
+                foreach (string locationId in candidateDefinition.LocationIds
+                    ?? Enumerable.Empty<string>())
+                {
+                    LSPDDispatchLocationDefinition area;
+                    if (_locations.TryGetValue(locationId, out area)
+                        && candidateDefinition.CanUseAreaContext(area))
+                        eventAreas.Add(area);
+                }
+
+                locationFailure = "AmbientWorld is not attached by PoliceCore.";
+                if (_ambientWorld != null
+                    && _ambientWorld.TryResolveDispatchScene(
+                    eventAreas,
+                    candidateDefinition.IncidentType,
+                    player.Position,
+                    candidateDefinition.RequiresVehicle
+                        || candidateDefinition.VehicleStagingRequired,
+                    out sceneResolution,
+                    out locationFailure,
+                    candidateDefinition.InteriorLocationId,
+                    candidateDefinition.RequiredPhysicalType,
+                    candidateDefinition.LocationContext,
+                    candidateDefinition.RequiresMappedInterior))
+                {
+                    definition = candidateDefinition;
+                    break;
+                }
+
+                locationFailures.Add(candidateDefinition.Id + "="
+                    + (locationFailure ?? "Location validation failed."));
+                sceneResolution = null;
+            }
+
+            if (definition == null || sceneResolution == null)
+            {
+                _nextOfferAt = now.AddSeconds(30);
+                LogDebug(
+                    "POLICE_DISPATCH_AMBIENT_WORLD_LOCATION_FAILED",
+                    "Attempts=" + locationFailures.Count
+                    + "; MaximumAttempts=" + locationCandidates.Count
+                    + "; EventFailures=" + string.Join(" | ", locationFailures));
+                return false;
+            }
+
+            // Resolve profiles only after a compatible scene has passed
+            // physical validation. Failed location searches must not select
+            // or request actor assets that cannot be used by an occurrence.
             string assetFailureReason;
             LSPDCriminalProfileDefinition criminalProfile;
             if (!TryResolveDispatchProfile(
@@ -616,43 +813,22 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            List<LSPDDispatchLocationDefinition> eventAreas = new List<LSPDDispatchLocationDefinition>();
-            if (definition.LocationIds != null)
-            {
-                foreach (string locationId in definition.LocationIds)
-                {
-                    LSPDDispatchLocationDefinition area;
-                    if (_locations.TryGetValue(locationId, out area)
-                        && definition.CanUseArea(area, player.Position))
-                        eventAreas.Add(area);
-                }
-            }
-
-            AmbientDispatchSceneResolution sceneResolution;
-            string locationFailure = "AmbientWorld is not attached by PoliceCore.";
-            if (_ambientWorld == null
-                || !_ambientWorld.TryResolveDispatchScene(
-                    eventAreas,
-                    definition.IncidentType,
-                    player.Position,
-                    definition.RequiresVehicle,
-                    out sceneResolution,
-                    out locationFailure))
+            int suspectVehicleCount = definition.ChooseSuspectVehicleCount(_random, 2);
+            if (suspectVehicleCount < 0)
             {
                 _nextOfferAt = now.AddSeconds(30);
-                LogDebug(
-                    "POLICE_DISPATCH_AMBIENT_WORLD_LOCATION_FAILED",
-                    "Event=" + definition.Id
-                    + "; Reason=" + (_ambientWorld == null
-                        ? "AmbientWorld is not attached by PoliceCore."
-                        : locationFailure));
+                LogDebug("POLICE_DISPATCH_VEHICLE_COUNT_UNAVAILABLE",
+                    "Event=" + definition.Id + "; ConfiguredMaximum=2");
                 return false;
             }
 
             LSPDDispatchEvent incident = LSPDDispatchEvent.FromDefinition(
                 definition,
                 sceneResolution.SceneCenter,
-                criminalProfile);
+                criminalProfile,
+                definition.ChooseSuspectCount(_random, _settings.MaximumSuspects),
+                definition.ChooseVictimCount(_random),
+                suspectVehicleCount);
             if (incident == null)
             {
                 _nextOfferAt = now.AddSeconds(30);
@@ -662,16 +838,236 @@ namespace LSImmersiveLife
                 return false;
             }
             incident.SceneResolution = sceneResolution;
+            _pendingOffer = incident;
+            _pendingOfferBypassesAutomaticQuietPeriod = bypassAutomaticQuietPeriod;
+            _pendingOfferWaitingLogged = false;
+            _pendingOfferMinimumCooldownSeconds = definition.MinimumCooldownSeconds;
+            return TryAdvancePendingOffer(player, now);
+        }
+
+        private bool TryAdvancePendingOffer(Ped player, DateTime now)
+        {
+            LSPDDispatchEvent incident = _pendingOffer;
+            if (incident == null)
+                return false;
+            if (_incident != null)
+            {
+                CancelPendingOffer("Another Dispatch assignment became active.");
+                return false;
+            }
+
+            string preparationFailure;
+            SceneOfferPreflightStatus status = TryPrepareSceneBeforeOffer(
+                player,
+                incident,
+                out preparationFailure);
+            if (status == SceneOfferPreflightStatus.Pending)
+            {
+                if (!_pendingOfferWaitingLogged)
+                {
+                    _pendingOfferWaitingLogged = true;
+                    LogDebug(
+                        "POLICE_DISPATCH_SCENE_PREFLIGHT_WAITING",
+                        "Event=" + incident.Id + "; Reason=" + preparationFailure);
+                }
+                DateTime sceneRetryAt = incident.ScenePreparationNextRetryAt;
+                _nextOfferAt = sceneRetryAt > now
+                    ? sceneRetryAt
+                    : now.AddMilliseconds(250);
+                return false;
+            }
+
+            bool bypassAutomaticQuietPeriod = _pendingOfferBypassesAutomaticQuietPeriod;
+            int minimumCooldownSeconds = _pendingOfferMinimumCooldownSeconds;
+            _pendingOffer = null;
+            _pendingOfferBypassesAutomaticQuietPeriod = false;
+            _pendingOfferWaitingLogged = false;
+            _pendingOfferMinimumCooldownSeconds = 0;
+
+            if (status == SceneOfferPreflightStatus.Failed)
+            {
+                CleanupPreparedOccurrence(incident, "ScenePreflightFailed");
+                _nextOfferAt = now.AddSeconds(30);
+                if (bypassAutomaticQuietPeriod)
+                    _manualRequestRetryAt = now.AddSeconds(5);
+                LogDebug(
+                    "POLICE_DISPATCH_SCENE_PREFLIGHT_FAILED",
+                    "Event=" + incident.Id + "; Reason=" + preparationFailure);
+                return false;
+            }
+
             if (Receive(incident, bypassAutomaticQuietPeriod))
             {
                 _cooldownUntil = now.AddSeconds(Math.Max(
-                    definition.MinimumCooldownSeconds,
+                    minimumCooldownSeconds,
                     _settings.MinimumQuietPatrolSeconds));
                 _nextOfferAt = now.AddSeconds(NextQuietPatrolSeconds());
+                if (bypassAutomaticQuietPeriod)
+                    LogRuntime("POLICE_DISPATCH_MANUAL_REQUESTED", "A player-requested Dispatch offer was created.");
                 return true;
             }
 
+            CleanupPreparedOccurrence(incident, "OfferReceiveRejected");
             _nextOfferAt = now.AddSeconds(30);
+            return false;
+        }
+
+        private void CancelPendingOffer(string reason)
+        {
+            LSPDDispatchEvent pending = _pendingOffer;
+            if (pending == null)
+                return;
+
+            _pendingOffer = null;
+            _pendingOfferBypassesAutomaticQuietPeriod = false;
+            _pendingOfferWaitingLogged = false;
+            _pendingOfferMinimumCooldownSeconds = 0;
+            CleanupPreparedOccurrence(pending, "PendingOfferCancelled");
+            LogDebug(
+                "POLICE_DISPATCH_PENDING_SCENE_CANCELLED",
+                "Event=" + pending.Id + "; Reason=" + (reason ?? string.Empty));
+        }
+
+        private SceneOfferPreflightStatus TryPrepareSceneBeforeOffer(
+            Ped player,
+            LSPDDispatchEvent incident,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (player == null || !player.Exists())
+            {
+                reason = "The player character is unavailable for scene validation.";
+                return SceneOfferPreflightStatus.Failed;
+            }
+            if (incident == null || _incident != null)
+            {
+                reason = "A Dispatch scene is already active or the candidate is missing.";
+                return SceneOfferPreflightStatus.Failed;
+            }
+            if (DateTime.UtcNow < incident.ScenePreparationNextRetryAt)
+            {
+                reason = "Waiting for the bounded scene actor setup retry interval.";
+                return SceneOfferPreflightStatus.Pending;
+            }
+
+            LSPDDispatchEvent previousIncident = _incident;
+            _incident = incident;
+            try
+            {
+                if (!EnsureScene(player, false, false))
+                {
+                    if (HasUnloadedRequiredSceneModels(incident))
+                    {
+                        if (DateTime.UtcNow < incident.ScenePreparationDeadline)
+                        {
+                            reason = "Required suspect or vehicle models are still streaming.";
+                            return SceneOfferPreflightStatus.Pending;
+                        }
+                        reason = "Required suspect or vehicle models did not load before the scene preparation timeout.";
+                        return SceneOfferPreflightStatus.Failed;
+                    }
+                    if (DateTime.UtcNow < incident.ScenePreparationDeadline
+                        && incident.ScenePreparationActorRetryCount < SceneActorSetupRetryLimit)
+                    {
+                        incident.ScenePreparationActorRetryCount++;
+                        incident.ScenePreparationNextRetryAt = DateTime.UtcNow.AddMilliseconds(
+                            SceneActorSetupRetryDelayMilliseconds);
+                        reason = "AmbientWorld actor or asset setup did not complete on attempt "
+                            + incident.ScenePreparationActorRetryCount
+                            + "; retrying after a bounded delay.";
+                        return SceneOfferPreflightStatus.Pending;
+                    }
+                    reason = "AmbientWorld could not finish loading and placing the scene actors "
+                        + "after " + incident.ScenePreparationActorRetryCount
+                        + " bounded retry attempt(s).";
+                    return SceneOfferPreflightStatus.Failed;
+                }
+
+                int requiredSuspects = Math.Max(1, incident.SuspectCount);
+                List<Ped> liveSuspects = TrackedSuspects(incident)
+                    .Where(suspect => !suspect.IsDead && suspect.Health > 0)
+                    .ToList();
+                if (liveSuspects.Count != requiredSuspects)
+                {
+                    reason = "RequiredSuspects=" + requiredSuspects
+                        + "; ReadySuspects=" + liveSuspects.Count + ".";
+                    return SceneOfferPreflightStatus.Failed;
+                }
+                if (incident.RequiresVehicle
+                    && CountLiveSuspectVehicles(incident)
+                        < Math.Max(1, incident.SuspectVehicleCount))
+                {
+                    reason = "Required suspect vehicles were not physically staged and prepared.";
+                    return SceneOfferPreflightStatus.Failed;
+                }
+                if (incident.VictimCount > 0
+                    && (incident.Victim == null || !incident.Victim.Exists()
+                        || !LSPDDispatchEventDefinition.IsVictimStateReady(
+                            incident.VictimStartsDead,
+                            incident.Victim.IsDead,
+                            incident.Victim.Health)
+                        || _ambientWorld == null
+                        || !_ambientWorld.IsDispatchVictimModelInPool(
+                            incident.VictimPoolId,
+                            incident.Victim.Model.Hash)))
+                {
+                    reason = "The required Dispatch victim is missing, invalid, or outside its authored model pool.";
+                    return SceneOfferPreflightStatus.Failed;
+                }
+
+                incident.ScenePreparationCompleted = true;
+                LogRuntime(
+                    "POLICE_DISPATCH_SCENE_PREFLIGHTED",
+                    "Event=" + incident.Id
+                    + "; Suspects=" + liveSuspects.Count
+                    + "; Vehicle=" + (incident.SuspectVehicle == null ? 0 : incident.SuspectVehicle.Handle)
+                    + "; Location=" + (incident.SceneResolution == null
+                        ? string.Empty : incident.SceneResolution.LocationId)
+                    + "; ReadyBeforeOffer=true");
+                return SceneOfferPreflightStatus.Ready;
+            }
+            finally
+            {
+                _incident = previousIncident;
+            }
+        }
+
+        private static bool HasUnloadedRequiredSceneModels(LSPDDispatchEvent incident)
+        {
+            if (incident == null || !incident.ScenePreparationRequested)
+                return false;
+            try
+            {
+                Model suspectModel = new Model(incident.SuspectModel);
+                if (IsUsableModel(suspectModel, false) && !suspectModel.IsLoaded)
+                    return true;
+
+                if (incident.RequiresVehicle)
+                {
+                    Model vehicleModel = new Model(incident.VehicleModel);
+                    if (IsUsableModel(vehicleModel, true) && !vehicleModel.IsLoaded)
+                        return true;
+                }
+
+                foreach (string modelName in RequiredAdditionalSuspectModels(incident))
+                {
+                    Model model = new Model(modelName);
+                    if (IsUsableModel(model, false) && !model.IsLoaded)
+                        return true;
+                }
+
+                if (incident.VictimCount > 0
+                    && !string.IsNullOrWhiteSpace(incident.VictimModelName))
+                {
+                    Model victimModel = new Model(incident.VictimModelName);
+                    if (IsUsableModel(victimModel, false) && !victimModel.IsLoaded)
+                        return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
             return false;
         }
 
@@ -684,6 +1080,7 @@ namespace LSImmersiveLife
         {
             if (_incident != null || !_patrolSessionStarted)
                 return;
+            CancelPendingOffer("A contextual Police activity took priority.");
             DateTime now = DateTime.UtcNow;
             DateTime deferredUntil = now.AddSeconds(_settings.ContextClearQuietSeconds);
             if (_nextOfferAt < deferredUntil)
@@ -800,6 +1197,8 @@ namespace LSImmersiveLife
                 || (!bypassAutomaticQuietPeriod && DateTime.UtcNow < _cooldownUntil))
                 return false;
 
+            CancelPendingOffer("A separate Dispatch offer took priority.");
+
             incident.State = LSPDDispatchState.Offered;
             incident.StateChangedAt = DateTime.UtcNow;
             _incident = incident;
@@ -855,7 +1254,7 @@ namespace LSImmersiveLife
             if (player == null || !player.Exists())
                 return LSPDAudioResult.Unavailable;
 
-            if (!BeginScenePreparation(_incident))
+            if (!_incident.ScenePreparationCompleted && !BeginScenePreparation(_incident))
             {
                 Fail("The dispatch scene has an unavailable model definition.");
                 return LSPDAudioResult.Unavailable;
@@ -863,12 +1262,20 @@ namespace LSImmersiveLife
 
             SetState(LSPDDispatchState.Accepted);
             SetState(LSPDDispatchState.EnRoute);
+            _incident.NextEnRouteStatusAt = DateTime.UtcNow.AddSeconds(30);
             CaptureAndSetWaypoint(_incident.Origin);
             SetSceneBlip(_incident.Origin, _incident.Title);
+            if (_incident.Suspect != null && _incident.Suspect.Exists())
+                SetSuspectBlip(_incident.Suspect);
             LSPDAudioResult accepted = ReportAudioStage(
-                "lsimmersivelife.police.dispatch.accepted",
+                "lsimmersivelife.police.player.accept_dispatch",
                 _incident,
                 "accepted");
+            ReportAudioStage(
+                "lsimmersivelife.police.dispatch.en_route",
+                _incident,
+                "en-route-acknowledged",
+                true);
             Notify("~b~POLICE DISPATCH~s~\nAssignment accepted. Proceed to the marked scene.");
             LogRuntime("POLICE_DISPATCH_ACCEPTED", _incident.Title + " | Scene preparation requested.");
             return accepted;
@@ -883,9 +1290,9 @@ namespace LSImmersiveLife
                 incident,
                 LSPDDispatchState.Cancelled,
                 "Declined by officer.",
-                "lsimmersivelife.police.dispatch.declined",
+                "lsimmersivelife.police.player.decline_dispatch",
                 "declined",
-                false);
+                true);
             Notify("~b~POLICE DISPATCH~s~\nCall declined. You remain available for patrol.");
             return result;
         }
@@ -896,6 +1303,8 @@ namespace LSImmersiveLife
                 return "No active dispatch is waiting for investigation.";
             if (_incident.State == LSPDDispatchState.Offered)
                 return "Accept the dispatch before investigating the scene.";
+            if (_incident.HasConvoyCustodyHandoff || !_incident.OwnedByDispatch)
+                return "Prisoner transport currently owns this dispatch custody.";
             if (player == null || !player.Exists())
                 return "Player character unavailable.";
 
@@ -903,6 +1312,8 @@ namespace LSImmersiveLife
             {
                 if (!EnsureScene(player))
                 {
+                    if (_incident == null)
+                        return "The dispatch scene could not be prepared and the assignment has ended.";
                     if (_incident.ScenePreparationRequested
                         && !_incident.ScenePreparationCompleted)
                         return "Dispatch is preparing the scene. Keep the assignment active for a moment.";
@@ -919,18 +1330,39 @@ namespace LSImmersiveLife
                     ? "Follow the active suspect marker before investigating."
                     : "Proceed to the marked scene before investigating.";
 
+            if (IsMappedInteriorDispatchBehavior(_incident.SceneBehavior))
+            {
+                if (player.IsInVehicle())
+                    return "Park your Police Utility outside the building, get out, and enter before investigating.";
+                Vehicle parkedUtility = _incident.ParkedPlayerUtility;
+                if (parkedUtility == null || !parkedUtility.Exists()
+                    || _incident.SceneResolution == null
+                    || !_incident.SceneResolution.HasVehicleStagingPosition
+                    || Math.Abs(parkedUtility.Speed) > 0.5f
+                    || parkedUtility.Position.DistanceTo(
+                        _incident.SceneResolution.VehicleStagingPosition) > 35f)
+                    return "Park your Police Utility on the ground near the entrance before entering.";
+
+                int playerInteriorId;
+                if (_ambientWorld == null
+                    || !_ambientWorld.TryGetActorInteriorId(player, out playerInteriorId)
+                    || playerInteriorId != _incident.SceneResolution.InteriorId)
+                    return "Enter through the mapped doorway before investigating.";
+            }
+
             // A dead suspect is only a completed scene after the officer has
             // actually reached the scene or the confirmed pursuit position.
             // The old ordering closed a callout from anywhere in the city as
             // soon as the suspect died, which made Dispatch feel like a log
             // simulator and removed the visible aftermath.
-            if (LiveSuspects(_incident).Any() == false)
+            List<Ped> liveAtScene = LiveSuspects(_incident).ToList();
+            if (liveAtScene.Count == 0)
             {
+                if (HasPendingVictimInvestigation
+                    && !TryRecordMurderVictimInvestigation(_incident, player))
+                    return "The victim is still waiting for an on-scene investigation. Move close to the body and investigate before closing Dispatch.";
                 if (HasUnfinishedArrestedCustody(_incident))
-                {
-                    Fail("An arrested suspect was lost before prisoner transport completed.");
-                    return "Prisoner custody failed because the arrested suspect was lost before transport completed.";
-                }
+                    return FailUnfinishedArrestedCustody(_incident);
                 string completion = CompletionMessage(_incident, true);
                 Complete(completion);
                 return completion;
@@ -943,8 +1375,31 @@ namespace LSImmersiveLife
             }
 
             StartSceneBehavior(player);
+            if (_incident == null || !_incident.OwnedByDispatch)
+                return "The dispatch scene is no longer available for investigation.";
+
             if (_incident.State == LSPDDispatchState.OnScene)
                 SetState(LSPDDispatchState.Investigating);
+
+            if (!_incident.SceneArrivalReported)
+            {
+                _incident.SceneArrivalReported = true;
+                ReportAudioStage(
+                    "lsimmersivelife.police.scene.on_scene",
+                    _incident,
+                    "arrived",
+                    true);
+            }
+
+            if (IsCompliant(_incident, _incident.Suspect)
+                && !IsWoundedSuspect(_incident.Suspect)
+                && !_incident.Suspect.IsInCombatAgainst(player)
+                && !_incident.Suspect.IsShooting)
+            {
+                SetState(LSPDDispatchState.SuspectCompliant);
+                Notify("~g~POLICE COMPLIANCE~s~\nSuspect has stopped and is ready to secure.");
+                return "Suspect is compliant. Secure the suspect to begin custody.";
+            }
 
             if (_incident.Suspect.IsInCombatAgainst(player) || _incident.Suspect.IsShooting)
             {
@@ -955,16 +1410,101 @@ namespace LSImmersiveLife
 
             if (_incident.Suspect.IsFleeing)
             {
+                MarkSuspectFleeing(_incident, _incident.Suspect);
                 SetState(LSPDDispatchState.SuspectFleeing);
                 return "Suspect is fleeing. Follow the active suspect marker.";
+            }
+
+            if (!_incident.InvestigationReported)
+            {
+                _incident.InvestigationReported = true;
+                ReportAudioStage(
+                    "lsimmersivelife.police.investigation.started",
+                    _incident,
+                    "investigation",
+                    true);
+            }
+
+            if (HasPendingVictimInvestigation)
+            {
+                List<Ped> unsecured = liveAtScene
+                    .Where(suspect => !IsArrested(_incident, suspect))
+                    .ToList();
+                if (unsecured.Count > 0)
+                    return "Secure the remaining suspect(s), then use Investigate again to examine the murder victim.";
+                if (!TryRecordMurderVictimInvestigation(_incident, player))
+                    return "Move closer to the murder victim before investigating the body.";
+
+                SetState(LSPDDispatchState.Arrested);
+                Notify("~b~DISPATCH INVESTIGATION~s~\nVictim examination recorded. Request prisoner transport when ready.");
+                return "Victim investigation recorded. Request prisoner transport when ready.";
             }
 
             Notify("~b~POLICE DISPATCH~s~\nScene reached. Suspect is present. Use Secure & Comply.");
             return "Scene reached. Suspect is present and ready for Police interaction.";
         }
 
+        private bool TryRecordMurderVictimInvestigation(
+            LSPDDispatchEvent incident,
+            Ped player)
+        {
+            if (incident == null || !incident.VictimStartsDead
+                || incident.VictimInvestigated)
+                return true;
+            Ped victim = incident.Victim;
+            bool mappedInteriorMurder = string.Equals(
+                incident.SceneBehavior, "murder_victim_interior",
+                StringComparison.OrdinalIgnoreCase);
+            int playerInteriorId = 0;
+            bool playerInsideMappedInterior = !mappedInteriorMurder
+                || (player != null && player.Exists()
+                    && _ambientWorld != null
+                    && incident.SceneResolution != null
+                    && incident.SceneResolution.IsInteriorScene
+                    && incident.SceneResolution.IsMappedInteriorDispatchScene
+                    && _ambientWorld.TryGetActorInteriorId(player, out playerInteriorId)
+                    && playerInteriorId == incident.SceneResolution.InteriorId);
+            if (victim == null || !victim.Exists()
+                || !LSPDDispatchEventDefinition.IsVictimStateReady(
+                    true, victim.IsDead, victim.Health)
+                || player == null || !player.Exists()
+                || player.Position.DistanceTo(victim.Position) > SceneArrivalRadius
+                || !playerInsideMappedInterior)
+            {
+                LogDebug("POLICE_DISPATCH_MURDER_VICTIM_INVESTIGATION_UNAVAILABLE",
+                    "Incident=" + incident.Id
+                    + "; Victim=" + (victim == null ? 0 : victim.Handle)
+                    + "; Player=" + (player == null ? 0 : player.Handle)
+                    + "; Reason=VictimOrOfficerNotAtSceneOrMappedInterior");
+                return false;
+            }
+
+            incident.VictimInvestigated = true;
+            LogRuntime("POLICE_DISPATCH_MURDER_VICTIM_INVESTIGATED",
+                "Incident=" + incident.Id
+                + "; Victim=" + victim.Handle
+                + "; Player=" + player.Handle
+                + "; VictimStartsDead=true; SceneContext="
+                + (mappedInteriorMurder ? "mapped-interior" : "alley")
+                + "; InteriorId=" + (mappedInteriorMurder
+                    ? incident.SceneResolution.InteriorId.ToString(CultureInfo.InvariantCulture)
+                    : "none")
+                + "; TerminalOutcome=false");
+            return true;
+        }
+
         private static string CompletionMessage(LSPDDispatchEvent incident, bool suspectNeutralized)
         {
+            if (suspectNeutralized && incident != null && incident.Suspects != null)
+            {
+                int deceasedSuspects = incident.Suspects.Count(ped => ped != null
+                    && ped.Exists() && (ped.IsDead || ped.Health <= 0));
+                if (deceasedSuspects > 0)
+                    return deceasedSuspects == 1
+                        ? "A suspect died. The Dispatch assignment has ended."
+                        : deceasedSuspects + " suspects died. The Dispatch assignment has ended.";
+            }
+
             string prefix = suspectNeutralized ? "Suspect neutralized. " : string.Empty;
             switch ((incident == null ? string.Empty : incident.IncidentType ?? string.Empty).ToLowerInvariant())
             {
@@ -1006,11 +1546,10 @@ namespace LSImmersiveLife
             List<Ped> living = LiveSuspects(_incident).ToList();
             if (living.Count == 0)
             {
+                if (HasPendingVictimInvestigation)
+                    return "Suspects are resolved. Investigate the murder victim at the scene before closing Dispatch.";
                 if (HasUnfinishedArrestedCustody(_incident))
-                {
-                    Fail("An arrested suspect was lost before prisoner transport completed.");
-                    return "Prisoner custody failed because the arrested suspect was lost before transport completed.";
-                }
+                    return FailUnfinishedArrestedCustody(_incident);
                 string completed = CompletionMessage(_incident, true);
                 Complete(completed);
                 return completed;
@@ -1025,8 +1564,25 @@ namespace LSImmersiveLife
                 SetState(LSPDDispatchState.Arrested);
                 return "All living suspects are secured. Request prisoner transport when ready.";
             }
-            if (player.Position.DistanceTo(target.Position) > ArrestRadius + 1f)
+            float targetDistance = player.Position.DistanceTo(target.Position);
+            if (targetDistance > ArrestRadius + 1f)
+            {
+                string response;
+                bool fleeing = _incident.SuspectResponses.TryGetValue(
+                    target.Handle, out response)
+                    && string.Equals(response, "flee",
+                        StringComparison.OrdinalIgnoreCase);
+                if (fleeing && !target.IsInVehicle()
+                    && targetDistance <= ArrestRadius + 4f
+                    && !IsDownedOrInjured(target))
+                    return OrderSuspectToComply(target, player, false);
+                if (fleeing && target.IsInVehicle())
+                    return "The fleeing driver is still in the vehicle. Stop the vehicle before issuing the surrender command.";
                 return "Move closer to the next unsecured suspect before issuing the Police command.";
+            }
+
+            if (IsDispatchMeleeRecoveryPending(target, DateTime.UtcNow))
+                return "Wait for the suspect's physical reaction to finish, then secure the same suspect.";
 
             bool downedAlive = IsDownedOrInjured(target);
             if (!IsCompliant(_incident, target) && !downedAlive)
@@ -1049,6 +1605,8 @@ namespace LSImmersiveLife
             try
             {
                 suspect.Task.ClearAll();
+                Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                    suspect, HandcuffedPedConfigFlag, false);
                 Function.Call(Hash.SET_ENABLE_HANDCUFFS, suspect, false);
                 Function.Call(Hash.SET_ENTITY_PROOFS,
                     suspect, false, false, false, false, false, false, false, false);
@@ -1097,6 +1655,15 @@ namespace LSImmersiveLife
                 || ped.Handle == releasedHandle);
             _lastCompliantTaskAt.Remove(releasedHandle);
             _lastSecuredPoseTaskAt.Remove(releasedHandle);
+            // Release the injury snapshot only after Dispatch has removed the
+            // Ped from its custody collections. This restores the same living
+            // actor's original health/weapon controls without reviving it.
+            RestoreSuspectInjuryState(suspect);
+            LogRuntime("POLICE_DISPATCH_SUSPECT_INJURY_STATE_RELEASED",
+                "Ped=" + releasedHandle + "; RuntimeOwner=Dispatch"
+                + "; InjuryStateRemoved=true; SamePed=true"
+                + "; Health=" + suspect.Health
+                + "; CriticalHitsRestored=true");
 
             if (incident.Suspect != null && incident.Suspect.Handle == releasedHandle)
             {
@@ -1117,6 +1684,12 @@ namespace LSImmersiveLife
 
             if (remaining == 0)
             {
+                if (HasPendingVictimInvestigation)
+                {
+                    SetState(LSPDDispatchState.Investigating);
+                    Notify("~b~DISPATCH INVESTIGATION~s~\nInvestigate the murder victim before closing the assignment.");
+                    return "The suspect was released. Investigate the murder victim before closing Dispatch.";
+                }
                 const string completed = "The secured suspect was released. Dispatch is closed.";
                 Complete(completed);
                 return completed;
@@ -1130,10 +1703,15 @@ namespace LSImmersiveLife
 
         private string BeginPlayerHandcuff(Ped player, Ped target)
         {
+            LSImmersiveDictionaryAnimation.ArrestTargetPosture posture =
+                LSImmersiveDictionaryAnimation.ClassifyArrestTarget(target);
             if (_incident == null || player == null || !player.Exists()
-                || target == null || !target.Exists()
-                || target.IsDead || target.Health <= 0)
+                || posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Invalid
+                || posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Dead
+                || posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Cuffed)
                 return "The physical handcuff interaction is no longer available.";
+
+            LSPDPlayerControlSuppression.SuppressMeleeThisFrame();
 
             DateTime now = DateTime.UtcNow;
             try
@@ -1143,29 +1721,50 @@ namespace LSImmersiveLife
                 // or ambient task could make a compliant suspect walk away
                 // while the visible player interaction is starting.
                 Function.Call(Hash.SET_ENTITY_PROOFS,
-                    target, false, false, false, true, false, false, false, false);
+                    target, false, false, false, true, true, false, false, false);
                 target.BlockPermanentEvents = true;
                 target.CanSwitchWeapons = false;
-                bool targetDowned = IsDownedOrInjured(target);
-                Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                    player, target, 1000);
-                Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                    target, player, 1000);
-                Function.Call(Hash.TASK_ARREST_PED, player, target);
-                int handcuffDuration = PlayerHandcuffAnimationMilliseconds;
-                _playerHandcuffHoldUntil = now.AddMilliseconds(handcuffDuration);
-                _playerHandcuffAttempts = 1;
+                bool targetDowned = IsGroundedForHandcuff(target);
                 _incident.PlayerHandcuffInProgress = true;
                 _incident.PlayerHandcuffTargetHandle = target.Handle;
                 _incident.PlayerHandcuffStartedAt = now;
+
+                if (targetDowned)
+                {
+                    // A living grounded suspect must be arrested in place.
+                    // Requiring HandsUp/standing first left injured actors in
+                    // an endless writhing loop and never reached physical cuffs.
+                    target.Task.ClearAll();
+                    _playerHandcuffAttempts = 0;
+                    LogRuntime("POLICE_DISPATCH_PLAYER_GROUNDED_ARREST_STARTED",
+                        "Ped=" + target.Handle + "; Player=" + player.Handle
+                        + "; Ragdoll=" + IsLivingDowned(target)
+                        + "; Writhe=" + IsLivingInWrithe(target)
+                        + "; SamePed=true");
+                }
+
+                bool animationStarted = StartPlayerHandcuffAnimation(
+                    player, target, now, true, targetDowned);
+                if (!animationStarted && _playerHandcuffWaitingForAnimation)
+                {
+                    Notify("~b~POLICE CUSTODY~s~\nPreparing the paired handcuff animation. Stay close to the suspect.");
+                    return "Preparing the handcuff animation...";
+                }
                 LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_STARTED",
                     "Ped=" + target.Handle + "; Player=" + player.Handle
-                    + "; Method=GroundedTaskArrestPed"
-                    + "; SynchronizedScene=false"
+                    + "; Posture=" + posture
+                    + "; Method=" + (_playerHandcuffPairedAnimationStarted
+                        ? "SynchronizedPairedAnimation" : "TaskArrestPed")
+                    + "; SynchronizedScene=" + _playerHandcuffPairedAnimationStarted
                     + "; DownedOrInjured=" + targetDowned
-                    + "; HoldMilliseconds=" + handcuffDuration);
-                Notify("~b~POLICE CUSTODY~s~\nPhysically handcuffing the compliant suspect. Keep close until secure.");
-                return "Physically handcuffing the compliant suspect...";
+                    + "; HoldMilliseconds=" + (int)Math.Max(0,
+                        (_playerHandcuffHoldUntil - now).TotalMilliseconds));
+                Notify(targetDowned
+                    ? "~b~POLICE CUSTODY~s~\nArresting the wounded suspect from the ground. Stay close until the cuffs are confirmed."
+                    : "~b~POLICE CUSTODY~s~\nPhysically handcuffing the compliant suspect. Keep close until secure.");
+                return targetDowned
+                    ? "Arresting the wounded suspect from the ground..."
+                    : "Physically handcuffing the compliant suspect...";
             }
             catch (Exception ex)
             {
@@ -1173,6 +1772,175 @@ namespace LSImmersiveLife
                 LogException("POLICE_DISPATCH_PLAYER_HANDCUFF_START_FAILED", ex);
                 return "The physical handcuff interaction could not be started safely.";
             }
+        }
+
+        private bool StartPlayerHandcuffAnimation(
+            Ped player,
+            Ped target,
+            DateTime now,
+            bool allowSynchronizedAnimation,
+            bool preserveGroundedArrestTask)
+        {
+            if (player == null || !player.Exists()
+                || target == null || !target.Exists() || target.IsDead)
+                return false;
+
+            _playerHandcuffPairedAnimationStarted = false;
+            _playerHandcuffWaitingForAnimation = false;
+            _playerHandcuffAnimationLoadUntil = DateTime.MinValue;
+            _playerHandcuffWaitingDictionary = null;
+            _playerHandcuffSceneId = -1;
+            _playerHandcuffAnimationVerifyAt = DateTime.MinValue;
+            _playerHandcuffAnimationVerified = false;
+            _playerHandcuffPreserveTargetPosture = false;
+            _playerHandcuffDictionary = null;
+            _playerHandcuffOfficerClip = null;
+            _playerHandcuffSuspectClip = null;
+            _playerHandcuffSceneOrigin = Vector3.Zero;
+            _playerHandcuffSceneHeading = 0f;
+            float clipDuration = 0f;
+            int sceneId = -1;
+            Vector3 sceneOrigin = Vector3.Zero;
+            float sceneHeading = 0f;
+            LSImmersiveDictionaryAnimation.ArrestTargetPosture posture =
+                LSImmersiveDictionaryAnimation.ClassifyArrestTarget(target);
+            if (posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Invalid
+                || posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Dead
+                || posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Cuffed)
+                return false;
+
+            bool groundedArrestTask = preserveGroundedArrestTask
+                || posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Grounded;
+            bool kneelingArrestTask = !groundedArrestTask
+                && posture == LSImmersiveDictionaryAnimation.ArrestTargetPosture.Kneeling;
+            _playerHandcuffPreserveTargetPosture = groundedArrestTask || kneelingArrestTask;
+            string dictionary = groundedArrestTask ? "mp_arresting" : "mp_arrest_paired";
+            string officerClip = groundedArrestTask
+                ? "arrest_on_floor_front_right_a" : "cop_p2_back_right";
+            string suspectClip = groundedArrestTask
+                ? "arrest_on_floor_front_right_b" : "crook_p2_back_right";
+            if (allowSynchronizedAnimation && groundedArrestTask)
+            {
+                const string groundDictionary = "mp_arresting";
+                LSImmersiveDictionaryAnimation.RequestDictionary(groundDictionary);
+                bool dictionaryLoaded = LSImmersiveDictionaryAnimation.IsDictionaryLoaded(
+                    groundDictionary);
+                float actorDistance = player.Position.DistanceTo(target.Position);
+                if (!dictionaryLoaded || actorDistance > SynchronizedArrestMaximumDistance)
+                {
+                    _playerHandcuffWaitingForAnimation = true;
+                    _playerHandcuffWaitingDictionary = groundDictionary;
+                    _playerHandcuffAnimationLoadUntil = now.AddSeconds(
+                        PlayerHandcuffAnimationLoadTimeoutSeconds);
+                    _playerHandcuffHoldUntil = DateTime.MinValue;
+                    _playerHandcuffAttempts = 0;
+                    LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_ANIMATION_WAITING",
+                        "Ped=" + target.Handle + "; Player=" + player.Handle
+                        + "; Dictionary=" + groundDictionary
+                        + "; DictionaryLoaded=" + dictionaryLoaded
+                        + "; Distance=" + actorDistance.ToString("0.00")
+                        + "; RequiredDistance=" + SynchronizedArrestMaximumDistance.ToString("0.0")
+                        + "; Grounded=true; TimeoutSeconds="
+                        + PlayerHandcuffAnimationLoadTimeoutSeconds);
+                    return false;
+                }
+                _playerHandcuffPairedAnimationStarted =
+                    LSImmersiveDictionaryAnimation.TryPlaySynchronizedGroundArrest(
+                        player, target, out sceneId, out clipDuration,
+                        out sceneOrigin, out sceneHeading);
+            }
+            else if (allowSynchronizedAnimation && !kneelingArrestTask)
+            {
+                const string pairedDictionary = "mp_arrest_paired";
+                LSImmersiveDictionaryAnimation.RequestDictionary(pairedDictionary);
+                bool dictionaryLoaded = LSImmersiveDictionaryAnimation.IsDictionaryLoaded(
+                    pairedDictionary);
+                float actorDistance = player.Position.DistanceTo(target.Position);
+                if (!dictionaryLoaded || actorDistance > SynchronizedArrestMaximumDistance)
+                {
+                    _playerHandcuffWaitingForAnimation = true;
+                    _playerHandcuffWaitingDictionary = pairedDictionary;
+                    _playerHandcuffAnimationLoadUntil = now.AddSeconds(
+                        PlayerHandcuffAnimationLoadTimeoutSeconds);
+                    _playerHandcuffHoldUntil = DateTime.MinValue;
+                    _playerHandcuffAttempts = 0;
+                    LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_ANIMATION_WAITING",
+                        "Ped=" + target.Handle + "; Player=" + player.Handle
+                        + "; Dictionary=" + pairedDictionary
+                        + "; DictionaryLoaded=" + dictionaryLoaded
+                        + "; Distance=" + actorDistance.ToString("0.00")
+                        + "; RequiredDistance=" + SynchronizedArrestMaximumDistance.ToString("0.0")
+                        + "; Grounded=false; TimeoutSeconds="
+                        + PlayerHandcuffAnimationLoadTimeoutSeconds);
+                    return false;
+                }
+                _playerHandcuffPairedAnimationStarted =
+                    LSImmersiveDictionaryAnimation.TryPlaySynchronizedArrest(
+                        player, target, out sceneId, out clipDuration,
+                        out sceneOrigin, out sceneHeading);
+            }
+
+            if (!_playerHandcuffPairedAnimationStarted)
+            {
+                if (!_playerHandcuffPreserveTargetPosture)
+                {
+                    Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                        player, target, 1000);
+                    Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                        target, player, 1000);
+                }
+                Function.Call(Hash.TASK_ARREST_PED, player, target);
+            }
+
+            int handcuffDuration = _playerHandcuffPairedAnimationStarted
+                ? Math.Max(PlayerHandcuffAnimationMilliseconds,
+                    (int)Math.Ceiling(clipDuration * 1000.0f) + 500)
+                : PlayerHandcuffAnimationMilliseconds;
+            _playerHandcuffHoldUntil = now.AddMilliseconds(handcuffDuration);
+            _playerHandcuffAttempts = Math.Max(1, _playerHandcuffAttempts);
+            if (_playerHandcuffPairedAnimationStarted)
+            {
+                _playerHandcuffSceneId = sceneId;
+                _playerHandcuffAnimationVerifyAt = now.AddMilliseconds(500);
+                _playerHandcuffAnimationVerified = false;
+                _playerHandcuffDictionary = dictionary;
+                _playerHandcuffOfficerClip = officerClip;
+                _playerHandcuffSuspectClip = suspectClip;
+                _playerHandcuffSceneOrigin = sceneOrigin;
+                _playerHandcuffSceneHeading = sceneHeading;
+            }
+            LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_ANIMATION_STARTED",
+                "Ped=" + target.Handle + "; Player=" + player.Handle
+                + "; Method=" + (_playerHandcuffPairedAnimationStarted
+                    ? groundedArrestTask
+                        ? "SynchronizedGroundArrest" : "SynchronizedPairedAnimation"
+                    : "TaskArrestPed")
+                + "; Scene=" + (_playerHandcuffPairedAnimationStarted
+                    ? sceneId.ToString() : "none")
+                + "; ClipDuration=" + clipDuration.ToString("0.000")
+                + "; Posture=" + posture
+                + "; Dictionary=" + (_playerHandcuffPairedAnimationStarted
+                    ? dictionary : "none")
+                + "; OfficerClip=" + (_playerHandcuffPairedAnimationStarted
+                    ? officerClip : "TASK_ARREST_PED")
+                + "; SuspectClip=" + (_playerHandcuffPairedAnimationStarted
+                    ? suspectClip : "TASK_ARREST_PED")
+                + "; SceneOrigin=" + sceneOrigin.X.ToString("0.00") + ","
+                    + sceneOrigin.Y.ToString("0.00") + ","
+                    + sceneOrigin.Z.ToString("0.00")
+                + "; SceneHeading=" + sceneHeading.ToString("0.0")
+                + "; ScenePhase=" + GetScenePhaseText(sceneId)
+                + "; Downed=" + groundedArrestTask
+                + "; Kneeling=" + kneelingArrestTask
+                + "; HoldMilliseconds=" + handcuffDuration);
+            return true;
+        }
+
+        private static string GetScenePhaseText(int sceneId)
+        {
+            float phase;
+            return LSImmersiveDictionaryAnimation.TryGetSynchronizedScenePhase(
+                sceneId, out phase) ? phase.ToString("0.000") : "unavailable";
         }
 
         private void MaintainPlayerHandcuff(DateTime now, Ped player)
@@ -1185,9 +1953,6 @@ namespace LSImmersiveLife
                 && ped.Handle == _incident.PlayerHandcuffTargetHandle);
             if (target == null || target.IsDead || target.Health <= 0)
             {
-                if (target != null && IsDispatchNonfatalRecoveryPending(target))
-                    return;
-
                 LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_ABORTED",
                     "Ped=" + _incident.PlayerHandcuffTargetHandle
                     + "; Reason=" + (target == null ? "PRISONER_REFERENCE_INVALID" : "PRISONER_DIED"));
@@ -1195,20 +1960,23 @@ namespace LSImmersiveLife
                 return;
             }
 
+            // Keep the same handcuff operation alive while a punch reaction
+            // temporarily owns the Ped's physical pose. Do not restart the
+            // arrest task until that reaction has ended.
+            if (IsDispatchMeleeRecoveryPending(target, now))
+                return;
+
             try
             {
                 target.BlockPermanentEvents = true;
                 target.CanSwitchWeapons = false;
                 Function.Call(Hash.SET_ENTITY_PROOFS,
-                    target, false, false, false, true, false, false, false, false);
+                    target, false, false, false, true, true, false, false, false);
             }
             catch (Exception ex)
             {
                 LogException("POLICE_DISPATCH_PLAYER_HANDCUFF_MAINTENANCE_FAILED", ex);
             }
-
-            if (now < _playerHandcuffHoldUntil)
-                return;
 
             if (player == null || !player.Exists()
                 || player.Position.DistanceTo(target.Position) > ArrestRadius + 2f)
@@ -1220,28 +1988,142 @@ namespace LSImmersiveLife
                 return;
             }
 
-            if (!IsPedPhysicallyCuffed(target))
+            if (_playerHandcuffSceneId >= 0
+                && !_playerHandcuffAnimationVerified
+                && now >= _playerHandcuffAnimationVerifyAt)
+            {
+                bool officerPlaying = LSImmersiveDictionaryAnimation.IsPlaying(
+                    player, _playerHandcuffDictionary, _playerHandcuffOfficerClip);
+                bool suspectPlaying = LSImmersiveDictionaryAnimation.IsPlaying(
+                    target, _playerHandcuffDictionary, _playerHandcuffSuspectClip);
+                float phase;
+                bool phaseAvailable = LSImmersiveDictionaryAnimation.TryGetSynchronizedScenePhase(
+                    _playerHandcuffSceneId, out phase);
+                _playerHandcuffAnimationVerified = true;
+                LogRuntime(officerPlaying && suspectPlaying
+                        ? "POLICE_DISPATCH_ARREST_PAIR_PLAYBACK_CONFIRMED"
+                        : "POLICE_DISPATCH_ARREST_PAIR_PLAYBACK_NOT_CONFIRMED",
+                    "Incident=" + _incident.Id + "; Ped=" + target.Handle
+                    + "; Player=" + player.Handle
+                    + "; PosturePreserved=" + _playerHandcuffPreserveTargetPosture
+                    + "; Dictionary=" + _playerHandcuffDictionary
+                    + "; OfficerClip=" + _playerHandcuffOfficerClip
+                    + "; OfficerPlaying=" + officerPlaying
+                    + "; SuspectClip=" + _playerHandcuffSuspectClip
+                    + "; SuspectPlaying=" + suspectPlaying
+                    + "; Scene=" + _playerHandcuffSceneId
+                    + "; ScenePhase=" + (phaseAvailable
+                        ? phase.ToString("0.000") : "unavailable")
+                    + "; SceneOrigin=" + _playerHandcuffSceneOrigin.X.ToString("0.00") + ","
+                        + _playerHandcuffSceneOrigin.Y.ToString("0.00") + ","
+                        + _playerHandcuffSceneOrigin.Z.ToString("0.00")
+                    + "; SceneHeading=" + _playerHandcuffSceneHeading.ToString("0.0"));
+                if (!officerPlaying || !suspectPlaying)
+                {
+                    _playerHandcuffPairedAnimationStarted = false;
+                    _playerHandcuffSceneId = -1;
+                    Function.Call(Hash.TASK_ARREST_PED, player, target);
+                    _playerHandcuffHoldUntil = now.AddMilliseconds(
+                        PlayerHandcuffAnimationMilliseconds);
+                    LogRuntime("POLICE_DISPATCH_ARREST_PAIR_FALLBACK",
+                        "Incident=" + _incident.Id + "; Ped=" + target.Handle
+                        + "; Player=" + player.Handle
+                        + "; Reason=PAIR_CLIP_NOT_PLAYING"
+                        + "; Fallback=TASK_ARREST_PED"
+                        + "; TargetPosture="
+                        + LSImmersiveDictionaryAnimation.ClassifyArrestTarget(target));
+                    return;
+                }
+            }
+
+            if (_playerHandcuffWaitingForAnimation)
+            {
+                string waitingDictionary = string.IsNullOrWhiteSpace(
+                    _playerHandcuffWaitingDictionary)
+                    ? "mp_arrest_paired"
+                    : _playerHandcuffWaitingDictionary;
+                if (player.Position.DistanceTo(target.Position)
+                    > SynchronizedArrestMaximumDistance)
+                {
+                    if (now < _playerHandcuffAnimationLoadUntil)
+                        return;
+
+                    ClearPlayerHandcuffState();
+                    Notify("Move closer to the suspect before starting the paired handcuff animation, then press E again.");
+                    return;
+                }
+
+                bool animationLoaded = LSImmersiveDictionaryAnimation.IsDictionaryLoaded(
+                    waitingDictionary);
+                if (animationLoaded)
+                {
+                    bool preserveGrounded = IsGroundedForHandcuff(target);
+                    StartPlayerHandcuffAnimation(
+                        player, target, now, true, preserveGrounded);
+                    return;
+                }
+
+                if (now < _playerHandcuffAnimationLoadUntil)
+                    return;
+
+                _playerHandcuffWaitingForAnimation = false;
+                LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_ANIMATION_UNAVAILABLE",
+                    "Ped=" + target.Handle + "; Player=" + player.Handle
+                    + "; Dictionary=" + waitingDictionary
+                    + "; Fallback=GroundedTaskArrestPed");
+                StartPlayerHandcuffAnimation(player, target, now, false, false);
+                Notify("The paired arrest animation did not load. Using GTA's physical arrest task as a fallback.");
+                return;
+            }
+
+            if (now < _playerHandcuffHoldUntil)
+                return;
+
+            LogRuntime("POLICE_DISPATCH_ARREST_ANIMATION_COMMIT_POINT",
+                "Incident=" + _incident.Id + "; Ped=" + target.Handle
+                + "; Player=" + player.Handle
+                + "; Scene=" + (_playerHandcuffSceneId < 0
+                    ? "none" : _playerHandcuffSceneId.ToString())
+                + "; ScenePhase=" + GetScenePhaseText(_playerHandcuffSceneId)
+                + "; CuffedBeforeCommit=" + IsPedPhysicallyCuffed(target)
+                + "; PhysicalHoldElapsed=true");
+
+            // The captured Dispatch session repeated the arrest motion while
+            // the engine still reported the Ped uncuffed. Commit the cuff state
+            // only after the authored physical hold, then verify it before
+            // custody begins.
+            bool cuffed = IsPedPhysicallyCuffed(target);
+            if (!cuffed)
+            {
+                cuffed = TryApplyPhysicalHandcuffs(target);
+                if (cuffed)
+                    LogRuntime("POLICE_DISPATCH_HANDCUFF_STATE_COMMITTED",
+                        "Incident=" + _incident.Id + "; Ped=" + target.Handle
+                        + "; RuntimeOwner=Dispatch"
+                        + "; ConfigFlag=" + HandcuffedPedConfigFlag
+                        + "; Cuffed=" + IsPedPhysicallyCuffed(target)
+                        + "; PhysicalHoldElapsed=true; SamePed=true");
+            }
+            if (!cuffed)
             {
                 if (_playerHandcuffAttempts < PlayerHandcuffMaximumAttempts)
                 {
                     try
                     {
-                        if (!IsDownedOrInjured(target))
-                        {
-                            Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                                player, target, 1000);
-                            Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                                target, player, 1000);
-                        }
-                        Function.Call(Hash.TASK_ARREST_PED, player, target);
                         _playerHandcuffAttempts++;
-                        _playerHandcuffHoldUntil = now.AddMilliseconds(
-                            PlayerHandcuffAnimationMilliseconds);
+                        bool retryStarted = StartPlayerHandcuffAnimation(
+                            player, target, now, true, IsGroundedForHandcuff(target));
+                        if (!retryStarted && _playerHandcuffWaitingForAnimation)
+                            return;
                         LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_RETRIED",
                             "Ped=" + target.Handle + "; Player=" + player.Handle
                             + "; Attempt=" + _playerHandcuffAttempts
                             + "; MaximumAttempts=" + PlayerHandcuffMaximumAttempts
-                            + "; DownedOrInjured=" + IsDownedOrInjured(target));
+                            + "; DownedOrInjured=" + IsDownedOrInjured(target)
+                            + "; Method=" + (_playerHandcuffPairedAnimationStarted
+                                ? IsGroundedForHandcuff(target)
+                                    ? "SynchronizedGroundArrest" : "SynchronizedPairedAnimation"
+                                : "TaskArrestPed"));
                         Notify("Keep beside the suspect while the physical handcuffing finishes.");
                         return;
                     }
@@ -1278,12 +2160,16 @@ namespace LSImmersiveLife
 
             try
             {
+                if (!TryApplyPhysicalHandcuffs(target))
+                {
+                    ClearPlayerHandcuffState();
+                    return "The game did not retain the physical handcuff state. The suspect remains available; try again.";
+                }
                 Function.Call(Hash.SET_ENABLE_HANDCUFFS, target, true);
                 Function.Call(Hash.SET_ENTITY_PROOFS,
                     target, false, false, false, true, false, false, false, false);
                 target.BlockPermanentEvents = true;
                 target.CanSwitchWeapons = false;
-                RestoreSuspectInjuryState(target);
                 AddArrestedSuspect(_incident, target);
                 ClearPlayerHandcuffState();
                 _lastSecuredPoseTaskAt.Remove(target.Handle);
@@ -1306,10 +2192,19 @@ namespace LSImmersiveLife
                 SetState(LSPDDispatchState.Arrested);
                 ReportAudioStage("lsimmersivelife.police.arrest.successful", _incident, "arrested");
                 int custodyCount = CurrentArrestedSuspects.Count();
-                Notify("~g~ARREST SUCCESS~s~\n" + custodyCount
-                    + " suspect(s) physically secured. Request prisoner transport when ready.");
+                bool victimInvestigationPending = HasPendingVictimInvestigation;
+                Notify(victimInvestigationPending
+                    ? "~g~ARREST SUCCESS~s~\n" + custodyCount
+                        + " suspect(s) physically secured. Investigate the murder victim before requesting transport."
+                    : "~g~ARREST SUCCESS~s~\n" + custodyCount
+                        + " suspect(s) physically secured. Request prisoner transport when ready.");
                 LogRuntime("POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED",
-                    "Ped=" + target.Handle + "; Prisoners=" + custodyCount);
+                    "Ped=" + target.Handle + "; Prisoners=" + custodyCount
+                    + "; VictimInvestigationPending=" + victimInvestigationPending);
+                if (victimInvestigationPending)
+                    return custodyCount == 1
+                        ? "Suspect handcuffed and secured. Investigate the murder victim before requesting transport."
+                        : custodyCount + " suspects handcuffed and secured. Investigate the murder victim before requesting transport.";
                 return custodyCount == 1
                     ? "Suspect handcuffed and secured. Prisoner custody is ready for transport."
                     : custodyCount + " suspects handcuffed and secured. Group custody is ready for transport.";
@@ -1326,6 +2221,19 @@ namespace LSImmersiveLife
         {
             _playerHandcuffHoldUntil = DateTime.MinValue;
             _playerHandcuffAttempts = 0;
+            _playerHandcuffAnimationLoadUntil = DateTime.MinValue;
+            _playerHandcuffWaitingDictionary = null;
+            _playerHandcuffWaitingForAnimation = false;
+            _playerHandcuffPairedAnimationStarted = false;
+            _playerHandcuffSceneId = -1;
+            _playerHandcuffAnimationVerifyAt = DateTime.MinValue;
+            _playerHandcuffAnimationVerified = false;
+            _playerHandcuffPreserveTargetPosture = false;
+            _playerHandcuffDictionary = null;
+            _playerHandcuffOfficerClip = null;
+            _playerHandcuffSuspectClip = null;
+            _playerHandcuffSceneOrigin = Vector3.Zero;
+            _playerHandcuffSceneHeading = 0f;
             if (_incident == null)
                 return;
             _incident.PlayerHandcuffInProgress = false;
@@ -1395,7 +2303,10 @@ namespace LSImmersiveLife
             if (IsArrested(_incident, suspect))
                 return true;
             if (IsDownedOrInjured(suspect))
+            {
+                _incident.PursuitContainedSuspectHandles.Add(suspect.Handle);
                 return true;
+            }
             // Backup.Process keeps tracking an intercepted suspect while the
             // officer travels to the marked position. Do not clear and restart
             // the hands-up task every game tick once the real suspect is
@@ -1474,12 +2385,26 @@ namespace LSImmersiveLife
             }
         }
 
+        private static bool IsLivingInWrithe(Ped suspect)
+        {
+            if (suspect == null || !suspect.Exists() || suspect.IsDead
+                || suspect.Health <= 0)
+                return false;
+            try { return Function.Call<bool>(Hash.IS_PED_IN_WRITHE, suspect); }
+            catch { return false; }
+        }
+
+        private static bool IsGroundedForHandcuff(Ped suspect)
+        {
+            return IsLivingDowned(suspect) || IsLivingInWrithe(suspect);
+        }
+
         private bool IsWoundedSuspect(Ped suspect)
         {
             if (suspect == null || !suspect.Exists() || suspect.IsDead
                 || suspect.Health <= 0)
                 return false;
-            DispatchSuspectInjuryState state;
+            LSPDSuspectInjuryState state;
             return _suspectInjuries.TryGetValue(suspect.Handle, out state)
                 && state.Wounded && !state.Fatal;
         }
@@ -1495,6 +2420,23 @@ namespace LSImmersiveLife
                 return false;
             try { return Function.Call<bool>(Hash.IS_PED_CUFFED, suspect); }
             catch { return false; }
+        }
+
+        private static bool TryApplyPhysicalHandcuffs(Ped suspect)
+        {
+            if (suspect == null || !suspect.Exists() || suspect.IsDead || suspect.Health <= 0)
+                return false;
+            try
+            {
+                Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                    suspect, HandcuffedPedConfigFlag, true);
+                Function.Call(Hash.SET_ENABLE_HANDCUFFS, suspect, true);
+                return IsPedPhysicallyCuffed(suspect);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private void MaintainTrackedSuspectInjuries(DateTime now, Ped player)
@@ -1529,46 +2471,75 @@ namespace LSImmersiveLife
                 }
             }
 
-            foreach (Ped suspect in TrackedSuspects(_incident).ToArray())
+            foreach (Ped suspect in TrackedSuspects(_incident))
             {
-                if (suspect == null || !suspect.Exists())
+                if (suspect == null)
                     continue;
-                if (IsArrested(_incident, suspect))
-                {
-                    RestoreSuspectInjuryState(suspect);
-                    continue;
-                }
-
                 CaptureDispatchSuspectInjuryState(suspect);
                 MaintainDispatchSuspectInjury(suspect, now, player);
+                LSPDSuspectInjuryState injuryState;
+                if (_incident != null
+                    && _suspectInjuries.TryGetValue(suspect.Handle, out injuryState)
+                    && injuryState.Wounded && !injuryState.Fatal)
+                    _incident.PursuitContainedSuspectHandles.Add(suspect.Handle);
             }
         }
 
-        private void CaptureDispatchSuspectInjuryState(Ped suspect)
+        private void CaptureDispatchSuspectInjuryState(
+            Ped suspect,
+            LSPDDispatchEvent incident = null)
         {
-            if (suspect == null || !suspect.Exists()
-                || _suspectInjuries.ContainsKey(suspect.Handle))
+            if (suspect == null || _suspectInjuries.ContainsKey(suspect.Handle)
+                || !suspect.Exists() || suspect.IsDead || suspect.Health <= 0)
                 return;
 
-            DispatchSuspectInjuryState state = new DispatchSuspectInjuryState
+            int originalHealth = Math.Max(1, suspect.Health);
+            int originalMaximumHealth = Math.Max(1, suspect.MaxHealth);
+            LSPDSuspectInjuryState state = new LSPDSuspectInjuryState
             {
                 Actor = suspect,
-                OriginalHealth = Math.Max(1, suspect.Health),
-                OriginalMaximumHealth = Math.Max(1, suspect.MaxHealth),
-                LastHealth = Math.Max(1, suspect.Health),
-                OriginalNoCriticalHits = false
+                OriginalHealth = originalHealth,
+                OriginalMaximumHealth = originalMaximumHealth,
+                LastHealth = originalHealth,
+                ManagedMaximumHealth = Math.Max(
+                    _injurySettings.ControlledMaximumHealth,
+                    Math.Max(originalHealth, originalMaximumHealth)),
+                ArrestableWoundedHealthFloor = _injurySettings.ArrestableWoundedHealthFloor,
+                OccurrenceId = incident != null ? incident.Id
+                    : (_incident == null ? string.Empty : _incident.Id),
+                OriginalCanSufferCriticalHits = suspect.CanSufferCriticalHits,
+                OriginalCanSwitchWeapons = suspect.CanSwitchWeapons
             };
             try
             {
-                state.OriginalNoCriticalHits = Function.Call<bool>(
-                    Hash.GET_PED_CONFIG_FLAG, suspect, 2, true);
-                Function.Call(Hash.SET_PED_CONFIG_FLAG, suspect, 2, true);
+                state.OriginalSelectedWeaponHash = Function.Call<int>(
+                    Hash.GET_SELECTED_PED_WEAPON, suspect);
+                suspect.CanSufferCriticalHits = false;
+                suspect.MaxHealth = state.ManagedMaximumHealth;
+                // One-time ownership setup for a living Ped. Damage handling
+                // below never heals or revives a suspect after an injury.
+                if (!suspect.IsDead && suspect.Health > 0
+                    && suspect.Health < state.ManagedMaximumHealth)
+                    suspect.Health = state.ManagedMaximumHealth;
+                state.LastHealth = Math.Max(1, suspect.Health);
+                try { Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, suspect); }
+                catch { }
+                try { Function.Call(Hash.CLEAR_ENTITY_LAST_WEAPON_DAMAGE, suspect); }
+                catch { }
             }
             catch (Exception ex)
             {
                 LogException("POLICE_DISPATCH_CRITICAL_HIT_CONTROL_FAILED", ex);
             }
             _suspectInjuries[suspect.Handle] = state;
+            LogRuntime("POLICE_DISPATCH_SUSPECT_INJURY_CONTROLLED",
+                "Session=" + (_log == null ? string.Empty : _log.SessionId)
+                + "; Incident=" + state.OccurrenceId
+                + "; RuntimeOwner=Dispatch; Ped=" + suspect.Handle
+                + "; HealthBefore=" + originalHealth
+                + "; ManagedHealth=" + state.LastHealth
+                + "; ManagedMaximum=" + state.ManagedMaximumHealth
+                + "; CanSufferCriticalHits=false; ReusedPed=true");
         }
 
         private void MaintainDispatchSuspectInjury(
@@ -1576,18 +2547,70 @@ namespace LSImmersiveLife
             DateTime now,
             Ped player)
         {
-            DispatchSuspectInjuryState state;
+            LSPDSuspectInjuryState state;
             if (suspect == null || !suspect.Exists()
                 || !_suspectInjuries.TryGetValue(suspect.Handle, out state))
+                return;
+            if (state.Fatal)
                 return;
 
             int currentHealth = Math.Max(0, suspect.Health);
             if (currentHealth < state.LastHealth)
             {
                 int damage = state.LastHealth - currentHealth;
-                state.DamageTaken += damage;
-                int bone = ReadDispatchLastDamageBone(suspect);
+                // Capture the hit bone before any native clears the damage
+                // record. The preceding work is only a health read and delta.
+                int rawBone = ReadDispatchLastDamageBone(suspect);
+                bool retainedBone = false;
+                int bone = rawBone;
+                if (rawBone != 0)
+                {
+                    state.LastValidDamageBone = rawBone;
+                    state.LastValidDamageBoneAt = now;
+                }
+                else if (state.LastValidDamageBone != 0
+                    && state.LastValidDamageBoneAt != DateTime.MinValue
+                    && now - state.LastValidDamageBoneAt
+                        <= TimeSpan.FromMilliseconds(
+                            _injurySettings.LastDamageBoneRetentionMilliseconds))
+                {
+                    bone = state.LastValidDamageBone;
+                    retainedBone = true;
+                }
+                int damageWeaponHash;
+                int damageAttackerHandle;
+                int damageGameTime;
+                bool damageRecordAvailable = TryReadDispatchDamageRecord(
+                    suspect, out damageWeaponHash, out damageAttackerHandle,
+                    out damageGameTime);
+                state.LastDamageWeaponHash = damageWeaponHash;
+                state.LastDamageAttackerHandle = damageAttackerHandle;
+                state.LastDamageGameTime = damageGameTime;
+                ControlledDamageKind damageKind = ReadDispatchDamageKind(
+                    suspect, damageWeaponHash, damageRecordAvailable);
                 DispatchHitZone zone = ClassifyDispatchHitZone(bone);
+                ClearDispatchLastDamageBone(suspect);
+                try { Function.Call(Hash.CLEAR_ENTITY_LAST_WEAPON_DAMAGE, suspect); }
+                catch { }
+
+                state.DamageTaken += damage;
+                state.RegisteredHits++;
+                bool damageKindKnown = damageKind != ControlledDamageKind.Unknown;
+                if (damageKindKnown)
+                    state.KnownDamageHits++;
+                if (damageKind == ControlledDamageKind.Melee)
+                    state.MeleeHits++;
+                bool wasDowned = state.Wounded
+                    && (IsLivingDowned(suspect) || IsLivingInWrithe(suspect));
+                string previousState = wasDowned
+                    ? "DownedArrestable"
+                    : (_incident == null ? "Active" : _incident.State.ToString());
+                if (wasDowned)
+                {
+                    state.DownedHits++;
+                    if (damageKindKnown)
+                        state.KnownDownedHits++;
+                }
                 if (zone == DispatchHitZone.Head)
                     state.HeadHits++;
                 else if (zone == DispatchHitZone.Chest)
@@ -1595,40 +2618,141 @@ namespace LSImmersiveLife
                 else if (zone == DispatchHitZone.Stomach)
                     state.StomachHits++;
 
-                state.Fatal = state.HeadHits >= 1
-                    || state.ChestHits >= 3
-                    || state.StomachHits >= 3;
-                // Only the explicitly configured head/chest/stomach hit counts
-                // can be fatal. Unmapped impact bones still need managed
-                // nonfatal recovery so native health loss cannot end custody.
-                state.Wounded = true;
+                state.LastDamageKind = damageKind.ToString();
+                bool engineTerminal = suspect.IsDead || currentHealth <= 0;
+                bool fatalHeadOrNeck = damageKind == ControlledDamageKind.Weapon
+                    && zone == DispatchHitZone.Head;
+                bool fatalRepeatedMelee = damageKind == ControlledDamageKind.Melee
+                    && state.MeleeHits >= _injurySettings.CumulativeFatalHitThreshold;
+                bool fatalCumulative = damageKindKnown
+                    && damageKind != ControlledDamageKind.Melee
+                    && state.KnownDamageHits >= _injurySettings.CumulativeFatalHitThreshold
+                    // The managed health buffer makes some weapon deltas very
+                    // small. A hit count alone must not turn three low-damage
+                    // foot/body hits into a scripted death. Require a real
+                    // cumulative injury before using the configured count as
+                    // the non-head fatal threshold.
+                    && state.DamageTaken >= state.ArrestableWoundedHealthFloor;
+                bool fatalAfterDownedHits = wasDowned && damageKindKnown && state.KnownDownedHits
+                    >= _injurySettings.RepeatedDamageAfterDownedThreshold
+                    && (damageKind != ControlledDamageKind.Melee || fatalRepeatedMelee);
+                state.Fatal = engineTerminal || fatalHeadOrNeck
+                    || fatalRepeatedMelee || fatalCumulative || fatalAfterDownedHits;
 
                 LogRuntime("POLICE_DISPATCH_SUSPECT_INJURY_RECORDED",
-                    "Incident=" + (_incident == null ? string.Empty : _incident.Id)
-                    + "; Ped=" + suspect.Handle + "; Bone=" + bone
+                    "Session=" + (_log == null ? string.Empty : _log.SessionId)
+                    + "; Incident=" + state.OccurrenceId
+                    + "; RuntimeOwner=Dispatch"
+                    + "; Ped=" + suspect.Handle
+                    + "; PreviousState=" + previousState
+                    + "; HealthBefore=" + state.LastHealth
+                    + "; HealthAfter=" + currentHealth
+                    + "; DamageDelta=" + damage
+                    + "; RawBone=" + rawBone
+                    + "; EffectiveBone=" + bone
+                    + "; RetainedBone=" + retainedBone
                     + "; Zone=" + zone
+                    + "; DamageKind=" + damageKind
+                    + "; DamageRecordAvailable=" + damageRecordAvailable
+                    + "; DamageWeaponHash=" + damageWeaponHash
+                    + "; DamageAttackerHandle=" + damageAttackerHandle
+                    + "; DamageGameTime=" + damageGameTime
                     + "; HeadHits=" + state.HeadHits
                     + "; ChestHits=" + state.ChestHits
                     + "; StomachHits=" + state.StomachHits
-                    + "; Damage=" + damage + "; Fatal=" + state.Fatal);
+                    + "; RegisteredHits=" + state.RegisteredHits
+                    + "; KnownDamageHits=" + state.KnownDamageHits
+                    + "; DownedHits=" + state.DownedHits
+                    + "; KnownDownedHits=" + state.KnownDownedHits
+                    + "; CumulativeDamage=" + state.DamageTaken
+                    + "; Wounded=" + state.Wounded
+                    + "; Fatal=" + state.Fatal);
 
                 if (state.Fatal)
                 {
-                    try { suspect.Health = 0; } catch { }
+                    if (!engineTerminal)
+                    {
+                        try { suspect.Health = 0; } catch { }
+                    }
                     state.LastHealth = 0;
                     LogRuntime("POLICE_DISPATCH_SUSPECT_FATAL_INJURY",
-                        "Incident=" + (_incident == null ? string.Empty : _incident.Id)
-                        + "; Ped=" + suspect.Handle + "; Zone=" + zone
-                        + "; HeadHits=" + state.HeadHits
-                        + "; ChestHits=" + state.ChestHits
-                        + "; StomachHits=" + state.StomachHits);
+                        "Incident=" + state.OccurrenceId
+                        + "; Ped=" + suspect.Handle
+                        + "; DamageKind=" + damageKind
+                        + "; Zone=" + zone
+                        + "; Reason=" + (engineTerminal ? "EngineTerminal" : fatalHeadOrNeck ? "ConfirmedHeadOrNeckWeaponHit" : fatalRepeatedMelee ? "RepeatedMeleeHits" : fatalAfterDownedHits ? "RepeatedDamageWhileDowned" : "CumulativeHitThreshold")
+                        + "; RegisteredHits=" + state.RegisteredHits
+                        + "; KnownDamageHits=" + state.KnownDamageHits
+                        + "; DownedHits=" + state.DownedHits
+                        + "; KnownDownedHits=" + state.KnownDownedHits
+                        + "; CumulativeDamage=" + state.DamageTaken);
+                    if (_incident != null
+                        && string.Equals(_incident.Id, state.OccurrenceId,
+                            StringComparison.Ordinal))
+                    {
+                        int otherLivingSuspects = LiveSuspects(_incident)
+                            .Count(value => value.Handle != suspect.Handle);
+                        if (otherLivingSuspects > 0)
+                        {
+                            string remaining = otherLivingSuspects == 1
+                                ? "1 other living suspect remains."
+                                : otherLivingSuspects + " other living suspects remain.";
+                            Notify("~r~POLICE DISPATCH~s~\nSuspect deceased. Dispatch remains active. "
+                                + remaining);
+                        }
+                    }
                     return;
                 }
 
-                state.LastHealth = Math.Max(0, suspect.Health);
-            }
+                try
+                {
+                    if (currentHealth <= 0)
+                    {
+                        state.Fatal = true;
+                        state.LastHealth = 0;
+                        LogRuntime("POLICE_DISPATCH_SUSPECT_ENGINE_TERMINAL_DAMAGE",
+                            "Incident=" + state.OccurrenceId + "; Ped=" + suspect.Handle
+                            + "; Reason=HealthReachedZeroBeforeSafeInterception");
+                        return;
+                    }
 
-            MaintainNonfatalDispatchInjuryRecovery(suspect, now, state);
+                    if (damageKind == ControlledDamageKind.Melee)
+                    {
+                        state.MeleeReactionPending = true;
+                        state.MeleeReactionUntil = now.AddMilliseconds(
+                            _injurySettings.MeleeReactionRecoveryMilliseconds);
+                        state.NextMeleeRecoveryCheckAt = state.MeleeReactionUntil;
+                    }
+                    else
+                    {
+                        state.Wounded = true;
+                        DisableWoundedSuspectWeapon(suspect, state);
+                    }
+
+                    if (currentHealth < _injurySettings.ArrestableWoundedHealthFloor)
+                        suspect.Health = _injurySettings.ArrestableWoundedHealthFloor;
+                    state.LastHealth = Math.Max(1, suspect.Health);
+
+                    if (damageKind == ControlledDamageKind.Melee)
+                    {
+                        LogRuntime("POLICE_DISPATCH_SUSPECT_MELEE_REACTION",
+                            "Incident=" + state.OccurrenceId
+                            + "; Ped=" + suspect.Handle
+                            + "; DamageKind=Melee; PreviousState=" + previousState
+                            + "; MeleeHits=" + state.MeleeHits
+                            + "; Downed=" + wasDowned
+                            + "; ReactionUntil=" + state.MeleeReactionUntil.ToString("O", CultureInfo.InvariantCulture)
+                            + "; Wounded=" + state.Wounded
+                            + "; Arrestable=" + (state.Wounded || IsCompliant(_incident, suspect))
+                            + "; TaskCleared=false; SceneReset=false");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    state.LastHealth = Math.Max(0, suspect.Health);
+                    LogException("POLICE_DISPATCH_SUSPECT_WOUNDED_FLOOR_FAILED", ex);
+                }
+            }
 
             bool handcuffing = _incident != null
                 && _incident.PlayerHandcuffInProgress
@@ -1637,10 +2761,10 @@ namespace LSImmersiveLife
                 || IsArrested(_incident, suspect)
                 || suspect.IsDead || suspect.Health <= 0
                 || suspect.IsInVehicle()
-                || now < state.NextWritheAt)
+                || IsDispatchMeleeRecoveryPending(suspect, now)
+                || state.WritheTaskStarted)
                 return;
 
-            state.NextWritheAt = now.AddSeconds(3);
             try
             {
                 if (Function.Call<bool>(Hash.IS_PED_IN_WRITHE, suspect))
@@ -1648,15 +2772,13 @@ namespace LSImmersiveLife
                     state.WritheTaskStarted = true;
                     return;
                 }
-                if (!state.WritheTaskStarted)
-                    suspect.Task.ClearAll();
+                state.WritheTaskStarted = true;
                 Function.Call(Hash.TASK_WRITHE,
                     suspect,
                     player != null && player.Exists() ? player : suspect,
-                    1, 0, false, 0);
-                state.WritheTaskStarted = true;
+                    -1, 0, false, 0);
                 LogRuntime("POLICE_DISPATCH_SUSPECT_WRITHE_TASK_ISSUED",
-                    "Incident=" + (_incident == null ? string.Empty : _incident.Id)
+                    "Incident=" + state.OccurrenceId
                     + "; Ped=" + suspect.Handle
                     + "; Arrestable=true; Teleport=false; Attachment=false");
             }
@@ -1666,7 +2788,6 @@ namespace LSImmersiveLife
                 {
                     Function.Call(Hash.SET_PED_TO_RAGDOLL,
                         suspect, 3500, 3500, 0, false, false, false);
-                    state.WritheTaskStarted = true;
                 }
                 catch (Exception ragdollException)
                 {
@@ -1677,87 +2798,28 @@ namespace LSImmersiveLife
             }
         }
 
-        private void MaintainNonfatalDispatchInjuryRecovery(
+        private void DisableWoundedSuspectWeapon(
             Ped suspect,
-            DateTime now,
-            DispatchSuspectInjuryState state)
+            LSPDSuspectInjuryState state)
         {
-            if (state == null || !state.Wounded || state.Fatal
-                || (!suspect.IsDead && suspect.Health > 0))
+            if (suspect == null || !suspect.Exists() || state == null
+                || state.WeaponDisabledByInjury)
                 return;
-
-            if (state.NonfatalRecoveryAttempts >= NonfatalInjuryRecoveryMaximumAttempts)
-            {
-                if (!state.NonfatalRecoveryExhaustionLogged)
-                {
-                    state.NonfatalRecoveryExhaustionLogged = true;
-                    LogRuntime("STATE_FAILURE_POLICE_DISPATCH_SUSPECT_INJURY_RECOVERY_EXHAUSTED",
-                        "Incident=" + (_incident == null ? string.Empty : _incident.Id)
-                        + "; Ped=" + suspect.Handle
-                        + "; Attempts=" + state.NonfatalRecoveryAttempts
-                        + "; Health=" + suspect.Health
-                        + "; Dead=" + suspect.IsDead);
-                }
-                return;
-            }
-            if (now < state.NextNonfatalRecoveryAt)
-                return;
-
-            state.NextNonfatalRecoveryAt = now.AddMilliseconds(150);
-            state.NonfatalRecoveryAttempts++;
             try
             {
-                if (suspect.IsDead && !state.NonfatalResurrectionAttempted)
-                {
-                    Function.Call(Hash.RESURRECT_PED, suspect);
-                    state.NonfatalResurrectionAttempted = true;
-                }
-
-                suspect.MaxHealth = state.OriginalMaximumHealth;
-                int healthToRestore = Math.Max(50,
-                    Math.Min(state.OriginalMaximumHealth,
-                        state.OriginalHealth - state.DamageTaken));
-                suspect.Health = healthToRestore;
-                Function.Call(Hash.SET_PED_CONFIG_FLAG, suspect, 2, true);
-
-                int healthAfter = Math.Max(0, suspect.Health);
-                bool aliveAfter = !suspect.IsDead && healthAfter > 0;
-                if (aliveAfter)
-                {
-                    int recoveryAttempts = state.NonfatalRecoveryAttempts;
-                    state.LastHealth = healthAfter;
-                    state.NonfatalRecoveryAttempts = 0;
-                    state.NonfatalRecoveryExhaustionLogged = false;
-                    state.NonfatalResurrectionAttempted = false;
-                    LogRuntime("POLICE_DISPATCH_SUSPECT_INJURY_RETAINED",
-                        "Incident=" + (_incident == null ? string.Empty : _incident.Id)
-                        + "; Ped=" + suspect.Handle
-                        + "; Health=" + healthAfter
-                        + "; Alive=true; Arrestable=true; Attempts="
-                        + recoveryAttempts);
-                    return;
-                }
-
-                LogRuntime("POLICE_DISPATCH_SUSPECT_INJURY_RECOVERY_RETRY",
-                    "Incident=" + (_incident == null ? string.Empty : _incident.Id)
+                suspect.CanSwitchWeapons = false;
+                Function.Call(Hash.SET_CURRENT_PED_WEAPON,
+                    suspect, WeaponHash.Unarmed, true);
+                state.WeaponDisabledByInjury = true;
+                LogRuntime("POLICE_DISPATCH_SUSPECT_WEAPON_DISABLED_AFTER_WOUND",
+                    "Incident=" + state.OccurrenceId
                     + "; Ped=" + suspect.Handle
-                    + "; Attempt=" + state.NonfatalRecoveryAttempts
-                    + "; Health=" + healthAfter
-                    + "; Dead=" + suspect.IsDead);
+                    + "; CurrentWeapon=Unarmed; InventoryRemoved=false");
             }
             catch (Exception ex)
             {
-                LogException("POLICE_DISPATCH_SUSPECT_INJURY_RECOVERY_FAILED", ex);
+                LogException("POLICE_DISPATCH_SUSPECT_WEAPON_DISABLE_FAILED", ex);
             }
-        }
-
-        private bool IsDispatchNonfatalRecoveryPending(Ped suspect)
-        {
-            DispatchSuspectInjuryState state;
-            return suspect != null && suspect.Exists()
-                && _suspectInjuries.TryGetValue(suspect.Handle, out state)
-                && state.Wounded && !state.Fatal
-                && state.NonfatalRecoveryAttempts < NonfatalInjuryRecoveryMaximumAttempts;
         }
 
         private static int ReadDispatchLastDamageBone(Ped suspect)
@@ -1771,10 +2833,102 @@ namespace LSImmersiveLife
                         Hash.GET_PED_LAST_DAMAGE_BONE, suspect, output))
                         bone = output.GetResult<int>();
                 }
-                Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, suspect);
             }
             catch { }
             return bone;
+        }
+
+        private static void ClearDispatchLastDamageBone(Ped suspect)
+        {
+            try { Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, suspect); }
+            catch { }
+        }
+
+        private static ControlledDamageKind ReadDispatchDamageKind(
+            Ped suspect,
+            int damageWeaponHash,
+            bool damageRecordAvailable)
+        {
+            if (suspect == null || !suspect.Exists())
+                return ControlledDamageKind.Unknown;
+            try
+            {
+                if (damageRecordAvailable && damageWeaponHash != 0)
+                {
+                    WeaponGroup group = Function.Call<WeaponGroup>(
+                        Hash.GET_WEAPONTYPE_GROUP, unchecked((uint)damageWeaponHash));
+                    return group == WeaponGroup.Melee || group == WeaponGroup.Unarmed
+                        ? ControlledDamageKind.Melee
+                        : ControlledDamageKind.Weapon;
+                }
+                if (suspect.HasBeenDamagedByAnyMeleeWeapon())
+                    return ControlledDamageKind.Melee;
+                if (suspect.HasBeenDamagedByAnyWeapon())
+                    return ControlledDamageKind.Weapon;
+            }
+            catch { }
+            return ControlledDamageKind.Unknown;
+        }
+
+        private static bool TryReadDispatchDamageRecord(
+            Ped suspect,
+            out int weaponHash,
+            out int attackerHandle,
+            out int gameTime)
+        {
+            weaponHash = 0;
+            attackerHandle = 0;
+            gameTime = 0;
+            if (suspect == null || !suspect.Exists())
+                return false;
+            try
+            {
+                EntityDamageRecord[] records = suspect.DamageRecords.GetAllDamageRecords();
+                if (records == null || records.Length == 0)
+                    return false;
+                EntityDamageRecord latest = records[0];
+                for (int i = 1; i < records.Length; i++)
+                    if (records[i].GameTime >= latest.GameTime)
+                        latest = records[i];
+                weaponHash = (int)latest.WeaponHash;
+                attackerHandle = latest.Attacker == null ? 0 : latest.Attacker.Handle;
+                gameTime = latest.GameTime;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool IsDispatchMeleeRecoveryPending(Ped suspect, DateTime now)
+        {
+            LSPDSuspectInjuryState state;
+            if (suspect == null || !suspect.Exists()
+                || !_suspectInjuries.TryGetValue(suspect.Handle, out state)
+                || !state.MeleeReactionPending)
+                return false;
+            if (now < state.MeleeReactionUntil
+                || now < state.NextMeleeRecoveryCheckAt)
+                return true;
+
+            state.NextMeleeRecoveryCheckAt = now.AddMilliseconds(200);
+            bool ragdoll = false;
+            try { ragdoll = Function.Call<bool>(Hash.IS_PED_RAGDOLL, suspect); }
+            catch { }
+            if (ragdoll)
+                return true;
+
+            state.MeleeReactionPending = false;
+            state.MeleeReactionUntil = DateTime.MinValue;
+            LogRuntime("POLICE_DISPATCH_SUSPECT_MELEE_RECOVERED",
+                "Incident=" + state.OccurrenceId
+                + "; Ped=" + suspect.Handle
+                + "; RestoredState=" + (_incident == null ? "Inactive" : _incident.State.ToString())
+                + "; Wounded=" + state.Wounded
+                + "; ArrestActionAvailable=" + (state.Wounded || IsCompliant(_incident, suspect))
+                + "; SamePed=true; SceneReset=false");
+            return false;
         }
 
         private static DispatchHitZone ClassifyDispatchHitZone(int bone)
@@ -1820,14 +2974,36 @@ namespace LSImmersiveLife
         {
             if (suspect == null || !suspect.Exists())
                 return;
-            DispatchSuspectInjuryState state;
+            LSPDSuspectInjuryState state;
             if (!_suspectInjuries.TryGetValue(suspect.Handle, out state))
                 return;
             try
             {
                 suspect.MaxHealth = Math.Max(1, state.OriginalMaximumHealth);
-                Function.Call(Hash.SET_PED_CONFIG_FLAG,
-                    suspect, 2, state.OriginalNoCriticalHits);
+                bool custodyOwned = IsPedPhysicallyCuffed(suspect)
+                    || IsArrested(_incident, suspect);
+                if (!state.Fatal && !suspect.IsDead && suspect.Health > 0)
+                {
+                    int restoredHealth = Math.Max(1,
+                        state.OriginalHealth - state.DamageTaken);
+                    if (custodyOwned && state.Wounded)
+                        restoredHealth = Math.Max(restoredHealth,
+                            _injurySettings.ArrestableWoundedHealthFloor);
+                    suspect.Health = Math.Min(state.OriginalMaximumHealth,
+                        restoredHealth);
+                }
+                suspect.CanSufferCriticalHits = state.OriginalCanSufferCriticalHits;
+                if (custodyOwned)
+                    suspect.CanSwitchWeapons = false;
+                else
+                {
+                    suspect.CanSwitchWeapons = state.OriginalCanSwitchWeapons;
+                    if (state.WeaponDisabledByInjury && !suspect.IsDead
+                        && suspect.Health > 0
+                        && state.OriginalSelectedWeaponHash != 0)
+                        Function.Call(Hash.SET_CURRENT_PED_WEAPON,
+                            suspect, state.OriginalSelectedWeaponHash, true);
+                }
             }
             catch (Exception ex)
             {
@@ -1838,7 +3014,7 @@ namespace LSImmersiveLife
 
         private void RestoreAllSuspectInjuryStates()
         {
-            foreach (DispatchSuspectInjuryState state in _suspectInjuries.Values.ToArray())
+            foreach (LSPDSuspectInjuryState state in _suspectInjuries.Values.ToArray())
                 if (state != null)
                     RestoreSuspectInjuryState(state.Actor);
             _suspectInjuries.Clear();
@@ -1860,12 +3036,47 @@ namespace LSImmersiveLife
                 && incident.ArrestedSuspects.Count > 0;
         }
 
+        private static bool HasDeadArrestedSuspect(LSPDDispatchEvent incident)
+        {
+            return incident != null
+                && incident.ArrestedSuspects != null
+                && incident.ArrestedSuspects.Any(ped => ped != null && ped.Exists()
+                    && (ped.IsDead || ped.Health <= 0));
+        }
+
+        private string FailUnfinishedArrestedCustody(LSPDDispatchEvent incident)
+        {
+            if (HasDeadArrestedSuspect(incident))
+            {
+                const string deathReason =
+                    "A suspect died while in Police custody. The Dispatch assignment has ended; no transport will be recorded.";
+                Fail(deathReason, "lsimmersivelife.police.dispatch.closed");
+                return "A suspect died in Police custody. Dispatch has ended.";
+            }
+
+            const string lostReason =
+                "An arrested suspect was lost before prisoner transport completed.";
+            Fail(lostReason);
+            return "Prisoner custody failed because the arrested suspect was lost before transport completed.";
+        }
+
         private static void AddCompliantSuspect(LSPDDispatchEvent incident, Ped suspect)
         {
-            if (incident == null || suspect == null || incident.CompliantSuspects == null
+            if (incident == null || suspect == null)
+                return;
+            incident.SuspectResponses[suspect.Handle] = "comply";
+            incident.PursuitContainedSuspectHandles.Add(suspect.Handle);
+            if (incident.CompliantSuspects == null
                 || IsCompliant(incident, suspect))
                 return;
             incident.CompliantSuspects.Add(suspect);
+        }
+
+        private static void MarkSuspectFleeing(LSPDDispatchEvent incident, Ped suspect)
+        {
+            if (incident == null || suspect == null || !suspect.Exists() || suspect.IsDead)
+                return;
+            incident.SuspectResponses[suspect.Handle] = "flee";
         }
 
         private static void AddArrestedSuspect(LSPDDispatchEvent incident, Ped suspect)
@@ -1876,7 +3087,29 @@ namespace LSImmersiveLife
             incident.ArrestedSuspects.Add(suspect);
         }
 
-        internal bool TransferCustodyOwnershipToConvoy()
+        internal IList<LSPDSuspectInjuryState> CreateCustodyInjuryHandoff()
+        {
+            List<LSPDSuspectInjuryState> states = new List<LSPDSuspectInjuryState>();
+            foreach (Ped prisoner in CurrentArrestedSuspects)
+            {
+                if (prisoner == null || !prisoner.Exists() || prisoner.IsDead
+                    || prisoner.Health <= 0)
+                    continue;
+                CaptureDispatchSuspectInjuryState(prisoner, _incident);
+                MaintainDispatchSuspectInjury(
+                    prisoner, DateTime.UtcNow, Game.Player.Character);
+                LSPDSuspectInjuryState state;
+                if (!_suspectInjuries.TryGetValue(prisoner.Handle, out state)
+                    || state == null || state.Fatal
+                    || prisoner.IsDead || prisoner.Health <= 0)
+                    return new List<LSPDSuspectInjuryState>();
+                states.Add(state);
+            }
+            return states;
+        }
+
+        internal bool TransferCustodyOwnershipToConvoy(
+            IList<LSPDSuspectInjuryState> adoptedInjuryStates)
         {
             List<Ped> prisoners = CurrentArrestedSuspects.ToList();
             if (_incident == null || prisoners.Count == 0)
@@ -1892,9 +3125,37 @@ namespace LSImmersiveLife
                     + string.Join(",", prisoners.Select(ped => ped.Handle.ToString()).ToArray()));
                 return true;
             }
+            if (adoptedInjuryStates == null
+                || prisoners.Any(prisoner => !adoptedInjuryStates.Any(state =>
+                    state != null && state.Actor != null && state.Actor.Exists()
+                    && state.Actor.Handle == prisoner.Handle)))
+                return false;
+
             _incident.OwnedByDispatch = false;
             _incident.SurrenderRequested = false;
             _incident.HasConvoyCustodyHandoff = true;
+            foreach (LSPDSuspectInjuryState state in adoptedInjuryStates)
+            {
+                if (state == null || state.Actor == null || !state.Actor.Exists())
+                    continue;
+                LSPDSuspectInjuryState tracked;
+                if (_suspectInjuries.TryGetValue(state.Actor.Handle, out tracked)
+                    && object.ReferenceEquals(tracked, state))
+                {
+                    state.RuntimeOwner = "Convoy";
+                    _suspectInjuries.Remove(state.Actor.Handle);
+                    LogRuntime("POLICE_DISPATCH_INJURY_OWNERSHIP_TRANSFERRED",
+                        "Incident=" + state.OccurrenceId
+                        + "; Ped=" + state.Actor.Handle
+                        + "; From=Dispatch; To=Convoy"
+                        + "; Health=" + state.Actor.Health
+                        + "; MaximumHealth=" + state.Actor.MaxHealth
+                        + "; CumulativeDamage=" + state.DamageTaken
+                        + "; LastDamageKind=" + (state.LastDamageKind ?? "Unknown")
+                        + "; Cuffed=" + IsPedPhysicallyCuffed(state.Actor)
+                        + "; DispatchRestoreSuppressed=true");
+                }
+            }
             // Convoy is now the sole owner of the prisoner, transport, and
             // custody markers. Leaving the Dispatch scene/suspect markers in
             // place created duplicate blue targets when the station handoff
@@ -1926,7 +3187,8 @@ namespace LSImmersiveLife
 
         internal bool RecoverCustodyFromConvoy(
             IEnumerable<Ped> prisoners,
-            string reason)
+            string reason,
+            IEnumerable<LSPDSuspectInjuryState> convoyInjuryStates = null)
         {
             List<Ped> valid = prisoners == null
                 ? new List<Ped>()
@@ -1935,6 +3197,13 @@ namespace LSImmersiveLife
                 return false;
             try
             {
+                Dictionary<int, LSPDSuspectInjuryState> returnedInjuryStates =
+                    convoyInjuryStates == null
+                        ? new Dictionary<int, LSPDSuspectInjuryState>()
+                        : convoyInjuryStates.Where(state => state != null
+                                && state.Actor != null && state.Actor.Exists())
+                            .GroupBy(state => state.Actor.Handle)
+                            .ToDictionary(group => group.Key, group => group.First());
                 List<Ped> retainedDead = TrackedSuspects(_incident)
                     .Where(ped => ped != null && ped.Exists() && ped.IsDead)
                     .ToList();
@@ -1955,7 +3224,36 @@ namespace LSImmersiveLife
                     prisoner.IsPersistent = true;
                     prisoner.BlockPermanentEvents = true;
                     prisoner.CanSwitchWeapons = false;
+                    Function.Call(Hash.SET_PED_CONFIG_FLAG,
+                        prisoner, HandcuffedPedConfigFlag, true);
                     Function.Call(Hash.SET_ENABLE_HANDCUFFS, prisoner, true);
+                    LSPDSuspectInjuryState injuryState;
+                    if (returnedInjuryStates.TryGetValue(prisoner.Handle, out injuryState)
+                        && !injuryState.Fatal && prisoner.Health > 0)
+                    {
+                        injuryState.Actor = prisoner;
+                        injuryState.RuntimeOwner = "Dispatch";
+                        injuryState.LastHealth = Math.Max(1, prisoner.Health);
+                        injuryState.LastConvoyHealthCheckAt = DateTime.MinValue;
+                        injuryState.ConvoyTerminalLogged = false;
+                        prisoner.MaxHealth = Math.Max(
+                            injuryState.ManagedMaximumHealth, prisoner.MaxHealth);
+                        prisoner.CanSufferCriticalHits = false;
+                        _suspectInjuries[prisoner.Handle] = injuryState;
+                        if (injuryState.Wounded
+                            && prisoner.Health < injuryState.ArrestableWoundedHealthFloor)
+                            prisoner.Health = injuryState.ArrestableWoundedHealthFloor;
+                        injuryState.LastHealth = Math.Max(1, prisoner.Health);
+                        LogRuntime("POLICE_CUSTODY_INJURY_OWNERSHIP_RETURNED",
+                            "Incident=" + injuryState.OccurrenceId
+                            + "; Ped=" + prisoner.Handle
+                            + "; From=Convoy; To=Dispatch"
+                            + "; Health=" + prisoner.Health
+                            + "; MaximumHealth=" + prisoner.MaxHealth
+                            + "; Cuffed=" + IsPedPhysicallyCuffed(prisoner)
+                            + "; CumulativeDamage=" + injuryState.DamageTaken
+                            + "; LastDamageKind=" + (injuryState.LastDamageKind ?? "Unknown"));
+                    }
                 }
                 SetState(LSPDDispatchState.Arrested);
                 SetSuspectBlip(valid[0]);
@@ -2002,21 +3300,29 @@ namespace LSImmersiveLife
             return "Prisoner delivered and booking completed. Dispatch completed.";
         }
 
+        internal string CompleteTransportCrewHandoff()
+        {
+            if (_incident == null)
+                return "No active Police dispatch remains.";
+            if (!_incident.HasConvoyCustodyHandoff)
+                return "No active prisoner convoy is linked to this Dispatch case.";
+            Complete("Station transport was declined. The loaded suspects remain in transport-officer custody as the crew departs.");
+            return "Station transport declined. Transport crew has custody; Player Dispatch completed.";
+        }
+
         internal string Cancel(string reason)
         {
             if (_incident == null)
                 return "No active dispatch.";
 
             LSPDDispatchEvent incident = _incident;
-            bool preserveDeadAftermath = TrackedSuspects(incident)
-                .Any(ped => ped != null && ped.Exists() && ped.IsDead);
             Terminate(
                 incident,
                 LSPDDispatchState.Cancelled,
                 reason,
                 "lsimmersivelife.police.dispatch.cancelled",
                 "cancelled",
-                preserveDeadAftermath);
+                true);
             LogRuntime("POLICE_DISPATCH_CANCELLED", incident.Title + " | Reason=" + reason);
             return "Dispatch cancelled and Police-owned scene state cleaned.";
         }
@@ -2024,6 +3330,7 @@ namespace LSImmersiveLife
         internal void Reset()
         {
             RestoreAllSuspectInjuryStates();
+            CancelPendingOffer("Dispatch was reset.");
             if (_incident != null)
             {
                 CloseActiveAudio(_incident);
@@ -2036,6 +3343,7 @@ namespace LSImmersiveLife
             CleanupBlipsAndWaypoint();
             _cooldownUntil = DateTime.MinValue;
             _nextOfferAt = DateTime.MinValue;
+            _manualRequestRetryAt = DateTime.MinValue;
             _nextMaintenance = DateTime.MinValue;
             _playerHandcuffHoldUntil = DateTime.MinValue;
             _playerHandcuffAttempts = 0;
@@ -2048,14 +3356,153 @@ namespace LSImmersiveLife
             _lastSecuredPoseTaskAt.Clear();
         }
 
+        private bool MaintainStoppedPursuitVehicle(
+            LSPDDispatchEvent incident,
+            Ped suspect,
+            Ped player,
+            DateTime now)
+        {
+            if (incident == null || suspect == null || !suspect.Exists()
+                || suspect.IsDead || suspect.Health <= 0)
+                return false;
+            Vehicle vehicle = incident.VehicleForSuspect(suspect);
+            if (vehicle == null || !vehicle.Exists())
+                return false;
+
+            int pedHandle = suspect.Handle;
+            DateTime stoppedAt;
+            bool hasStoppedTimestamp = incident.PursuitVehicleStoppedAt.TryGetValue(
+                pedHandle, out stoppedAt);
+            bool exitRequested = incident.PursuitVehicleExitRequestedHandles.Contains(
+                pedHandle);
+
+            if (!suspect.IsInVehicle())
+            {
+                if (exitRequested)
+                {
+                    incident.PursuitVehicleExitRequestedHandles.Remove(pedHandle);
+                    incident.PursuitVehicleExitTaskAt.Remove(pedHandle);
+                    LogRuntime("POLICE_DISPATCH_PURSUIT_DRIVER_EXITED_STOPPED_VEHICLE",
+                        "Incident=" + incident.Id + "; Ped=" + pedHandle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; PlayerDistance=" + (player == null || !player.Exists()
+                            ? "unknown" : player.Position.DistanceTo(suspect.Position)
+                                .ToString("0.0", CultureInfo.InvariantCulture)));
+                    if (player != null && player.Exists()
+                        && player.Position.DistanceTo(suspect.Position) <= ArrestRadius + 4f
+                        && !IsDownedOrInjured(suspect)
+                        && !IsCompliant(incident, suspect))
+                    {
+                        OrderSuspectToComply(suspect, player, false);
+                        return true;
+                    }
+                }
+
+                if (hasStoppedTimestamp && now < stoppedAt.AddSeconds(8))
+                    return true;
+                incident.PursuitVehicleStoppedAt.Remove(pedHandle);
+                incident.PursuitVehicleExitTaskAt.Remove(pedHandle);
+                return false;
+            }
+
+            Vehicle currentVehicle = suspect.CurrentVehicle;
+            if (currentVehicle == null || !currentVehicle.Exists()
+                || currentVehicle.Handle != vehicle.Handle)
+                return false;
+
+            float speed = Math.Abs(vehicle.Speed);
+            if (!exitRequested && speed > 1.25f)
+            {
+                incident.PursuitVehicleStoppedAt.Remove(pedHandle);
+                incident.PursuitVehicleExitTaskAt.Remove(pedHandle);
+                return false;
+            }
+
+            if (!hasStoppedTimestamp)
+            {
+                stoppedAt = now;
+                incident.PursuitVehicleStoppedAt[pedHandle] = stoppedAt;
+                hasStoppedTimestamp = true;
+            }
+            if (now < stoppedAt.AddMilliseconds(1200))
+                return true;
+
+            if (!exitRequested)
+            {
+                int baselineHealth;
+                if (!incident.PursuitVehicleHealthAtStart.TryGetValue(
+                        vehicle.Handle, out baselineHealth))
+                {
+                    baselineHealth = vehicle.Health;
+                    incident.PursuitVehicleHealthAtStart[vehicle.Handle] = baselineHealth;
+                }
+                bool collisionDamaged = baselineHealth - vehicle.Health >= 100;
+                bool undriveable = !vehicle.IsDriveable;
+                float playerDistance = player == null || !player.Exists()
+                    ? float.MaxValue : player.Position.DistanceTo(vehicle.Position);
+                bool playerVehicleBlock = false;
+                try
+                {
+                    Vehicle playerVehicle = player == null || !player.Exists()
+                        ? null : player.CurrentVehicle;
+                    playerVehicleBlock = playerVehicle != null && playerVehicle.Exists()
+                        && playerVehicle.Position.DistanceTo(vehicle.Position) <= 16f
+                        && Math.Abs(playerVehicle.Speed) <= 5f;
+                }
+                catch { }
+                bool playerFootBlock = player != null && player.Exists()
+                    && !player.IsInVehicle()
+                    && playerDistance <= ArrestRadius + 1f;
+                if (!collisionDamaged && !undriveable
+                    && !playerVehicleBlock && !playerFootBlock)
+                {
+                    incident.PursuitVehicleStoppedAt.Remove(pedHandle);
+                    return false;
+                }
+
+                incident.PursuitVehicleExitRequestedHandles.Add(pedHandle);
+                LogRuntime("POLICE_DISPATCH_PURSUIT_STOPPED_VEHICLE_EXIT_REQUESTED",
+                    "Incident=" + incident.Id + "; Ped=" + pedHandle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Speed=" + speed.ToString("0.0")
+                    + "; HealthBaseline=" + baselineHealth
+                    + "; HealthNow=" + vehicle.Health
+                    + "; CollisionDamaged=" + collisionDamaged
+                    + "; Undriveable=" + undriveable
+                    + "; PlayerVehicleBlock=" + playerVehicleBlock
+                    + "; PlayerFootBlock=" + playerFootBlock);
+                exitRequested = true;
+            }
+
+            DateTime nextExitTaskAt;
+            if (!incident.PursuitVehicleExitTaskAt.TryGetValue(
+                    pedHandle, out nextExitTaskAt) || now >= nextExitTaskAt)
+            {
+                try
+                {
+                    Function.Call(Hash.TASK_LEAVE_VEHICLE, suspect, vehicle, 0);
+                    incident.PursuitVehicleExitTaskAt[pedHandle] = now.AddSeconds(3);
+                    LogRuntime("POLICE_DISPATCH_PURSUIT_STOPPED_VEHICLE_EXIT_TASK",
+                        "Incident=" + incident.Id + "; Ped=" + pedHandle
+                        + "; Vehicle=" + vehicle.Handle + "; RetrySeconds=3");
+                }
+                catch (Exception ex)
+                {
+                    incident.PursuitVehicleExitTaskAt[pedHandle] = now.AddSeconds(3);
+                    LogException("POLICE_DISPATCH_PURSUIT_STOPPED_VEHICLE_EXIT_FAILED", ex);
+                }
+            }
+            return true;
+        }
+
         private void MaintainIncident(DateTime now, Ped player)
         {
             if (_incident == null)
                 return;
 
-            // An offered call is only information. The scene must not start
-            // streaming or create owned actors until the officer explicitly
-            // accepts it; declining therefore leaves no world event behind.
+            // Locally produced offers have already passed scene preflight, but
+            // their behavior remains dormant until acceptance. Offers supplied
+            // by another producer stay informational until that owner accepts.
             if (_incident.State == LSPDDispatchState.Offered)
                 return;
 
@@ -2091,6 +3538,33 @@ namespace LSImmersiveLife
                 }
             }
 
+            // Settle a physically observed terminal scene from the maintenance
+            // loop as soon as its final living suspect is gone. Previously the
+            // case could remain active until the Player reopened the menu and
+            // issued another arrest/investigate command against a corpse.
+            if (_incident.ScenePreparationCompleted
+                && !LiveSuspects(_incident).Any()
+                && IsPlayerAtResolvedDispatchScene(_incident, player))
+            {
+                if (HasPendingVictimInvestigation
+                    && !TryRecordMurderVictimInvestigation(_incident, player))
+                    return;
+                if (HasUnfinishedArrestedCustody(_incident))
+                {
+                    FailUnfinishedArrestedCustody(_incident);
+                    return;
+                }
+
+                string completion = CompletionMessage(_incident, true);
+                LogRuntime("POLICE_DISPATCH_DEATH_SCENE_SETTLED",
+                    "Incident=" + _incident.Id
+                    + "; Suspects=" + TrackedSuspects(_incident).Count()
+                    + "; Player=" + (player == null ? 0 : player.Handle)
+                    + "; Reason=NO_LIVING_SUSPECTS_AT_OBSERVED_SCENE");
+                Complete(completion);
+                return;
+            }
+
             // The accepted Dispatch scene is a live world activity during
             // travel. Previously EnsureScene was reached only through the
             // manual Investigate command, leaving the suspect frozen until
@@ -2098,7 +3572,12 @@ namespace LSImmersiveLife
             // authored behavior once, after the owned entities exist; the
             // state guard inside StartSceneBehavior prevents task spam.
             if (_incident.ScenePreparationCompleted
-                && !_incident.SceneBehaviorInitialized)
+                && !_incident.SceneBehaviorInitialized
+                && !TrackedSuspects(_incident).Any(value =>
+                    IsDispatchMeleeRecoveryPending(value, now)
+                    || IsWoundedSuspect(value))
+                && (!_incident.PreArrivalSceneBehaviorInitialized
+                    || IsPlayerNearDispatchOrigin(player)))
             {
                 StartSceneBehavior(player);
                 // StartSceneBehavior can fail and terminate an invalid scene
@@ -2109,14 +3588,35 @@ namespace LSImmersiveLife
                     return;
             }
 
+            ReportSceneApproach(player);
+            MaintainEnRouteStatus(now);
+            MaintainPursuitWaypoint(now, player);
+            if (_incident != null && _incident.SceneBehaviorInitialized
+                && _incident.SuspectResponseBranches != null
+                && _incident.SuspectResponseBranches.Count > 0
+                && !_incident.PlayerEncounterResponseStarted
+                && !TrackedSuspects(_incident).Any(value =>
+                    IsDispatchMeleeRecoveryPending(value, now))
+                && IsPlayerNearDispatchOrigin(player))
+                StartPlayerEncounterResponse(player);
+            MaintainInteriorStoreUtilityParking(player);
+
             Ped suspect = _incident.Suspect;
             if (suspect != null && suspect.Exists())
             {
-                TryStartInteriorStoreRobberyFlight(player);
-                MaintainStagedSceneBehavior(now);
-                bool visibleCompliance = _incident.CompliantSuspects != null
-                    && _incident.CompliantSuspects.Any(value => value != null && value.Exists()
-                        && !value.IsDead && value.Health > 0
+                bool meleeReactionPending = IsDispatchMeleeRecoveryPending(suspect, now);
+                bool wounded = IsWoundedSuspect(suspect);
+                if (!meleeReactionPending && !wounded)
+                {
+                    TryStartInteriorStoreRobberyFlight(player);
+                    MaintainStagedSceneBehavior(now);
+                }
+                ReportSuspectGunfire(player);
+                List<Ped> unresolvedSuspects = LiveSuspects(_incident)
+                    .Where(value => !IsArrested(_incident, value))
+                    .ToList();
+                bool visibleCompliance = unresolvedSuspects.Count > 0
+                    && unresolvedSuspects.All(value => IsCompliant(_incident, value)
                         && !IsWoundedSuspect(value)
                         && !value.IsInCombatAgainst(player) && !value.IsShooting);
                 if (_incident.SurrenderRequested && visibleCompliance &&
@@ -2138,56 +3638,129 @@ namespace LSImmersiveLife
                 if (_suspectBlip != null && _suspectBlip.Exists())
                     _suspectBlip.Position = suspect.Position;
 
-                bool interiorEscapeManaged = MaintainInteriorSuspectEscape(now, suspect, player);
+                bool interiorEscapeManaged = !meleeReactionPending && !wounded
+                    && MaintainInteriorSuspectEscape(now, suspect, player);
 
-                // Do not report a pursuit as physically fled until the target
-                // has moved.  If the task stalled, reissue it at a low rate so
-                // the vehicle/foot suspect remains an actual world actor.
+                // Sample the selected flee branch, not just the legacy primary
+                // suspect. This lets a group advance to its remaining runner
+                // after another member complies or is wounded.
+                bool interiorScene = _incident.SceneResolution != null
+                    && _incident.SceneResolution.IsInteriorScene;
+                Ped pursuitMovementTarget = interiorScene
+                    ? suspect : _incident.CurrentPursuitTarget;
                 if (_incident.State == LSPDDispatchState.SuspectFleeing
-                    && !IsWoundedSuspect(suspect))
+                    && pursuitMovementTarget != null
+                    && pursuitMovementTarget.Exists()
+                    && !IsCompliant(_incident, pursuitMovementTarget)
+                    && !IsWoundedSuspect(pursuitMovementTarget)
+                    && !IsDispatchMeleeRecoveryPending(pursuitMovementTarget, now))
                 {
                     if (now >= _incident.LastMovementSampleAt.AddSeconds(2))
                     {
-                        float moved = suspect.Position.DistanceTo(_incident.LastSuspectPosition);
-                        if (moved >= 3f)
+                        bool targetChanged = _incident.LastMovementSampleTargetHandle
+                            != pursuitMovementTarget.Handle;
+                        if (targetChanged)
+                        {
+                            _incident.LastMovementSampleTargetHandle = pursuitMovementTarget.Handle;
+                            _incident.LastSuspectPosition = pursuitMovementTarget.Position;
+                            _incident.SuspectMovementConfirmed = false;
+                        }
+                        bool stoppedVehicleManaged = !interiorScene
+                            && MaintainStoppedPursuitVehicle(
+                                _incident, pursuitMovementTarget, player, now);
+                        float moved = targetChanged ? 0f
+                            : pursuitMovementTarget.Position.DistanceTo(
+                                _incident.LastSuspectPosition);
+                        if (!stoppedVehicleManaged && moved >= 3f)
                         {
                             if (!_incident.SuspectMovementConfirmed)
                             {
                                 _incident.SuspectMovementConfirmed = true;
                                 LogRuntime("POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED",
-                                    "Type=" + _incident.IncidentType + "; Distance=" + moved.ToString("0.0", CultureInfo.InvariantCulture));
+                                    "Type=" + _incident.IncidentType
+                                    + "; Ped=" + pursuitMovementTarget.Handle
+                                    + "; Distance=" + moved.ToString("0.0", CultureInfo.InvariantCulture));
                             }
                         }
-                        else if (!_incident.SuspectMovementConfirmed && !suspect.IsDead
-                            && !interiorEscapeManaged)
+                        else if (!stoppedVehicleManaged && !targetChanged
+                            && !_incident.SuspectMovementConfirmed
+                            && !pursuitMovementTarget.IsDead
+                            && !(pursuitMovementTarget.Handle == suspect.Handle
+                                && interiorEscapeManaged))
                         {
                             try
                             {
-                                Ped playerTarget = player != null && player.Exists() ? player : Game.Player.Character;
-                                if (_incident.SuspectVehicle != null && _incident.SuspectVehicle.Exists() && playerTarget != null)
-                                    suspect.Task.VehicleChase(playerTarget);
+                                Ped playerTarget = player != null && player.Exists()
+                                    ? player : Game.Player.Character;
+                                Vehicle assignedVehicle = _incident.VehicleForSuspect(
+                                    pursuitMovementTarget);
+                                if (assignedVehicle != null && assignedVehicle.Exists()
+                                    && pursuitMovementTarget.IsInVehicle()
+                                    && pursuitMovementTarget.CurrentVehicle != null
+                                    && pursuitMovementTarget.CurrentVehicle.Exists()
+                                    && pursuitMovementTarget.CurrentVehicle.Handle
+                                        == assignedVehicle.Handle
+                                    && playerTarget != null)
+                                    pursuitMovementTarget.Task.VehicleChase(playerTarget);
                                 else if (playerTarget != null)
-                                    suspect.Task.ReactAndFlee(playerTarget);
+                                    pursuitMovementTarget.Task.ReactAndFlee(playerTarget);
                             }
-                            catch (Exception ex) { LogException("POLICE_DISPATCH_PURSUIT_REISSUE_FAILED", ex); }
+                            catch (Exception ex)
+                            {
+                                LogException("POLICE_DISPATCH_PURSUIT_REISSUE_FAILED", ex);
+                            }
                         }
-                        _incident.LastSuspectPosition = suspect.Position;
+                        _incident.LastSuspectPosition = pursuitMovementTarget.Position;
                         _incident.LastMovementSampleAt = now;
                     }
                 }
             }
         }
 
+        private static bool IsMappedInteriorDispatchBehavior(string sceneBehavior)
+        {
+            return string.Equals(sceneBehavior, "interior_store_custody",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sceneBehavior, "interior_robbery_custody",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sceneBehavior, "interior_attack_attempt",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sceneBehavior, "murder_victim_interior",
+                    StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsPlayerInsideMappedIncidentInterior(Ped player)
+        {
+            int playerInteriorId;
+            return _incident != null
+                && _incident.SceneResolution != null
+                && _incident.SceneResolution.IsMappedInteriorDispatchScene
+                && player != null && player.Exists() && !player.IsDead
+                && _ambientWorld != null
+                && _ambientWorld.TryGetActorInteriorId(player, out playerInteriorId)
+                && playerInteriorId == _incident.SceneResolution.InteriorId;
+        }
+
         private void TryStartInteriorStoreRobberyFlight(Ped player)
         {
             if (_incident == null
                 || _incident.State != LSPDDispatchState.Investigating
-                || !string.Equals(_incident.IncidentType, "store_robbery",
-                    StringComparison.OrdinalIgnoreCase)
+                || (!string.Equals(_incident.IncidentType, "store_robbery",
+                        StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(_incident.IncidentType, "bank_robbery",
+                        StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(_incident.SceneBehavior, "interior_attack_attempt",
+                        StringComparison.OrdinalIgnoreCase))
                 || _incident.SceneResolution == null
                 || !_incident.SceneResolution.IsInteriorScene
                 || player == null || !player.Exists() || player.IsDead || player.IsInVehicle())
                 return;
+
+            if (IsMappedInteriorDispatchBehavior(_incident.SceneBehavior))
+            {
+                TryStartInteriorStoreRobberyEscalation(player);
+                return;
+            }
 
             int playerInteriorId;
             if (_ambientWorld == null
@@ -2219,6 +3792,7 @@ namespace LSImmersiveLife
                 if (!aimingAtSuspect)
                     continue;
 
+                MarkSuspectFleeing(_incident, suspect);
                 SetState(LSPDDispatchState.SuspectFleeing);
                 OrderAdditionalSuspectsToFlee(player);
                 Notify("~r~POLICE DISPATCH~s~\nThe suspect is fleeing through the mapped entrance.");
@@ -2235,6 +3809,141 @@ namespace LSImmersiveLife
                     + "; Trigger=PlayerAimingAtSuspect");
                 return;
             }
+        }
+
+        private void TryStartInteriorStoreRobberyEscalation(Ped player)
+        {
+            if (_incident == null
+                || !_incident.OwnedByDispatch || _incident.HasConvoyCustodyHandoff
+                || !_incident.SceneBehaviorInitialized
+                || !IsMappedInteriorDispatchBehavior(_incident.SceneBehavior)
+                || player == null || !player.Exists() || player.IsDead || player.IsInVehicle())
+                return;
+
+            int playerInteriorId;
+            if (_ambientWorld == null
+                || !_ambientWorld.TryGetActorInteriorId(player, out playerInteriorId)
+                || _incident.SceneResolution == null
+                || playerInteriorId != _incident.SceneResolution.InteriorId)
+                return;
+
+            foreach (Ped suspect in LiveSuspects(_incident))
+            {
+                string selectedResponse;
+                if (_incident.SuspectResponses.TryGetValue(suspect.Handle, out selectedResponse)
+                    && string.Equals(selectedResponse, "resist", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                int suspectInteriorId;
+                if (!_ambientWorld.TryGetActorInteriorId(suspect, out suspectInteriorId)
+                    || suspectInteriorId != playerInteriorId
+                    || player.Position.DistanceTo(suspect.Position) > SceneArrivalRadius)
+                    continue;
+
+                bool aimingAtSuspect;
+                try
+                {
+                    aimingAtSuspect = Function.Call<bool>(
+                        Hash.IS_PLAYER_FREE_AIMING_AT_ENTITY,
+                        Game.Player.Handle,
+                        suspect);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_INTERIOR_AIM_CHECK_FAILED", ex);
+                    return;
+                }
+                if (!aimingAtSuspect)
+                    continue;
+
+                try
+                {
+                    suspect.Task.Combat(player);
+                    _incident.SuspectEscalationTriggered = true;
+                    _incident.SuspectResponses[suspect.Handle] = "resist";
+                    SetState(LSPDDispatchState.SuspectResisting);
+                    ReportAudioStage(
+                        "lsimmersivelife.police.resistance.armed",
+                        _incident,
+                        "interior-scene-escalation-" + suspect.Handle,
+                        true);
+                    Notify("~r~POLICE DISPATCH~s~\nThe armed suspect is engaging you inside the building.");
+                    LogRuntime(
+                        "POLICE_DISPATCH_INTERIOR_SUSPECT_ESCALATED",
+                        "Incident=" + _incident.Id
+                        + "; Player=" + player.Handle
+                        + "; Suspect=" + suspect.Handle
+                        + "; InteriorId=" + playerInteriorId
+                        + "; Trigger=PlayerAimingAtSuspect");
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_INTERIOR_STORE_ESCALATION_FAILED", ex);
+                }
+                return;
+            }
+        }
+
+        private void MaintainInteriorStoreUtilityParking(Ped player)
+        {
+            if (_incident == null
+                || !IsMappedInteriorDispatchBehavior(_incident.SceneBehavior)
+                || _incident.SceneResolution == null
+                || !_incident.SceneResolution.HasVehicleStagingPosition
+                || player == null || !player.Exists())
+                return;
+
+            if (!player.IsInVehicle())
+                return;
+
+            Vehicle vehicle = player.CurrentVehicle;
+            if (vehicle == null || !vehicle.Exists()
+                || Math.Abs(vehicle.Speed) > 0.5f
+                || vehicle.Position.DistanceTo(
+                    _incident.SceneResolution.VehicleStagingPosition) > 35f)
+                return;
+
+            if (_incident.ParkedPlayerUtility != null
+                && _incident.ParkedPlayerUtility.Exists()
+                && _incident.ParkedPlayerUtility.Handle == vehicle.Handle)
+                return;
+
+            _incident.ParkedPlayerUtility = vehicle;
+            LogRuntime(
+                "POLICE_DISPATCH_INTERIOR_STORE_UTILITY_PARKED",
+                "Incident=" + _incident.Id
+                + "; Vehicle=" + vehicle.Handle
+                + "; DistanceToApproach="
+                + vehicle.Position.DistanceTo(
+                    _incident.SceneResolution.VehicleStagingPosition).ToString("0.0", CultureInfo.InvariantCulture));
+        }
+
+        private void ReportSuspectGunfire(Ped player)
+        {
+            if (_incident == null || _incident.SuspectGunfireReported
+                || !_incident.OwnedByDispatch || _incident.HasConvoyCustodyHandoff
+                || player == null || !player.Exists())
+                return;
+
+            Ped shooter = LiveSuspects(_incident).FirstOrDefault(suspect => suspect.IsShooting);
+            if (shooter == null)
+                return;
+
+            _incident.SuspectGunfireReported = true;
+            if (_incident.State != LSPDDispatchState.Arrested
+                && _incident.State != LSPDDispatchState.AwaitingTransport
+                && _incident.State != LSPDDispatchState.HoldingAtStation
+                && _incident.State != LSPDDispatchState.PrisonTransfer)
+                SetState(LSPDDispatchState.SuspectResisting);
+            ReportAudioStage(
+                "lsimmersivelife.police.emergency.shots_fired",
+                _incident,
+                "suspect-fired",
+                true);
+            Notify("~r~POLICE DISPATCH~s~\nShots fired. The suspect is still an active threat.");
+            LogRuntime(
+                "POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED",
+                "Incident=" + _incident.Id + "; Shooter=" + shooter.Handle
+                + "; Player=" + player.Handle + "; ReportedOnce=true");
         }
 
         private bool MaintainInteriorSuspectEscape(DateTime now, Ped primarySuspect, Ped player)
@@ -2665,6 +4374,8 @@ namespace LSImmersiveLife
                 .Where(ped => ped != null && ped.Exists() && !ped.IsDead
                     && !IsArrested(_incident, ped)))
             {
+                if (IsDispatchMeleeRecoveryPending(suspect, now))
+                    continue;
                 if (_incident.PlayerHandcuffInProgress
                     && suspect.Handle == _incident.PlayerHandcuffTargetHandle)
                     continue;
@@ -2703,7 +4414,8 @@ namespace LSImmersiveLife
                     Function.Call(Hash.SET_ENABLE_HANDCUFFS, suspect, true);
                     Function.Call(Hash.SET_ENTITY_PROOFS,
                         suspect, false, false, false, true, false, false, false, false);
-                    if (!_incident.HasConvoyCustodyHandoff && !suspect.IsInVehicle())
+                    if (!_incident.HasConvoyCustodyHandoff && !suspect.IsInVehicle()
+                        && !IsDispatchMeleeRecoveryPending(suspect, now))
                         MaintainHandcuffedPose(suspect, now, false);
                 }
                 catch (Exception ex)
@@ -2865,7 +4577,8 @@ namespace LSImmersiveLife
 
         private void StartSceneBehavior(Ped player)
         {
-            if (_incident == null || _incident.Suspect == null ||
+            if (_incident == null || _incident.HasConvoyCustodyHandoff
+                || !_incident.OwnedByDispatch || _incident.Suspect == null ||
                 !_incident.Suspect.Exists() || _incident.Suspect.IsDead ||
                 _incident.SceneBehaviorInitialized)
                 return;
@@ -2876,11 +4589,6 @@ namespace LSImmersiveLife
                     _incident.SceneBehavior, "paired_exchange", StringComparison.OrdinalIgnoreCase);
             if (pairedScene)
             {
-                if (player == null || !player.Exists()
-                    || player.Position.DistanceTo(_incident.Origin)
-                        > PairedSceneAnimationApproachDistance)
-                    return;
-
                 bool responseAlreadyStarted = _incident.SurrenderRequested
                     || _incident.PlayerHandcuffInProgress
                     || (_incident.CompliantSuspects != null
@@ -2941,11 +4649,16 @@ namespace LSImmersiveLife
                 }
 
                 _incident.SceneBehaviorInitialized = true;
+                _incident.PreArrivalSceneBehaviorInitialized = true;
                 _incident.SceneBehaviorStage = 1;
                 _incident.SceneBehaviorNextStepAt = DateTime.MinValue;
-                foreach (Ped suspect in LiveSuspects(_incident))
+                List<Ped> liveGroup = LiveSuspects(_incident).ToList();
+                foreach (Ped suspect in liveGroup)
                     suspect.BlockPermanentEvents = true;
-                SetState(LSPDDispatchState.Investigating);
+                if (liveGroup.Count > 2)
+                    PlayConfiguredPreArrivalActivity(liveGroup[2], "guard");
+                if (IsPlayerNearDispatchOrigin(player))
+                    SetState(LSPDDispatchState.Investigating);
                 LogRuntime(
                     "POLICE_DISPATCH_SCENE_ANIMATION_STARTED",
                     "Event=" + _incident.Id
@@ -2959,16 +4672,126 @@ namespace LSImmersiveLife
             _incident.SceneBehaviorStage = 0;
             _incident.SceneBehaviorNextStepAt = DateTime.MinValue;
             string type = (_incident.IncidentType ?? string.Empty).ToLowerInvariant();
+            bool hasAuthoredSuspectResponses = _incident.SuspectResponseBranches != null
+                && _incident.SuspectResponseBranches.Count > 0;
             try
             {
+                bool robberyScene = type == "bank_robbery" || type == "store_robbery";
+                bool mustWaitForPlayerApproach = !robberyScene
+                    && !_incident.StartPursuitOnAccept
+                    && (_incident.Mobile || _incident.Armed || _incident.Severity >= 4)
+                    && !IsPlayerNearDispatchOrigin(player);
+                if (mustWaitForPlayerApproach)
+                {
+                    if (!_incident.PreArrivalSceneBehaviorInitialized)
+                    {
+                        foreach (Ped suspect in LiveSuspects(_incident))
+                        {
+                            suspect.BlockPermanentEvents = true;
+                            PlayConfiguredPreArrivalActivity(
+                                suspect,
+                                _incident.PreArrivalActivity);
+                        }
+                        _incident.PreArrivalSceneBehaviorInitialized = true;
+                        LogRuntime(
+                            "POLICE_DISPATCH_PREARRIVAL_SCENE_ACTIVE",
+                            "Event=" + _incident.Id
+                            + "; Suspects=" + LiveSuspects(_incident).Count()
+                            + "; Activity=" + _incident.PreArrivalActivity
+                            + "; TerminalOutcome=false");
+                    }
+                    _incident.SceneBehaviorInitialized = false;
+                    return;
+                }
+
                 foreach (Ped suspect in LiveSuspects(_incident))
                     suspect.BlockPermanentEvents = true;
 
-                // Robbery callouts are a live scene at the location. Let the
-                // suspect finish leaving the escape vehicle before assigning
-                // the walk and threat pose; consecutive tasks would otherwise
-                // cancel the physical robbery setup on the same tick.
-                if (type == "bank_robbery" || type == "store_robbery")
+                if (IsMappedInteriorDispatchBehavior(_incident.SceneBehavior))
+                {
+                    if (string.Equals(
+                        _incident.SceneBehavior, "murder_victim_interior",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_incident.Victim == null || !_incident.Victim.Exists()
+                            || !_incident.Victim.IsDead || _incident.Victim.Health > 0
+                            || _incident.SceneResolution == null
+                            || !_incident.SceneResolution.IsInteriorScene
+                            || !_incident.SceneResolution.IsMappedInteriorDispatchScene)
+                        {
+                            Fail("The mapped interior murder scene could not start because its dead victim or validated interior was unavailable.");
+                            return;
+                        }
+
+                        if (!_incident.PreArrivalSceneBehaviorInitialized)
+                        {
+                            foreach (Ped suspect in LiveSuspects(_incident))
+                                PlayConfiguredPreArrivalActivity(suspect, "murder_scene");
+                            _incident.PreArrivalSceneBehaviorInitialized = true;
+                        }
+                        _incident.SceneBehaviorStage = 3;
+                        _incident.SceneBehaviorNextStepAt = DateTime.MaxValue;
+                        if (IsPlayerInsideMappedIncidentInterior(player))
+                            SetState(LSPDDispatchState.Investigating);
+                        ReportAudioStage(
+                            "lsimmersivelife.police.scene.active",
+                            _incident,
+                            "mapped-interior-murder-active",
+                            true);
+                        LogRuntime(
+                            "POLICE_DISPATCH_MAPPED_INTERIOR_MURDER_SCENE_STARTED",
+                            "Incident=" + _incident.Id
+                            + "; Suspects=" + string.Join(",", LiveSuspects(_incident)
+                                .Select(value => value.Handle.ToString(CultureInfo.InvariantCulture)))
+                            + "; Victim=" + _incident.Victim.Handle
+                            + "; VictimDead=true"
+                            + "; InteriorId=" + _incident.SceneResolution.InteriorId
+                            + "; PlayerInside=" + IsPlayerInsideMappedIncidentInterior(player)
+                            + "; Threat=SuspectNearVictim; TerminalOutcome=false");
+                        return;
+                    }
+
+                    if (_incident.Victim == null || !_incident.Victim.Exists()
+                        || _incident.Victim.IsDead || _incident.Victim.Health <= 0)
+                    {
+                        Fail("The mapped interior incident could not start because its living victim was not safely placed inside the building.");
+                        return;
+                    }
+
+                    _incident.Victim.BlockPermanentEvents = true;
+                    _incident.Victim.Task.HandsUp(60000);
+                    foreach (Ped suspect in LiveSuspects(_incident))
+                    {
+                        Function.Call(
+                            Hash.TASK_AIM_GUN_AT_ENTITY,
+                            suspect,
+                            _incident.Victim,
+                            -1,
+                            true);
+                    }
+                    _incident.SceneBehaviorStage = 3;
+                    _incident.SceneBehaviorNextStepAt = DateTime.MaxValue;
+                    if (IsPlayerInsideMappedIncidentInterior(player))
+                        SetState(LSPDDispatchState.Investigating);
+                    ReportAudioStage(
+                        "lsimmersivelife.police.scene.active",
+                        _incident,
+                        "mapped-interior-active",
+                        true);
+                    LogRuntime(
+                        "POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED",
+                        "Incident=" + _incident.Id
+                        + "; SceneBehavior=" + _incident.SceneBehavior
+                        + "; Suspects=" + string.Join(",", LiveSuspects(_incident)
+                            .Select(value => value.Handle.ToString(CultureInfo.InvariantCulture)))
+                        + "; Victim=" + _incident.Victim.Handle
+                        + "; InteriorId=" + _incident.SceneResolution.InteriorId
+                        + "; Threat=SuspectsAimingAtLivingVictim");
+                }
+                // Other robbery callouts are live scenes at the location. Let
+                // the suspect finish leaving the escape vehicle before assigning
+                // movement and the threat pose.
+                else if (type == "bank_robbery" || type == "store_robbery")
                 {
                     bool leavingVehicle = _incident.SuspectVehicle != null
                         && _incident.SuspectVehicle.Exists()
@@ -2988,13 +4811,15 @@ namespace LSImmersiveLife
                     {
                         IssueRobberyMovement(DateTime.UtcNow);
                     }
-                    SetState(LSPDDispatchState.Investigating);
+                    if (IsPlayerNearDispatchOrigin(player))
+                        SetState(LSPDDispatchState.Investigating);
                     ReportAudioStage(
                         "lsimmersivelife.police.scene.active",
                         _incident,
-                        "robbery-active");
+                        "robbery-active",
+                        true);
                 }
-                else if (type == "kidnapping")
+                else if (type == "kidnapping" && !hasAuthoredSuspectResponses)
                 {
                     bool interiorScene = _incident.SceneResolution != null
                         && _incident.SceneResolution.IsInteriorScene;
@@ -3006,14 +4831,16 @@ namespace LSImmersiveLife
                         else
                             _incident.Suspect.Task.ReactAndFlee(player);
                     }
+                    MarkSuspectFleeing(_incident, _incident.Suspect);
                     OrderAdditionalSuspectsToFlee(player);
                     SetState(LSPDDispatchState.SuspectFleeing);
                     ReportAudioStage(
                         "lsimmersivelife.police.pursuit.continuing",
                         _incident,
-                        "kidnapping-pursuit");
+                        "kidnapping-pursuit",
+                        true);
                 }
-                else if (type == "carjacking")
+                else if (type == "carjacking" && !hasAuthoredSuspectResponses)
                 {
                     bool interiorScene = _incident.SceneResolution != null
                         && _incident.SceneResolution.IsInteriorScene;
@@ -3025,12 +4852,38 @@ namespace LSImmersiveLife
                         else
                             _incident.Suspect.Task.ReactAndFlee(player);
                     }
+                    MarkSuspectFleeing(_incident, _incident.Suspect);
                     OrderAdditionalSuspectsToFlee(player);
                     SetState(LSPDDispatchState.SuspectFleeing);
                     ReportAudioStage(
                         "lsimmersivelife.police.pursuit.continuing",
                         _incident,
-                        "carjacking-pursuit");
+                        "carjacking-pursuit",
+                        true);
+                }
+                else if (_incident.StartPursuitOnAccept && _incident.RequiresVehicle)
+                {
+                    StartVehiclePursuitOnAccept(player);
+                }
+                else if (_incident.SuspectResponseBranches != null
+                    && _incident.SuspectResponseBranches.Count > 0)
+                {
+                    if (!_incident.PreArrivalSceneBehaviorInitialized)
+                    {
+                        foreach (Ped suspect in LiveSuspects(_incident))
+                            PlayConfiguredPreArrivalActivity(
+                                suspect,
+                                _incident.PreArrivalActivity);
+                        _incident.PreArrivalSceneBehaviorInitialized = true;
+                    }
+                    if (IsPlayerNearDispatchOrigin(player))
+                        SetState(LSPDDispatchState.Investigating);
+                    LogRuntime(
+                        "POLICE_DISPATCH_SCENE_RESPONSE_AWAITING_PLAYER",
+                        "Event=" + _incident.Id
+                        + "; Suspects=" + LiveSuspects(_incident).Count()
+                        + "; Allowed=" + string.Join(",", _incident.SuspectResponseBranches)
+                        + "; PreArrival=" + _incident.PreArrivalActivity);
                 }
                 else if (_incident.Mobile)
                 {
@@ -3044,12 +4897,14 @@ namespace LSImmersiveLife
                         else
                             _incident.Suspect.Task.ReactAndFlee(player);
                     }
+                    MarkSuspectFleeing(_incident, _incident.Suspect);
                     OrderAdditionalSuspectsToFlee(player);
                     SetState(LSPDDispatchState.SuspectFleeing);
                     ReportAudioStage(
                         "lsimmersivelife.police.pursuit.continuing",
                         _incident,
-                        "pursuit");
+                        "pursuit",
+                        true);
                 }
                 else if (_incident.Armed || _incident.Severity >= 4)
                 {
@@ -3059,7 +4914,8 @@ namespace LSImmersiveLife
                     ReportAudioStage(
                         "lsimmersivelife.police.resistance.resisting",
                         _incident,
-                        "resisting");
+                        "resisting",
+                        true);
                 }
                 else
                 {
@@ -3068,7 +4924,8 @@ namespace LSImmersiveLife
                         suspect.Task.LookAt(player, 2500);
                         PlaySceneActivity(suspect, type);
                     }
-                    SetState(LSPDDispatchState.Investigating);
+                    if (IsPlayerNearDispatchOrigin(player))
+                        SetState(LSPDDispatchState.Investigating);
                 }
                 LogRuntime(
                     "POLICE_DISPATCH_SCENE_STARTED",
@@ -3140,28 +4997,512 @@ namespace LSImmersiveLife
                     int suspectInteriorId;
                     if (_ambientWorld.TryGetActorInteriorId(suspect, out suspectInteriorId)
                         && suspectInteriorId == _incident.SceneResolution.InteriorId)
-                        continue;
+                    continue;
                 }
+                MarkSuspectFleeing(_incident, suspect);
                 try { suspect.Task.ReactAndFlee(player); }
                 catch (Exception ex) { LogException("POLICE_DISPATCH_GROUP_FLEE_TASK_FAILED", ex); }
             }
         }
 
-        private bool EnsureScene(Ped player)
+        private bool IsPlayerNearDispatchOrigin(Ped player)
+        {
+            return _incident != null
+                && player != null && player.Exists() && !player.IsDead
+                && player.Position.DistanceTo(_incident.Origin)
+                    <= PairedSceneAnimationApproachDistance;
+        }
+
+        private static bool IsPlayerAtResolvedDispatchScene(
+            LSPDDispatchEvent incident,
+            Ped player)
+        {
+            if (incident == null || player == null || !player.Exists() || player.IsDead)
+                return false;
+            if (player.Position.DistanceTo(incident.Origin) <= SceneArrivalRadius)
+                return true;
+            return TrackedSuspects(incident).Any(suspect => suspect != null
+                && suspect.Exists()
+                && player.Position.DistanceTo(suspect.Position) <= SceneArrivalRadius);
+        }
+
+        private void PlayConfiguredPreArrivalActivity(Ped suspect, string activity)
+        {
+            if (_incident == null || suspect == null || !suspect.Exists()
+                || suspect.IsDead
+                || (suspect.IsInVehicle()
+                    && !string.Equals(activity, "victim_threat", StringComparison.OrdinalIgnoreCase))
+                || string.IsNullOrWhiteSpace(activity))
+                return;
+
+            try
+            {
+                if (string.Equals(activity, "guard", StringComparison.OrdinalIgnoreCase))
+                {
+                    Function.Call(
+                        Hash.TASK_START_SCENARIO_IN_PLACE,
+                        suspect,
+                        "WORLD_HUMAN_GUARD_STAND",
+                        0,
+                        true);
+                    return;
+                }
+
+                if (string.Equals(activity, "murder_scene", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (_incident.Victim == null || !_incident.Victim.Exists()
+                        || !_incident.Victim.IsDead)
+                        return;
+
+                    Vector3 victimPosition = _incident.Victim.Position;
+                    Function.Call(
+                        Hash.TASK_WANDER_IN_AREA,
+                        suspect,
+                        victimPosition.X,
+                        victimPosition.Y,
+                        victimPosition.Z,
+                        2.25f,
+                        3,
+                        6);
+                    return;
+                }
+
+                if (string.Equals(activity, "victim_threat", StringComparison.OrdinalIgnoreCase))
+                {
+                    Ped victim = _incident.Victim;
+                    if (victim == null || !victim.Exists() || victim.IsDead || victim.Health <= 0)
+                        return;
+
+                    if (!_incident.PreArrivalVictimThreatStarted)
+                    {
+                        victim.BlockPermanentEvents = true;
+                        victim.Task.HandsUp(60000);
+                        _incident.PreArrivalVictimThreatStarted = true;
+                    }
+                    suspect.BlockPermanentEvents = true;
+                    Function.Call(
+                        Hash.TASK_AIM_GUN_AT_ENTITY,
+                        suspect,
+                        victim,
+                        -1,
+                        true);
+                    return;
+                }
+
+                if (!string.Equals(activity, "disturbance", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                if (_incident.SceneResolution != null
+                    && _incident.SceneResolution.IsInteriorScene)
+                {
+                    Function.Call(
+                        Hash.TASK_START_SCENARIO_IN_PLACE,
+                        suspect,
+                        "WORLD_HUMAN_STAND_IMPATIENT",
+                        0,
+                        true);
+                    return;
+                }
+
+                Vector3 center = suspect.Position;
+                Function.Call(
+                    Hash.TASK_WANDER_IN_AREA,
+                    suspect,
+                    center.X,
+                    center.Y,
+                    center.Z,
+                    3.0f,
+                    3,
+                    6);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_PREARRIVAL_ACTIVITY_FAILED", ex);
+            }
+        }
+
+        private void StartVehiclePursuitOnAccept(Ped player)
+        {
+            LSPDDispatchEvent incident = _incident;
+            Ped pursuitTarget = player != null && player.Exists() && !player.IsDead
+                ? player : Game.Player.Character;
+            if (incident == null || pursuitTarget == null
+                || !pursuitTarget.Exists() || pursuitTarget.IsDead)
+            {
+                Fail("The vehicle pursuit could not begin because the player target was unavailable.");
+                return;
+            }
+
+            var started = new List<string>();
+            foreach (Ped suspect in LiveSuspects(incident))
+            {
+                Vehicle assignedVehicle = incident.VehicleForSuspect(suspect);
+                if (assignedVehicle == null || !assignedVehicle.Exists()
+                    || !suspect.IsInVehicle() || suspect.CurrentVehicle == null
+                    || !suspect.CurrentVehicle.Exists()
+                    || suspect.CurrentVehicle.Handle != assignedVehicle.Handle)
+                {
+                    LogDebug("POLICE_DISPATCH_VEHICLE_PURSUIT_DRIVER_NOT_READY",
+                        "Incident=" + incident.Id + "; Ped=" + suspect.Handle
+                        + "; AssignedVehicle=" + (assignedVehicle == null
+                            ? 0 : assignedVehicle.Handle));
+                    continue;
+                }
+
+                try
+                {
+                    suspect.BlockPermanentEvents = true;
+                    suspect.CanSwitchWeapons = incident.Armed;
+                    incident.SuspectResponses[suspect.Handle] = "flee";
+                    CapturePursuitVehicleHealthBaseline(incident, suspect);
+                    suspect.Task.VehicleChase(pursuitTarget);
+                    started.Add(suspect.Handle + ":" + assignedVehicle.Handle);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_START_FAILED", ex);
+                }
+            }
+
+            if (started.Count == 0)
+            {
+                Fail("The staged suspect vehicles had no valid drivers for the pursuit.");
+                return;
+            }
+
+            incident.SceneBehaviorStage = 1;
+            incident.SceneBehaviorNextStepAt = DateTime.MaxValue;
+            SetState(LSPDDispatchState.SuspectFleeing);
+            ReportAudioStage(
+                "lsimmersivelife.police.pursuit.continuing",
+                incident,
+                "multi-vehicle-pursuit-started",
+                true);
+            LogRuntime("POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_STARTED",
+                "Incident=" + incident.Id
+                + "; Drivers=" + string.Join(",", started)
+                + "; RequestedVehicles=" + incident.SuspectVehicleCount
+                + "; StartedVehicles=" + started.Count
+                + "; Player=" + pursuitTarget.Handle
+                + "; TerminalOutcome=false");
+        }
+
+        private static void CapturePursuitVehicleHealthBaseline(
+            LSPDDispatchEvent incident,
+            Ped suspect)
+        {
+            if (incident == null || suspect == null || !suspect.Exists())
+                return;
+            Vehicle vehicle = incident.VehicleForSuspect(suspect);
+            if (vehicle == null || !vehicle.Exists()
+                || incident.PursuitVehicleHealthAtStart.ContainsKey(vehicle.Handle))
+                return;
+            incident.PursuitVehicleHealthAtStart[vehicle.Handle] = vehicle.Health;
+        }
+
+        private void StartPlayerEncounterResponse(Ped player)
+        {
+            LSPDDispatchEvent incident = _incident;
+            if (incident == null || incident.PlayerEncounterResponseStarted
+                || !incident.OwnedByDispatch || incident.HasConvoyCustodyHandoff
+                || incident.SuspectResponseBranches == null
+                || incident.SuspectResponseBranches.Count == 0
+                || player == null || !player.Exists() || player.IsDead
+                || player.Position.DistanceTo(incident.Origin)
+                    > PairedSceneAnimationApproachDistance)
+                return;
+
+            DateTime now = DateTime.UtcNow;
+            if (incident.LastEncounterResponseCheckAt != DateTime.MinValue
+                && now < incident.LastEncounterResponseCheckAt.AddSeconds(1))
+                return;
+            incident.LastEncounterResponseCheckAt = now;
+
+            if (incident.SceneResolution != null
+                && incident.SceneResolution.IsInteriorScene)
+            {
+                int playerInteriorId;
+                if (_ambientWorld == null
+                    || !_ambientWorld.TryGetActorInteriorId(player, out playerInteriorId)
+                    || playerInteriorId != incident.SceneResolution.InteriorId)
+                    return;
+            }
+
+            List<Ped> suspects = LiveSuspects(incident)
+                .Where(suspect => !IsArrested(incident, suspect))
+                .ToList();
+            if (suspects.Count == 0)
+            {
+                incident.PlayerEncounterResponseStarted = true;
+                return;
+            }
+
+            List<string> allowed = incident.SuspectResponseBranches
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            bool mappedRobberyEscapeSupported = incident.SceneResolution != null
+                && incident.SceneResolution.IsMappedInteriorDispatchScene
+                && IsMappedInteriorDispatchBehavior(incident.SceneBehavior)
+                && (string.Equals(incident.IncidentType, "store_robbery",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(incident.IncidentType, "bank_robbery",
+                        StringComparison.OrdinalIgnoreCase));
+            if (incident.SceneResolution != null
+                && incident.SceneResolution.IsInteriorScene
+                && !mappedRobberyEscapeSupported)
+                allowed.RemoveAll(value => string.Equals(
+                    value, "flee", StringComparison.OrdinalIgnoreCase));
+            if (allowed.Count == 0)
+            {
+                LogDebug(
+                    "POLICE_DISPATCH_SCENE_RESPONSE_UNAVAILABLE",
+                    "Event=" + incident.Id + "; Reason=No response is valid in the current interior context.");
+                return;
+            }
+
+            incident.PlayerEncounterResponseStarted = true;
+            List<string> selected = new List<string>();
+            for (int index = 0; index < suspects.Count; index++)
+            {
+                Ped suspect = suspects[index];
+                List<string> candidates = new List<string>(allowed);
+                string response = incident.ChooseSuspectResponse(_random, candidates);
+                if (string.IsNullOrWhiteSpace(response))
+                {
+                    LogDebug("POLICE_DISPATCH_SUSPECT_RESPONSE_UNAVAILABLE",
+                        "Event=" + incident.Id + "; Ped=" + suspect.Handle
+                        + "; Allowed=" + string.Join(",", candidates));
+                    continue;
+                }
+                incident.SuspectResponses[suspect.Handle] = response;
+                selected.Add(suspect.Handle + ":" + response);
+                try
+                {
+                    suspect.BlockPermanentEvents = true;
+                    if (string.Equals(response, "comply", StringComparison.OrdinalIgnoreCase))
+                    {
+                        suspect.Task.ClearAll();
+                        suspect.CanSwitchWeapons = false;
+                        suspect.Task.HandsUp(15000);
+                        suspect.Task.LookAt(player, 2500);
+                        AddCompliantSuspect(incident, suspect);
+                        incident.SurrenderRequested = true;
+                        incident.SurrenderRequestedAt = now;
+                    }
+                    else if (string.Equals(response, "resist", StringComparison.OrdinalIgnoreCase))
+                    {
+                        suspect.CanSwitchWeapons = true;
+                        suspect.Task.Combat(player);
+                    }
+                    else if (string.Equals(response, "flee", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Vehicle suspectVehicle = incident.VehicleForSuspect(suspect);
+                        if (suspectVehicle != null && suspect.IsInVehicle()
+                            && suspect.CurrentVehicle != null
+                            && suspect.CurrentVehicle.Exists()
+                            && suspect.CurrentVehicle.Handle == suspectVehicle.Handle)
+                        {
+                            CapturePursuitVehicleHealthBaseline(incident, suspect);
+                            suspect.Task.VehicleChase(player);
+                        }
+                        else
+                            suspect.Task.ReactAndFlee(player);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_SCENE_RESPONSE_TASK_FAILED", ex);
+                }
+            }
+
+            Ped fleeingFootSuspect = suspects.FirstOrDefault(suspect =>
+            {
+                string response;
+                return incident.SuspectResponses.TryGetValue(suspect.Handle, out response)
+                    && string.Equals(response, "flee", StringComparison.OrdinalIgnoreCase)
+                    && incident.VehicleForSuspect(suspect) == null;
+            });
+            StartVictimEncounterResponse(incident, fleeingFootSuspect, player);
+
+            bool fleeing = incident.SuspectResponses.Values.Any(value =>
+                string.Equals(value, "flee", StringComparison.OrdinalIgnoreCase));
+            bool resisting = incident.SuspectResponses.Values.Any(value =>
+                string.Equals(value, "resist", StringComparison.OrdinalIgnoreCase));
+            bool complying = incident.SuspectResponses.Values.Any(value =>
+                string.Equals(value, "comply", StringComparison.OrdinalIgnoreCase));
+
+            if (fleeing)
+            {
+                SetState(LSPDDispatchState.SuspectFleeing);
+                ReportAudioStage(
+                    "lsimmersivelife.police.pursuit.continuing",
+                    incident,
+                    "scene-pursuit-started",
+                    true);
+            }
+            else if (resisting)
+            {
+                SetState(LSPDDispatchState.SuspectResisting);
+                ReportAudioStage(
+                    "lsimmersivelife.police.resistance.resisting",
+                    incident,
+                    "scene-resistance-started",
+                    true);
+            }
+            else if (complying)
+            {
+                SetState(LSPDDispatchState.Investigating);
+            }
+            else
+            {
+                SetState(LSPDDispatchState.Investigating);
+            }
+
+            LogRuntime(
+                "POLICE_DISPATCH_SCENE_RESPONSES_SELECTED",
+                "Event=" + incident.Id
+                + "; Player=" + player.Handle
+                + "; Responses=" + string.Join(",", selected)
+                + "; TerminalOutcome=false");
+        }
+
+        private void StartVictimEncounterResponse(
+            LSPDDispatchEvent incident,
+            Ped fleeingFootSuspect,
+            Ped player)
+        {
+            if (incident == null || incident.VictimEncounterResponseStarted
+                || fleeingFootSuspect == null || !fleeingFootSuspect.Exists()
+                || fleeingFootSuspect.IsDead || incident.VehicleForSuspect(fleeingFootSuspect) != null
+                || incident.SceneResolution != null && incident.SceneResolution.IsInteriorScene
+                || incident.VictimResponseBranches == null
+                || incident.VictimResponseBranches.Count == 0)
+                return;
+
+            Ped victim = incident.Victim;
+            if (victim == null || !victim.Exists() || victim.IsDead || victim.Health <= 0)
+                return;
+
+            incident.VictimEncounterResponseStarted = true;
+            string response = incident.ChooseVictimResponse(
+                _random,
+                incident.VictimResponseBranches);
+            if (string.IsNullOrWhiteSpace(response))
+            {
+                LogDebug(
+                    "POLICE_DISPATCH_VICTIM_RESPONSE_UNAVAILABLE",
+                    "Event=" + incident.Id
+                    + "; Victim=" + victim.Handle
+                    + "; Suspect=" + fleeingFootSuspect.Handle
+                    + "; Reason=No positive authored victim response weight.");
+                return;
+            }
+
+            try
+            {
+                victim.BlockPermanentEvents = true;
+                if (string.Equals(response, "attempt_escape", StringComparison.OrdinalIgnoreCase))
+                {
+                    Function.Call(
+                        Hash.TASK_SMART_FLEE_PED,
+                        victim,
+                        fleeingFootSuspect,
+                        45.0f,
+                        -1,
+                        false,
+                        false);
+                }
+                else if (string.Equals(response, "remain_threatened", StringComparison.OrdinalIgnoreCase))
+                {
+                    victim.Task.HandsUp(60000);
+                    if (player != null && player.Exists() && !player.IsDead)
+                        victim.Task.LookAt(player, 2500);
+                }
+                else
+                {
+                    return;
+                }
+
+                incident.VictimEncounterResponse = response;
+                LogRuntime(
+                    "POLICE_DISPATCH_VICTIM_RESPONSE_STARTED",
+                    "Event=" + incident.Id
+                    + "; Victim=" + victim.Handle
+                    + "; Suspect=" + fleeingFootSuspect.Handle
+                    + "; Response=" + response
+                    + "; Owner=Dispatch; TerminalOutcome=false");
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_VICTIM_RESPONSE_FAILED", ex);
+            }
+        }
+
+        private bool EnsureScene(
+            Ped player,
+            bool startSceneBehavior = true,
+            bool createSuspectBlip = true)
         {
             if (_incident == null)
                 return false;
-            if (_incident.Suspect != null && _incident.Suspect.Exists())
-            {
-                _incident.ScenePreparationCompleted = true;
+            if (_incident.ScenePreparationCompleted
+                && _incident.Suspect != null && _incident.Suspect.Exists()
+                && (!_incident.RequiresVehicle
+                    || CountLiveSuspectVehicles(_incident)
+                        >= Math.Max(1, _incident.SuspectVehicleCount)))
                 return true;
-            }
-
             if (!_incident.ScenePreparationRequested
                 && !BeginScenePreparation(_incident))
                 return false;
             if (!AreAdditionalSuspectModelsLoaded(_incident))
                 return false;
+            if (_incident.Suspect != null && _incident.Suspect.Exists())
+            {
+                Vector3 existingScenePosition = _incident.SceneResolution == null
+                    ? _incident.Origin : _incident.SceneResolution.ActorPosition;
+                Vector3[] preparedSuspectPositions;
+                string positionPreparationFailure;
+                if (!TryResolveAdditionalSuspectPositions(
+                    _incident,
+                    existingScenePosition,
+                    out preparedSuspectPositions,
+                    out positionPreparationFailure))
+                {
+                    LogDebug("POLICE_DISPATCH_GROUP_POSITION_REJECTED",
+                        "Incident=" + _incident.Id + "; Reason=" + positionPreparationFailure);
+                    return false;
+                }
+                if (!EnsureDispatchVictim(_incident, existingScenePosition))
+                    return false;
+                if (!EnsureAdditionalDispatchVehicles(_incident))
+                    return false;
+                Model existingSuspectModel = new Model(_incident.SuspectModel);
+                if (!RequestModel(existingSuspectModel, false))
+                    return false;
+                try
+                {
+                    string groupBuildFailure;
+                    if (!CreateAdditionalSuspects(
+                        _incident,
+                        existingSuspectModel,
+                        preparedSuspectPositions,
+                        out groupBuildFailure))
+                    {
+                        LogDebug("POLICE_DISPATCH_SCENE_ACTOR_SETUP_WAITING",
+                            "Incident=" + _incident.Id + "; Reason=" + groupBuildFailure);
+                        return false;
+                    }
+                }
+                finally
+                {
+                    existingSuspectModel.MarkAsNoLongerNeeded();
+                }
+                if (TrackedSuspects(_incident).Count() != Math.Max(1, _incident.SuspectCount))
+                    return false;
+                _incident.ScenePreparationCompleted = true;
+                return true;
+            }
 
             AmbientDispatchSceneResolution refreshedScene;
             string sceneValidationFailure = "AmbientWorld is not attached by PoliceCore.";
@@ -3170,9 +5511,12 @@ namespace LSImmersiveLife
                     _incident.SceneResolution,
                     player == null || !player.Exists()
                         ? _incident.Origin : player.Position,
-                    _incident.RequiresVehicle,
+                    _incident.RequiresVehicle || _incident.VehicleStagingRequired,
                     out refreshedScene,
-                    out sceneValidationFailure))
+                    out sceneValidationFailure,
+                    _incident.InteriorLocationId,
+                    _incident.RequiredPhysicalType,
+                    _incident.LocationContext))
             {
                 LogDebug(
                     "POLICE_DISPATCH_SCENE_REVALIDATION_FAILED",
@@ -3196,6 +5540,18 @@ namespace LSImmersiveLife
                 vehicleLoaded = _incident.RequiresVehicle;
 
                 Vector3 spawn = refreshedScene.ActorPosition;
+                Vector3[] preparedSuspectPositions;
+                string positionPreparationFailure;
+                if (!TryResolveAdditionalSuspectPositions(
+                    _incident,
+                    spawn,
+                    out preparedSuspectPositions,
+                    out positionPreparationFailure))
+                {
+                    LogDebug("POLICE_DISPATCH_GROUP_POSITION_REJECTED",
+                        "Incident=" + _incident.Id + "; Reason=" + positionPreparationFailure);
+                    return false;
+                }
 
                 if (_incident.RequiresVehicle)
                 {
@@ -3210,6 +5566,9 @@ namespace LSImmersiveLife
                     vehicle.IsPersistent = true;
                     vehicle.PlaceOnGround();
                     _incident.SuspectVehicle = vehicle;
+                    if (!_incident.SuspectVehicles.Any(value => value != null
+                        && value.Exists() && value.Handle == vehicle.Handle))
+                        _incident.SuspectVehicles.Add(vehicle);
                     _incident.OwnedByDispatch = true;
                     Ped suspect = refreshedScene.IsInteriorScene
                         ? World.CreatePed(pedModel, spawn)
@@ -3224,8 +5583,8 @@ namespace LSImmersiveLife
                     suspect.BlockPermanentEvents = true;
                     _incident.Suspect = suspect;
                     RegisterSuspect(_incident, suspect);
+                    RegisterSuspectVehicle(_incident, suspect, vehicle);
                     ApplySceneWeapon(suspect);
-                    CreateSceneVictim(_incident, spawn, pedModel);
                 }
                 else
                 {
@@ -3238,14 +5597,36 @@ namespace LSImmersiveLife
                     RegisterSuspect(_incident, suspect);
                     _incident.OwnedByDispatch = true;
                     ApplySceneWeapon(suspect);
-                    CreateSceneVictim(_incident, spawn, pedModel);
                 }
 
-                CreateAdditionalSuspects(_incident, spawn, pedModel);
+                if (!EnsureAdditionalDispatchVehicles(_incident))
+                    return false;
 
-                SetSuspectBlip(_incident.Suspect);
+                if (!EnsureDispatchVictim(_incident, spawn))
+                    return false;
+
+                string groupBuildFailure;
+                if (!CreateAdditionalSuspects(
+                        _incident,
+                        pedModel,
+                        preparedSuspectPositions,
+                        out groupBuildFailure))
+                {
+                    LogDebug("POLICE_DISPATCH_SCENE_ACTOR_SETUP_WAITING",
+                        "Incident=" + _incident.Id + "; Reason=" + groupBuildFailure);
+                    return false;
+                }
+
+                if (TrackedSuspects(_incident).Count() != Math.Max(1, _incident.SuspectCount))
+                    return false;
+
+                if (createSuspectBlip)
+                    SetSuspectBlip(_incident.Suspect);
                 _incident.ScenePreparationCompleted = true;
-                StartSceneBehavior(player);
+                if (startSceneBehavior)
+                    StartSceneBehavior(player);
+                if (_incident == null || !_incident.OwnedByDispatch)
+                    return false;
                 LogRuntime(
                     "POLICE_DISPATCH_SCENE_ENTITIES_CREATED",
                     "Ped=" + _incident.Suspect.Handle
@@ -3267,6 +5648,97 @@ namespace LSImmersiveLife
                 if (pedLoaded) pedModel.MarkAsNoLongerNeeded();
                 if (vehicleLoaded) vehicleModel.MarkAsNoLongerNeeded();
             }
+        }
+
+        private bool EnsureAdditionalDispatchVehicles(LSPDDispatchEvent incident)
+        {
+            if (incident == null)
+                return false;
+            if (!incident.RequiresVehicle)
+                return incident.SuspectVehicleCount == 0;
+            if (incident.SuspectVehicle == null || !incident.SuspectVehicle.Exists()
+                || incident.SceneResolution == null
+                || !incident.SceneResolution.HasVehicleStagingPosition
+                || _ambientWorld == null)
+                return false;
+
+            // A failed first driver creation can leave its deleted Vehicle
+            // wrapper in the occurrence list. Prune only this Dispatch-owned,
+            // two-entry preparation list and keep the current primary at slot 0
+            // so suspect index 1 always maps to the secondary vehicle.
+            incident.SuspectVehicles.RemoveAll(value => value == null || !value.Exists());
+            incident.SuspectVehicles.RemoveAll(value =>
+                value.Handle == incident.SuspectVehicle.Handle);
+            incident.SuspectVehicles.Insert(0, incident.SuspectVehicle);
+
+            int required = Math.Max(1, Math.Min(2, incident.SuspectVehicleCount));
+            while (CountLiveSuspectVehicles(incident) < required)
+            {
+                int index = CountLiveSuspectVehicles(incident);
+                Vector3 staging;
+                float heading;
+                string stagingFailure = "A distinct vehicle staging point was not resolved.";
+                if (index != 1
+                    || !_ambientWorld.TryResolveAdditionalDispatchVehicleStaging(
+                        incident.SceneResolution,
+                        out staging,
+                        out heading,
+                        out stagingFailure))
+                {
+                    LogDebug("POLICE_DISPATCH_GROUP_VEHICLE_STAGING_FAILED",
+                        "Incident=" + incident.Id
+                        + "; VehicleIndex=" + index
+                        + "; Reason=" + (index != 1
+                            ? "The supported scene vehicle ceiling is two."
+                            : stagingFailure));
+                    return false;
+                }
+
+                string modelName = SuspectVehicleModelForIndex(incident, index);
+                Model model = new Model(modelName);
+                if (!RequestModel(model, true))
+                {
+                    try { model.MarkAsNoLongerNeeded(); } catch { }
+                    return false;
+                }
+                try
+                {
+                    Vehicle vehicle = World.CreateVehicle(model, staging, heading);
+                    if (vehicle == null || !vehicle.Exists())
+                    {
+                        LogDebug("POLICE_DISPATCH_GROUP_VEHICLE_CREATE_FAILED",
+                            "Incident=" + incident.Id + "; VehicleIndex=" + index
+                            + "; Model=" + modelName);
+                        return false;
+                    }
+                    vehicle.IsPersistent = true;
+                    vehicle.PlaceOnGround();
+                    incident.SuspectVehicles.Add(vehicle);
+                    LogRuntime("POLICE_DISPATCH_GROUP_VEHICLE_CREATED",
+                        "Incident=" + incident.Id
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; VehicleIndex=" + index
+                        + "; Model=" + modelName
+                        + "; Position=" + staging
+                        + "; Required=" + required);
+                }
+                finally
+                {
+                    try { model.MarkAsNoLongerNeeded(); } catch { }
+                }
+            }
+            return CountLiveSuspectVehicles(incident) >= required;
+        }
+
+        private static void RegisterSuspectVehicle(
+            LSPDDispatchEvent incident,
+            Ped suspect,
+            Vehicle vehicle)
+        {
+            if (incident == null || suspect == null || !suspect.Exists()
+                || vehicle == null || !vehicle.Exists())
+                return;
+            incident.SuspectVehicleByPedHandle[suspect.Handle] = vehicle.Handle;
         }
 
         private void ApplySceneWeapon(Ped suspect, int suspectIndex = 0)
@@ -3292,44 +5764,145 @@ namespace LSImmersiveLife
             }
         }
 
-        private void CreateSceneVictim(LSPDDispatchEvent incident, Vector3 spawn, Model fallbackModel)
+        private bool EnsureDispatchVictim(
+            LSPDDispatchEvent incident,
+            Vector3 spawn)
         {
-            if (incident == null || incident.Victim != null ||
-                (incident.IncidentType != "carjacking" && incident.IncidentType != "bank_robbery" &&
-                 incident.IncidentType != "store_robbery" && incident.IncidentType != "kidnapping" &&
-                 incident.IncidentType != "violent_disturbance"))
-                return;
+            if (incident == null)
+                return false;
+            if (incident.VictimCount <= 0)
+                return true;
+            if (string.IsNullOrWhiteSpace(incident.VictimPoolId) || _ambientWorld == null)
+            {
+                LogDebug("POLICE_DISPATCH_VICTIM_POOL_MISSING",
+                    "Event=" + incident.Id + "; Pool=" + (incident.VictimPoolId ?? string.Empty));
+                return false;
+            }
+
+            if (incident.Victim != null && incident.Victim.Exists()
+                && LSPDDispatchEventDefinition.IsVictimStateReady(
+                    incident.VictimStartsDead,
+                    incident.Victim.IsDead,
+                    incident.Victim.Health)
+                && _ambientWorld.IsDispatchVictimModelInPool(
+                    incident.VictimPoolId,
+                    incident.Victim.Model.Hash))
+                return true;
+
+            if (incident.Victim != null)
+            {
+                if (incident.VictimWasExistingAmbient)
+                    _ambientWorld.ReleaseDispatchCivilian(incident.Victim, incident.Id);
+                else
+                    try { if (incident.Victim.Exists()) incident.Victim.Delete(); } catch { }
+                incident.Victim = null;
+                incident.VictimWasExistingAmbient = false;
+            }
+
             try
             {
                 Vector3 preferredVictimPosition = spawn + new Vector3(-2f, -1f, 0f);
-                Vector3 victimPosition;
-                string validationReason = "AmbientWorld is not attached by PoliceCore.";
-                if (_ambientWorld == null
-                    || !_ambientWorld.TryResolveDispatchParticipantPosition(
+                Ped victim = null;
+                bool reusedAmbientVictim = false;
+                string reuseReason = "Nearby Ped reuse is not applicable to this scene.";
+                if (!incident.VictimStartsDead
+                    && !incident.VictimAmbientReuseEvaluated
+                    && !string.Equals(incident.IncidentType, "kidnapping",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    // Bound the GTA ped query to one scan for this prepared
+                    // occurrence; model-streaming retries reuse the result.
+                    incident.VictimAmbientReuseEvaluated = true;
+                    reusedAmbientVictim = _ambientWorld.TryClaimDispatchCivilian(
+                        incident.Id,
+                        incident.VictimPoolId,
                         preferredVictimPosition,
                         incident.SceneResolution,
-                        out victimPosition,
-                        out validationReason))
-                {
-                    LogDebug(
-                        "POLICE_DISPATCH_VICTIM_POSITION_REJECTED",
-                        "Type=" + incident.IncidentType + "; Reason="
-                        + (_ambientWorld == null
-                            ? "AmbientWorld is not attached by PoliceCore."
-                            : validationReason));
-                    return;
+                        TrackedSuspects(incident),
+                        out victim,
+                        out reuseReason);
                 }
 
-                Ped victim = World.CreatePed(fallbackModel, victimPosition);
-                if (victim == null || !victim.Exists())
-                    return;
-                victim.IsPersistent = true;
-                victim.BlockPermanentEvents = true;
-                // Register ownership before assigning optional scene tasks so
-                // a failed animation or vehicle-seat native still gets cleaned.
+                if (!reusedAmbientVictim)
+                {
+                    LogDebug("POLICE_DISPATCH_VICTIM_GENERATED_FALLBACK",
+                        "Type=" + incident.IncidentType
+                        + "; Pool=" + incident.VictimPoolId
+                    + "; Reason=" + reuseReason);
+                    if (string.IsNullOrWhiteSpace(incident.VictimModelName))
+                    {
+                        string victimModelName;
+                        if (!_ambientWorld.TryChooseDispatchVictimModel(
+                            incident.VictimPoolId,
+                            out victimModelName)
+                            || string.IsNullOrWhiteSpace(victimModelName))
+                        {
+                            LogDebug("POLICE_DISPATCH_VICTIM_POOL_UNAVAILABLE",
+                                "Event=" + incident.Id + "; Pool=" + incident.VictimPoolId);
+                            return false;
+                        }
+                        incident.VictimModelName = victimModelName;
+                    }
+
+                    Model victimModel = new Model(incident.VictimModelName);
+                    if (!RequestModel(victimModel, false))
+                        return false;
+                    try
+                    {
+                        string validationReason;
+                        if (!_ambientWorld.TryCreateDispatchSceneVictim(
+                            incident.Id,
+                            incident.VictimPoolId,
+                            victimModel,
+                            preferredVictimPosition,
+                            incident.SceneResolution,
+                            incident.VictimStartsDead,
+                            out victim,
+                            out validationReason))
+                        {
+                            LogDebug("POLICE_DISPATCH_VICTIM_POSITION_REJECTED",
+                                "Type=" + incident.IncidentType + "; Reason=" + validationReason);
+                            return false;
+                        }
+                        if (incident.VictimStartsDead)
+                        {
+                            incident.Victim = victim;
+                            incident.VictimWasExistingAmbient = false;
+                            LogRuntime("POLICE_DISPATCH_MURDER_VICTIM_SCENE_CREATED",
+                                "Incident=" + incident.Id
+                                + "; Ped=" + victim.Handle
+                                + "; Pool=" + incident.VictimPoolId
+                                + "; Model=" + victim.Model.Hash
+                                + "; Health=" + victim.Health
+                                + "; StartsDead=true; Cause=CatalogDefinedSceneState");
+                        }
+                    }
+                    finally
+                    {
+                        victimModel.MarkAsNoLongerNeeded();
+                    }
+                }
+
+                if (victim == null || !victim.Exists()
+                    || !LSPDDispatchEventDefinition.IsVictimStateReady(
+                        incident.VictimStartsDead, victim.IsDead, victim.Health))
+                {
+                    if (reusedAmbientVictim && victim != null)
+                        _ambientWorld.ReleaseDispatchCivilian(victim, incident.Id);
+                    return false;
+                }
+
+                // Record ownership before assigning optional scene tasks so
+                // failures still reach the correct Dispatch cleanup path.
                 incident.Victim = victim;
-                victim.Task.LookAt(Game.Player.Character, 3000);
-                if (incident.IncidentType == "carjacking" || incident.IncidentType == "bank_robbery" || incident.IncidentType == "store_robbery" || incident.IncidentType == "kidnapping")
+                incident.VictimWasExistingAmbient = reusedAmbientVictim;
+                if (!incident.VictimStartsDead)
+                    victim.Task.LookAt(Game.Player.Character, 3000);
+                if (!incident.VictimStartsDead
+                    && (incident.IncidentType == "carjacking"
+                    || incident.IncidentType == "bank_robbery"
+                    || incident.IncidentType == "store_robbery"
+                    || incident.IncidentType == "kidnapping"))
                     victim.Task.HandsUp(8000);
                 if (incident.IncidentType == "kidnapping"
                     && (incident.SceneResolution == null
@@ -3340,88 +5913,173 @@ namespace LSImmersiveLife
                     victim.SetIntoVehicle(incident.SuspectVehicle, VehicleSeat.RightRear);
                     victim.BlockPermanentEvents = true;
                 }
-                LogRuntime("POLICE_DISPATCH_SCENE_VICTIM_CREATED", "Type=" + incident.IncidentType + "; Ped=" + victim.Handle);
+                LogRuntime(
+                    reusedAmbientVictim
+                        ? "POLICE_DISPATCH_SCENE_VICTIM_REUSED"
+                        : "POLICE_DISPATCH_SCENE_VICTIM_CREATED",
+                    "Type=" + incident.IncidentType
+                    + "; Pool=" + incident.VictimPoolId
+                    + "; Model=" + victim.Model.Hash
+                    + "; Ped=" + victim.Handle
+                    + (reusedAmbientVictim ? "; Source=NearbyAmbientPed" : "; Source=GeneratedFallback"));
+                return true;
             }
-            catch (Exception ex) { LogException("POLICE_DISPATCH_VICTIM_CREATE_FAILED", ex); }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_VICTIM_CREATE_FAILED", ex);
+                return false;
+            }
         }
 
-        private void CreateAdditionalSuspects(
+        private bool TryResolveAdditionalSuspectPositions(
             LSPDDispatchEvent incident,
             Vector3 spawn,
-            Model fallbackModel)
+            out Vector3[] positions,
+            out string failureReason)
         {
-            if (incident == null || fallbackModel == null || !fallbackModel.IsLoaded)
-                return;
-            int required = Math.Max(1, incident.SuspectCount);
-            for (int index = incident.Suspects == null ? 0 : incident.Suspects.Count;
+            positions = null;
+            failureReason = string.Empty;
+            if (incident == null)
+            {
+                failureReason = "The Dispatch occurrence is unavailable.";
+                return false;
+            }
+
+            int required = Math.Max(1, Math.Min(15, incident.SuspectCount));
+            positions = new Vector3[required];
+            positions[0] = spawn;
+            for (int index = 1; index < required; index++)
+            {
+                // A configured suspect vehicle supplies the actor's physical
+                // spawn point; only foot participants need a validated point.
+                if (index < incident.SuspectVehicleCount)
+                    continue;
+
+                Vector3 preferredPosition = spawn
+                    + DispatchSuspectFormationOffset(incident, index, required);
+                Vector3 safePosition;
+                string validationReason = "AmbientWorld is not attached by PoliceCore.";
+                if (_ambientWorld == null
+                    || !_ambientWorld.TryResolveDispatchParticipantPosition(
+                        preferredPosition,
+                        incident.SceneResolution,
+                        out safePosition,
+                        out validationReason))
+                {
+                    positions = null;
+                    failureReason = "SuspectIndex=" + index
+                        + "; Position=" + (_ambientWorld == null
+                            ? "AmbientWorld is not attached by PoliceCore."
+                            : validationReason);
+                    return false;
+                }
+                positions[index] = safePosition;
+            }
+
+            return true;
+        }
+
+        private static Vector3 DispatchSuspectFormationOffset(
+            LSPDDispatchEvent incident,
+            int index,
+            int required)
+        {
+            bool pairedScene = string.Equals(
+                    incident.SceneBehavior, "paired_meeting", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(
+                    incident.SceneBehavior, "paired_exchange", StringComparison.OrdinalIgnoreCase);
+            if (pairedScene && index == 1)
+                return new Vector3(1.55f, 0f, 0f);
+            if (pairedScene && index == 2)
+                return new Vector3(0.4f, 2.4f, 0f);
+
+            float angle = (float)(index * Math.PI * 2.0 / Math.Max(2, required));
+            return new Vector3(
+                (float)Math.Cos(angle) * 3.5f,
+                (float)Math.Sin(angle) * 3.5f,
+                0f);
+        }
+
+        private bool CreateAdditionalSuspects(
+            LSPDDispatchEvent incident,
+            Model fallbackModel,
+            Vector3[] preparedPositions,
+            out string failureReason)
+        {
+            failureReason = string.Empty;
+            if (incident == null)
+            {
+                failureReason = "The Dispatch occurrence is unavailable.";
+                return false;
+            }
+            if (fallbackModel == null || !fallbackModel.IsLoaded)
+            {
+                failureReason = "The selected suspect Ped model is not loaded.";
+                return false;
+            }
+            int required = Math.Max(1, Math.Min(15, incident.SuspectCount));
+            if (preparedPositions == null || preparedPositions.Length < required)
+            {
+                failureReason = "Required Dispatch suspect positions were not prepared.";
+                return false;
+            }
+            for (int index = TrackedSuspects(incident).Count();
                 index < required;
                 index++)
             {
                 Model suspectModel = null;
                 try
                 {
-                    bool pairedScene = string.Equals(
-                            incident.SceneBehavior, "paired_meeting", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(
-                            incident.SceneBehavior, "paired_exchange", StringComparison.OrdinalIgnoreCase);
-                    Vector3 offset;
-                    if (pairedScene && index == 1)
-                    {
-                        // Start the second participant within hand-off range of
-                        // the primary instead of spreading the pair like props.
-                        offset = new Vector3(1.55f, 0f, 0f);
-                    }
-                    else if (pairedScene && index == 2)
-                    {
-                        // A third participant stands nearby as a lookout/witness.
-                        offset = new Vector3(0.4f, 2.4f, 0f);
-                    }
-                    else
-                    {
-                        float angle = (float)(index * Math.PI * 2.0 / Math.Max(2, required));
-                        offset = new Vector3(
-                            (float)Math.Cos(angle) * 3.5f,
-                            (float)Math.Sin(angle) * 3.5f,
-                            0f);
-                    }
                     string modelName = SuspectModelForIndex(incident, index);
                     suspectModel = new Model(modelName);
                     if (!RequestModel(suspectModel, false))
-                        continue;
-                    Vector3 preferredSuspectPosition = spawn + offset;
-                    Vector3 suspectPosition;
-                    string validationReason = "AmbientWorld is not attached by PoliceCore.";
-                    if (_ambientWorld == null
-                        || !_ambientWorld.TryResolveDispatchParticipantPosition(
-                            preferredSuspectPosition,
-                            incident.SceneResolution,
-                            out suspectPosition,
-                            out validationReason))
                     {
-                        LogDebug(
-                            "POLICE_DISPATCH_GROUP_POSITION_REJECTED",
-                            "Type=" + incident.IncidentType + "; Index=" + index
-                            + "; Reason=" + (_ambientWorld == null
-                                ? "AmbientWorld is not attached by PoliceCore."
-                                : validationReason));
-                        continue;
+                        if (string.IsNullOrWhiteSpace(failureReason))
+                            failureReason = "Suspect model " + modelName + " is not ready for actor creation.";
+                        break;
+                    }
+                    Vehicle assignedVehicle = index < incident.SuspectVehicleCount
+                        && incident.SuspectVehicles != null
+                        && index < incident.SuspectVehicles.Count
+                            ? incident.SuspectVehicles[index] : null;
+                    Vector3 suspectPosition = Vector3.Zero;
+                    if (assignedVehicle == null || !assignedVehicle.Exists())
+                    {
+                        suspectPosition = preparedPositions[index];
                     }
 
-                    Ped suspect = World.CreatePed(suspectModel, suspectPosition);
+                    Ped suspect = assignedVehicle != null && assignedVehicle.Exists()
+                        ? assignedVehicle.CreatePedOnSeat(VehicleSeat.Driver, suspectModel)
+                        : World.CreatePed(suspectModel, suspectPosition);
                     if (suspect == null || !suspect.Exists())
-                        continue;
+                    {
+                        if (string.IsNullOrWhiteSpace(failureReason))
+                            failureReason = "SuspectIndex=" + index
+                                + "; GTA did not create the Ped at the validated scene position.";
+                        break;
+                    }
                     suspect.IsPersistent = true;
                     suspect.BlockPermanentEvents = true;
-                    ApplySceneWeapon(suspect, index);
                     RegisterSuspect(incident, suspect);
+                    if (assignedVehicle != null && assignedVehicle.Exists())
+                        RegisterSuspectVehicle(incident, suspect, assignedVehicle);
+                    ApplySceneWeapon(suspect, index);
                     LogRuntime(
-                        "POLICE_DISPATCH_GROUP_SUSPECT_CREATED",
+                        assignedVehicle != null && assignedVehicle.Exists()
+                            ? "POLICE_DISPATCH_GROUP_VEHICLE_DRIVER_CREATED"
+                            : "POLICE_DISPATCH_GROUP_SUSPECT_CREATED",
                         "Type=" + incident.IncidentType + "; Ped=" + suspect.Handle
-                        + "; Index=" + (index + 1) + "; Total=" + required);
+                        + "; Index=" + (index + 1) + "; Total=" + required
+                        + "; Vehicle=" + (assignedVehicle == null || !assignedVehicle.Exists()
+                            ? 0 : assignedVehicle.Handle));
                 }
                 catch (Exception ex)
                 {
+                    if (string.IsNullOrWhiteSpace(failureReason))
+                        failureReason = "SuspectIndex=" + index
+                            + "; Creation exception=" + ex.GetType().Name;
                     LogException("POLICE_DISPATCH_GROUP_SUSPECT_FAILED", ex);
+                    break;
                 }
                 finally
                 {
@@ -3431,6 +6089,23 @@ namespace LSImmersiveLife
                     }
                 }
             }
+
+            int readySuspects = TrackedSuspects(incident).Count();
+            if (readySuspects < required)
+            {
+                if (string.IsNullOrWhiteSpace(failureReason))
+                    failureReason = "Only " + readySuspects + " of " + required
+                        + " required suspect actors are valid.";
+                LogDebug(
+                    "POLICE_DISPATCH_GROUP_SUSPECT_BUILD_INCOMPLETE",
+                    "Incident=" + incident.Id
+                    + "; Required=" + required
+                    + "; Ready=" + readySuspects
+                    + "; Reason=" + failureReason);
+                return false;
+            }
+
+            return true;
         }
 
         private static bool AreAdditionalSuspectModelsLoaded(
@@ -3441,6 +6116,19 @@ namespace LSImmersiveLife
             {
                 Model model = new Model(modelName);
                 if (!IsUsableModel(model, false))
+                    continue;
+                if (!model.IsLoaded)
+                {
+                    model.Request();
+                    ready = false;
+                }
+            }
+            for (int index = 1;
+                incident != null && index < incident.SuspectVehicleCount;
+                index++)
+            {
+                Model model = new Model(SuspectVehicleModelForIndex(incident, index));
+                if (!IsUsableModel(model, true))
                     continue;
                 if (!model.IsLoaded)
                 {
@@ -3476,7 +6164,22 @@ namespace LSImmersiveLife
             return IsUsableModel(candidate, false) ? candidateName : modelName;
         }
 
-        private static void RegisterSuspect(LSPDDispatchEvent incident, Ped suspect)
+        private static string SuspectVehicleModelForIndex(
+            LSPDDispatchEvent incident,
+            int index)
+        {
+            string modelName = incident == null
+                ? string.Empty : incident.VehicleModel;
+            if (incident == null || incident.VehicleModelCandidates == null
+                || incident.VehicleModelCandidates.Count == 0)
+                return modelName;
+            string candidateName = incident.VehicleModelCandidates[
+                Math.Max(0, index) % incident.VehicleModelCandidates.Count];
+            Model candidate = new Model(candidateName);
+            return IsUsableModel(candidate, true) ? candidateName : modelName;
+        }
+
+        private void RegisterSuspect(LSPDDispatchEvent incident, Ped suspect)
         {
             if (incident == null || suspect == null || !suspect.Exists())
                 return;
@@ -3485,6 +6188,7 @@ namespace LSImmersiveLife
             if (!incident.Suspects.Any(value => value != null && value.Exists()
                 && value.Handle == suspect.Handle))
                 incident.Suspects.Add(suspect);
+            CaptureDispatchSuspectInjuryState(suspect, incident);
         }
 
         private static IEnumerable<Ped> LiveSuspects(LSPDDispatchEvent incident)
@@ -3509,6 +6213,20 @@ namespace LSImmersiveLife
             return incident.Suspect != null && incident.Suspect.Exists()
                 ? new[] { incident.Suspect }
                 : Enumerable.Empty<Ped>();
+        }
+
+        private static int CountLiveSuspectVehicles(LSPDDispatchEvent incident)
+        {
+            if (incident == null)
+                return 0;
+            var handles = new HashSet<int>();
+            if (incident.SuspectVehicles != null)
+                foreach (Vehicle vehicle in incident.SuspectVehicles)
+                    if (vehicle != null && vehicle.Exists())
+                        handles.Add(vehicle.Handle);
+            if (incident.SuspectVehicle != null && incident.SuspectVehicle.Exists())
+                handles.Add(incident.SuspectVehicle.Handle);
+            return handles.Count;
         }
         private static void PlaySceneActivity(Ped suspect, string type)
         {
@@ -3542,39 +6260,154 @@ namespace LSImmersiveLife
                 && (vehicle ? model.IsVehicle : model.IsPed);
         }
 
-        private LSPDDispatchEventDefinition ChooseDefinition(Ped player)
+        private List<LSPDDispatchEventDefinition> ChooseLocationDefinitionCandidates(
+            Ped player,
+            int maximumCount)
         {
+            var selected = new List<LSPDDispatchEventDefinition>();
             if (_definitions.Count == 0 || player == null || !player.Exists())
-                return null;
+                return selected;
+
+            int playerInteriorId = 0;
+            bool playerInteriorIdAvailable = _ambientWorld != null
+                && _ambientWorld.TryGetDispatchPlayerInteriorId(
+                    player.Position, out playerInteriorId);
 
             DateTime repeatAfter = DateTime.UtcNow.AddMinutes(
                 -_settings.RepeatProtectionMinutes);
             List<LSPDDispatchEventDefinition> eligible = _definitions
                 .Where(definition =>
                 {
-                    if (!definition.Enabled)
+                    if (!definition.Enabled
+                        || definition.MinimumSuspects > _settings.MaximumSuspects)
                         return false;
                     DateTime lastOffered;
                     bool outsideRepeatWindow = !_definitionOfferedAt.TryGetValue(
                         definition.Id, out lastOffered) || lastOffered <= repeatAfter;
                     return outsideRepeatWindow
-                        && definition.LocationIds != null
-                        && definition.LocationIds.Any(locationId =>
-                        {
-                            LSPDDispatchLocationDefinition area;
-                            return _locations.TryGetValue(locationId, out area)
-                                && definition.CanUseArea(area, player.Position);
-                        });
+                        && HasEligibleAuthoredOrNearbyFallbackArea(
+                            definition,
+                            player.Position,
+                            playerInteriorId,
+                            playerInteriorIdAvailable);
                 })
                 .ToList();
+
+            // Try mapped-interior branches first when a compatible doorway is
+            // actually nearby. Keep the other nearby catalog events and the
+            // authored-area fallback behind them so a failed interior scene
+            // cannot be silently rewritten, while valid exterior calls remain
+            // available through their own resolver path.
+            List<LSPDDispatchEventDefinition> nearbyCatalogEligible = eligible
+                .Where(definition => _ambientWorld != null
+                    && _ambientWorld.HasNearbyCompatibleDispatchCatalogLocation(
+                        definition,
+                        player.Position,
+                        playerInteriorId,
+                        playerInteriorIdAvailable))
+                .ToList();
+            List<LSPDDispatchEventDefinition> preferredInterior = nearbyCatalogEligible
+                .Where(definition => definition.RequiresMappedInterior
+                    || !string.IsNullOrWhiteSpace(definition.InteriorLocationId))
+                .ToList();
+            if (nearbyCatalogEligible.Count > 0)
+            {
+                var preferredIds = new HashSet<string>(preferredInterior
+                    .Select(definition => definition.Id), StringComparer.OrdinalIgnoreCase);
+                var nearbyIds = new HashSet<string>(nearbyCatalogEligible
+                    .Select(definition => definition.Id), StringComparer.OrdinalIgnoreCase);
+                List<LSPDDispatchEventDefinition> otherNearby = nearbyCatalogEligible
+                    .Where(definition => !preferredIds.Contains(definition.Id))
+                    .ToList();
+                List<LSPDDispatchEventDefinition> authoredFallback = eligible
+                    .Where(definition => !nearbyIds.Contains(definition.Id))
+                    .ToList();
+                eligible = BuildWeightedDefinitionOrder(preferredInterior)
+                    .Concat(BuildWeightedDefinitionOrder(otherNearby))
+                    .Concat(BuildWeightedDefinitionOrder(authoredFallback))
+                    .ToList();
+                LogRuntime(
+                    "POLICE_DISPATCH_NEARBY_CATALOG_EVENTS_READY",
+                    "CompatibleEvents=" + nearbyCatalogEligible.Count
+                    + "; SelectionSource=SharedLocationCatalog");
+            }
+            else
+                eligible = BuildWeightedDefinitionOrder(eligible);
+
             if (eligible.Count == 0)
             {
                 LogRuntime(
                     "POLICE_DISPATCH_NO_LOCATION_ELIGIBLE",
-                    "No Dispatch event matches the Player's distance, authored area, and location context.");
-                return null;
+                    "No Dispatch event matches the Player's authored area, nearby-catalog fallback, and location context.");
+                return selected;
             }
-            return eligible[_random.Next(0, eligible.Count)];
+            return eligible.Take(Math.Max(1, maximumCount)).ToList();
+        }
+
+        private List<LSPDDispatchEventDefinition> BuildWeightedDefinitionOrder(
+            IEnumerable<LSPDDispatchEventDefinition> definitions)
+        {
+            var remaining = (definitions ?? Enumerable.Empty<LSPDDispatchEventDefinition>())
+                .ToList();
+            var ordered = new List<LSPDDispatchEventDefinition>(remaining.Count);
+            while (remaining.Count > 0)
+            {
+                int totalWeight = remaining.Sum(
+                    definition => Math.Max(1, definition.SelectionWeight));
+                int roll = _random.Next(totalWeight);
+                int selectedIndex = remaining.Count - 1;
+                for (int index = 0; index < remaining.Count; index++)
+                {
+                    roll -= Math.Max(1, remaining[index].SelectionWeight);
+                    if (roll < 0)
+                    {
+                        selectedIndex = index;
+                        break;
+                    }
+                }
+                ordered.Add(remaining[selectedIndex]);
+                remaining.RemoveAt(selectedIndex);
+            }
+            return ordered;
+        }
+
+        private bool HasEligibleAuthoredOrNearbyFallbackArea(
+            LSPDDispatchEventDefinition definition,
+            Vector3 playerPosition,
+            int playerInteriorId,
+            bool playerInteriorIdAvailable)
+        {
+            if (definition == null)
+                return false;
+
+            if (definition.RequiresMappedInterior
+                || !string.IsNullOrWhiteSpace(definition.InteriorLocationId))
+                return _ambientWorld != null
+                    && _ambientWorld.HasNearbyCompatibleDispatchCatalogLocation(
+                        definition,
+                        playerPosition,
+                        playerInteriorId,
+                        playerInteriorIdAvailable);
+
+            List<LSPDDispatchLocationDefinition> matchingAreas = new List<LSPDDispatchLocationDefinition>();
+            foreach (string locationId in definition.LocationIds)
+            {
+                LSPDDispatchLocationDefinition area;
+                if (_locations.TryGetValue(locationId, out area)
+                    && definition.CanUseAreaContext(area))
+                    matchingAreas.Add(area);
+            }
+
+            return matchingAreas.Any(area => area.IsEligibleFor(playerPosition))
+                || (matchingAreas.Count > 0
+                    && matchingAreas.All(area => !area.IsEligibleFor(playerPosition)))
+                || (matchingAreas.Count == 0
+                    && _ambientWorld != null
+                    && _ambientWorld.HasNearbyCompatibleDispatchCatalogLocation(
+                        definition,
+                        playerPosition,
+                        playerInteriorId,
+                        playerInteriorIdAvailable));
         }
 
         private void SetState(LSPDDispatchState state)
@@ -3618,11 +6451,14 @@ namespace LSImmersiveLife
 
         private void Fail(string reason)
         {
+            Fail(reason, "lsimmersivelife.police.dispatch.cancelled");
+        }
+
+        private void Fail(string reason, string terminalAudioEvent)
+        {
             if (_incident == null)
                 return;
             LSPDDispatchEvent incident = _incident;
-            bool preserveDeadAftermath = TrackedSuspects(incident)
-                .Any(ped => ped != null && ped.Exists() && ped.IsDead);
             string diagnostic = "Title=" + (incident.Title ?? string.Empty)
                 + "; Id=" + (incident.Id ?? string.Empty)
                 + "; Type=" + (incident.IncidentType ?? string.Empty)
@@ -3635,9 +6471,9 @@ namespace LSImmersiveLife
                 incident,
                 LSPDDispatchState.Failed,
                 reason,
-                "lsimmersivelife.police.dispatch.cancelled",
+                terminalAudioEvent,
                 "failed",
-                preserveDeadAftermath);
+                true);
             Notify("~r~POLICE DISPATCH~s~\n" + reason);
             LogStateFailure("POLICE_DISPATCH_FAILED", diagnostic);
         }
@@ -3726,7 +6562,20 @@ namespace LSImmersiveLife
                             + "; Cleanup=AfterPlayerLeavesSafeRadius"
                             + "; Radius=" + DeferredCleanupDistance.ToString("0.0"));
                 }
-                if (incident.SuspectVehicle != null && incident.SuspectVehicle.Exists())
+                foreach (Vehicle vehicle in (incident.SuspectVehicles ?? new List<Vehicle>())
+                    .Where(value => value != null && value.Exists())
+                    .GroupBy(value => value.Handle)
+                    .Select(group => group.First()))
+                    _deferredCleanup.Add(new DeferredCleanup
+                    {
+                        Vehicle = vehicle,
+                        Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
+                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds)
+                    });
+                if (incident.SuspectVehicle != null && incident.SuspectVehicle.Exists()
+                    && !(incident.SuspectVehicles ?? new List<Vehicle>()).Any(value =>
+                        value != null && value.Exists()
+                        && value.Handle == incident.SuspectVehicle.Handle))
                     _deferredCleanup.Add(new DeferredCleanup
                     {
                         Vehicle = incident.SuspectVehicle,
@@ -3735,12 +6584,23 @@ namespace LSImmersiveLife
                     });
             }
             if (incident.Victim != null && incident.Victim.Exists())
+            {
+                bool murderVictimAftermath = incident.VictimStartsDead
+                    && (incident.Victim.IsDead || incident.Victim.Health <= 0);
                 _deferredCleanup.Add(new DeferredCleanup
                 {
                     Ped = incident.Victim,
                     Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
-                    Expires = now.AddSeconds(DeferredCleanupMaximumSeconds)
+                    Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
+                    PreserveUntilPlayerLeavesArea = murderVictimAftermath
                 });
+                if (murderVictimAftermath)
+                    LogRuntime("POLICE_DISPATCH_DEAD_VICTIM_RETAINED",
+                        "Incident=" + incident.Id
+                        + "; Ped=" + incident.Victim.Handle
+                        + "; Cleanup=AfterPlayerLeavesSafeRadius"
+                        + "; Radius=" + DeferredCleanupDistance.ToString("0.0"));
+            }
             foreach (Ped participant in incident.AdditionalParticipants)
                 if (participant != null && participant.Exists())
                     _deferredCleanup.Add(new DeferredCleanup
@@ -3781,13 +6641,93 @@ namespace LSImmersiveLife
             }
         }
 
-        private static void DeleteDeferred(DeferredCleanup item)
+        private void DeleteDeferred(DeferredCleanup item)
         {
             try { if (item.Ped != null && item.Ped.Exists()) item.Ped.Delete(); } catch { }
-            try { if (item.Vehicle != null && item.Vehicle.Exists()) item.Vehicle.Delete(); } catch { }
+            if (item.Vehicle != null && item.Vehicle.Exists())
+                DeleteEmptyOwnedIncidentVehicle(
+                    item.Vehicle, null, "DeferredOccurrenceCleanup");
         }
 
-        private static void CleanupIncident(LSPDDispatchEvent incident, bool defer)
+        private void CleanupPreparedOccurrence(
+            LSPDDispatchEvent incident,
+            string reason)
+        {
+            QueueCleanup(incident);
+            // Prepared occurrences have not captured a route or become the
+            // active assignment. Clear only Dispatch-owned marker references;
+            // never remove the Player's existing waypoint here.
+            if (_incident == null || ReferenceEquals(_incident, incident))
+            {
+                CleanupBlip(_sceneBlip);
+                CleanupBlip(_suspectBlip);
+                _sceneBlip = null;
+                _suspectBlip = null;
+            }
+            LogRuntime("POLICE_DISPATCH_PREPARED_OCCURRENCE_CLEANED",
+                "Incident=" + (incident == null ? string.Empty : incident.Id)
+                + "; Reason=" + (reason ?? string.Empty)
+                + "; DispatchBlipsCleared=true; ActorsDeferred=true"
+                + "; PlayerWaypointPreserved=true");
+        }
+
+        private void DeleteEmptyOwnedIncidentVehicle(
+            Vehicle vehicle,
+            LSPDDispatchEvent incident,
+            string reason)
+        {
+            if (vehicle == null || !vehicle.Exists())
+                return;
+
+            Ped[] occupants;
+            try { occupants = vehicle.Occupants ?? new Ped[0]; }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_OCCURRENCE_VEHICLE_OCCUPANT_CHECK_FAILED", ex);
+                return;
+            }
+            List<Ped> liveOccupants = occupants
+                .Where(ped => ped != null && ped.Exists())
+                .ToList();
+            if (liveOccupants.Count > 0)
+            {
+                // Dispatch no longer owns an occupied vehicle merely because
+                // it staged the empty shell. Release persistence and leave its
+                // current actors and physical vehicle in the world.
+                try
+                {
+                    vehicle.IsPersistent = false;
+                    vehicle.MarkAsNoLongerNeeded();
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_OCCURRENCE_VEHICLE_RELEASE_FAILED", ex);
+                }
+                LogRuntime("POLICE_DISPATCH_OCCURRENCE_OCCUPIED_VEHICLE_RELEASED",
+                    "Incident=" + (incident == null ? string.Empty : incident.Id)
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Occupants=" + string.Join(",", liveOccupants
+                        .Select(ped => ped.Handle.ToString()).ToArray())
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; Deleted=false");
+                return;
+            }
+
+            int vehicleHandle = vehicle.Handle;
+            try { vehicle.Delete(); }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_OCCURRENCE_EMPTY_VEHICLE_DELETE_FAILED", ex);
+                return;
+            }
+            LogRuntime("POLICE_DISPATCH_OCCURRENCE_EMPTY_VEHICLE_CLEANED",
+                "Incident=" + (incident == null ? string.Empty : incident.Id)
+                + "; Vehicle=" + vehicleHandle
+                + "; Reason=" + (reason ?? string.Empty)
+                + "; Occupants=0; Deleted=true");
+        }
+
+        private void CleanupIncident(LSPDDispatchEvent incident, bool defer)
         {
             if (incident == null || defer)
                 return;
@@ -3801,17 +6741,59 @@ namespace LSImmersiveLife
             {
                 foreach (Ped suspect in TrackedSuspects(incident).ToArray())
                     try { if (suspect != null && suspect.Exists()) suspect.Delete(); } catch { }
-                try { if (incident.SuspectVehicle != null && incident.SuspectVehicle.Exists()) incident.SuspectVehicle.Delete(); } catch { }
+                foreach (Vehicle vehicle in (incident.SuspectVehicles ?? new List<Vehicle>())
+                    .Where(value => value != null && value.Exists())
+                    .GroupBy(value => value.Handle)
+                    .Select(group => group.First()))
+                    DeleteEmptyOwnedIncidentVehicle(
+                        vehicle, incident, "ImmediateOccurrenceCleanup");
+                try
+                {
+                    if (incident.SuspectVehicle != null && incident.SuspectVehicle.Exists()
+                        && !(incident.SuspectVehicles ?? new List<Vehicle>()).Any(value =>
+                            value != null && value.Exists()
+                            && value.Handle == incident.SuspectVehicle.Handle))
+                        DeleteEmptyOwnedIncidentVehicle(
+                            incident.SuspectVehicle,
+                            incident,
+                            "ImmediatePrimaryOccurrenceCleanup");
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_OCCURRENCE_VEHICLE_CLEANUP_FAILED", ex);
+                }
                 incident.Suspect = null;
                 incident.SuspectVehicle = null;
+                if (incident.SuspectVehicles != null) incident.SuspectVehicles.Clear();
+                if (incident.SuspectVehicleByPedHandle != null)
+                    incident.SuspectVehicleByPedHandle.Clear();
                 if (incident.Suspects != null) incident.Suspects.Clear();
                 if (incident.ArrestedSuspects != null) incident.ArrestedSuspects.Clear();
                 if (incident.CompliantSuspects != null) incident.CompliantSuspects.Clear();
+                if (incident.PursuitContainedSuspectHandles != null)
+                    incident.PursuitContainedSuspectHandles.Clear();
+                if (incident.PursuitVehicleHealthAtStart != null)
+                    incident.PursuitVehicleHealthAtStart.Clear();
+                if (incident.PursuitVehicleStoppedAt != null)
+                    incident.PursuitVehicleStoppedAt.Clear();
+                if (incident.PursuitVehicleExitTaskAt != null)
+                    incident.PursuitVehicleExitTaskAt.Clear();
+                if (incident.PursuitVehicleExitRequestedHandles != null)
+                    incident.PursuitVehicleExitRequestedHandles.Clear();
             }
-            try { if (incident.Victim != null && incident.Victim.Exists()) incident.Victim.Delete(); } catch { }
+            if (incident.VictimWasExistingAmbient)
+            {
+                if (_ambientWorld != null)
+                    _ambientWorld.ReleaseDispatchCivilian(incident.Victim, incident.Id);
+            }
+            else
+            {
+                try { if (incident.Victim != null && incident.Victim.Exists()) incident.Victim.Delete(); } catch { }
+            }
             foreach (Ped participant in incident.AdditionalParticipants)
                 try { if (participant != null && participant.Exists()) participant.Delete(); } catch { }
             incident.Victim = null;
+            incident.VictimWasExistingAmbient = false;
             incident.AdditionalParticipants.Clear();
         }
 
@@ -3829,6 +6811,8 @@ namespace LSImmersiveLife
             if (incident.RequiresVehicle
                 && !string.IsNullOrWhiteSpace(incident.VehicleModel))
                 modelNames.Add(incident.VehicleModel);
+            if (!string.IsNullOrWhiteSpace(incident.VictimModelName))
+                modelNames.Add(incident.VictimModelName);
             foreach (string modelName in modelNames)
             {
                 try
@@ -3929,19 +6913,146 @@ namespace LSImmersiveLife
                 "transport-" + stage);
         }
 
+        private void MaintainPursuitWaypoint(DateTime now, Ped player)
+        {
+            LSPDDispatchEvent incident = _incident;
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff
+                || incident.State != LSPDDispatchState.SuspectFleeing
+                || !IsVehiclePursuitWaypointEvent(incident)
+                || now < incident.LastPursuitWaypointAt.AddSeconds(
+                    PursuitWaypointRefreshSeconds))
+                return;
+
+            Ped suspect = incident.CurrentPursuitTarget;
+            if (suspect == null || !suspect.Exists() || suspect.IsDead)
+                return;
+
+            Vehicle pursuitVehicle = incident.VehicleForSuspect(suspect);
+            Vector3 position = pursuitVehicle != null
+                && pursuitVehicle.Exists()
+                    ? pursuitVehicle.Position
+                    : suspect.Position;
+            if (position.DistanceTo(incident.LastPursuitWaypointPosition)
+                < PursuitWaypointMovementMeters)
+                return;
+
+            incident.LastPursuitWaypointAt = now;
+            incident.LastPursuitWaypointPosition = position;
+            if (_uiSettings.ShowWaypoint)
+                CaptureAndSetWaypoint(position);
+
+            if (incident.LastPursuitRadioUpdateAt == DateTime.MinValue
+                || now >= incident.LastPursuitRadioUpdateAt.AddSeconds(
+                    PursuitLocationRadioGapSeconds))
+            {
+                incident.LastPursuitRadioUpdateAt = now;
+                incident.PursuitLocationUpdateCount++;
+                ReportAudioStage(
+                    "lsimmersivelife.police.detail.location_updated",
+                    incident,
+                    "pursuit-location-" + incident.PursuitLocationUpdateCount,
+                    true);
+                LogRuntime(
+                    "POLICE_DISPATCH_PURSUIT_ROUTE_UPDATED",
+                    "Event=" + incident.Id
+                    + "; Target=" + suspect.Handle
+                    + "; Vehicle=" + (pursuitVehicle == null ? 0 : pursuitVehicle.Handle)
+                    + "; Position=" + position
+                    + "; Player=" + (player == null || !player.Exists()
+                        ? 0 : player.Handle));
+            }
+        }
+
+        private static bool IsVehiclePursuitWaypointEvent(LSPDDispatchEvent incident)
+        {
+            if (incident == null)
+                return false;
+            bool legacyRoadSpeedBranch = incident.BranchIds != null
+                && incident.BranchIds.Contains(
+                    "dispatch-road-vehicle-speed-chaos",
+                    StringComparer.OrdinalIgnoreCase);
+            bool boundedGroupPursuit = incident.StartPursuitOnAccept
+                && incident.SuspectVehicleCount > 1;
+            return legacyRoadSpeedBranch || boundedGroupPursuit;
+        }
+
+        private void ReportSceneApproach(Ped player)
+        {
+            if (_incident == null || _incident.SceneApproachReported
+                || _incident.SceneArrivalReported || _incident.HasConvoyCustodyHandoff
+                || !_incident.OwnedByDispatch || player == null || !player.Exists())
+                return;
+
+            switch (_incident.State)
+            {
+                case LSPDDispatchState.Accepted:
+                case LSPDDispatchState.EnRoute:
+                case LSPDDispatchState.OnScene:
+                case LSPDDispatchState.Investigating:
+                case LSPDDispatchState.SuspectFleeing:
+                case LSPDDispatchState.SuspectResisting:
+                    break;
+                default:
+                    return;
+            }
+
+            if (player.Position.DistanceTo(_incident.Origin) > 50f)
+                return;
+
+            _incident.SceneApproachReported = true;
+            ReportAudioStage(
+                "lsimmersivelife.police.scene.approaching",
+                _incident,
+                "approaching",
+                true);
+            ReportAudioStage(
+                "lsimmersivelife.police.detail.safety_warning",
+                _incident,
+                "approach-caution",
+                true);
+        }
+
+        private void MaintainEnRouteStatus(DateTime now)
+        {
+            LSPDDispatchEvent incident = _incident;
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff
+                || incident.SceneApproachReported || incident.SceneArrivalReported
+                || !incident.ScenePreparationCompleted
+                || (incident.State != LSPDDispatchState.EnRoute
+                    && incident.State != LSPDDispatchState.SuspectFleeing
+                    && incident.State != LSPDDispatchState.SuspectResisting)
+                || now < incident.NextEnRouteStatusAt)
+                return;
+
+            incident.EnRouteStatusUpdateCount++;
+            string stage = "en-route-scene-active-" + incident.EnRouteStatusUpdateCount;
+            ReportAudioStage(
+                "lsimmersivelife.police.dispatch.scene_active",
+                incident,
+                stage,
+                true);
+            incident.NextEnRouteStatusAt = now.AddSeconds(60);
+        }
+
         private LSPDAudioResult ReportAudioStage(
             string eventId,
             LSPDDispatchEvent incident,
-            string stage)
+            string stage,
+            bool retainCurrentScope = false)
         {
             if (incident == null || string.IsNullOrWhiteSpace(stage))
                 return LSPDAudioResult.Inactive;
             if (string.Equals(incident.LastAudioStage, stage, StringComparison.Ordinal))
                 return LSPDAudioResult.Duplicate;
 
-            CloseActiveAudio(incident);
-            string scope = "police-dispatch-" + incident.Id + "-" + stage;
-            incident.ActiveAudioScope = scope;
+            if (!retainCurrentScope || string.IsNullOrWhiteSpace(incident.ActiveAudioScope))
+            {
+                CloseActiveAudio(incident);
+                incident.ActiveAudioScope = "police-dispatch-" + incident.Id + "-" + stage;
+            }
+            string scope = incident.ActiveAudioScope;
             incident.LastAudioStage = stage;
             return _audio.Report(
                 eventId,
@@ -4514,7 +7625,20 @@ namespace LSImmersiveLife
 
         private void LogRuntime(string category, string message)
         {
-            if (_log != null) _log.Runtime(category, message);
+            if (_log == null)
+                return;
+            bool recurringLocationSelection =
+                string.Equals(category,
+                    "POLICE_DISPATCH_NEARBY_CATALOG_EVENTS_READY",
+                    StringComparison.Ordinal)
+                || string.Equals(category,
+                    "POLICE_DISPATCH_NO_LOCATION_ELIGIBLE",
+                    StringComparison.Ordinal);
+            if (recurringLocationSelection)
+                _log.RuntimeThrottled(category, message,
+                    TimeSpan.FromSeconds(30));
+            else
+                _log.Runtime(category, message);
         }
 
         private void LogStateFailure(string category, string message)

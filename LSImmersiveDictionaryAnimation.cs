@@ -10,6 +10,45 @@ using GTA.Native;
 /// </summary>
 internal static class LSImmersiveDictionaryAnimation
 {
+    internal enum ArrestTargetPosture
+    {
+        Invalid,
+        Dead,
+        Cuffed,
+        Grounded,
+        Kneeling,
+        Standing
+    }
+
+    internal static ArrestTargetPosture ClassifyArrestTarget(Ped ped)
+    {
+        if (ped == null || !ped.Exists())
+            return ArrestTargetPosture.Invalid;
+        if (ped.IsDead || ped.Health <= 0)
+            return ArrestTargetPosture.Dead;
+
+        try
+        {
+            if (Function.Call<bool>(Hash.IS_PED_CUFFED, ped))
+                return ArrestTargetPosture.Cuffed;
+        }
+        catch { }
+
+        try
+        {
+            if (Function.Call<bool>(Hash.IS_PED_RAGDOLL, ped)
+                || Function.Call<bool>(Hash.IS_PED_IN_WRITHE, ped))
+                return ArrestTargetPosture.Grounded;
+        }
+        catch { }
+
+        if (IsPlaying(ped, "random@arrests", "kneeling_arrest_idle")
+            || IsPlaying(ped, "random@arrests", "kneeling_arrest_get_up"))
+            return ArrestTargetPosture.Kneeling;
+
+        return ArrestTargetPosture.Standing;
+    }
+
     internal static bool TryPlaySynchronizedPair(
         string dictionary,
         Ped first,
@@ -21,10 +60,14 @@ internal static class LSImmersiveDictionaryAnimation
         int durationMilliseconds,
         float playbackRate,
         out int sceneId,
-        out float longestClipDuration)
+        out float longestClipDuration,
+        out Vector3 sceneOrigin,
+        out float sceneHeading)
     {
         sceneId = -1;
         longestClipDuration = 0f;
+        sceneOrigin = Vector3.Zero;
+        sceneHeading = 0f;
         if (first == null || !first.Exists() || first.IsDead
             || second == null || !second.Exists() || second.IsDead
             || first.Handle == second.Handle
@@ -50,26 +93,20 @@ internal static class LSImmersiveDictionaryAnimation
 
         try
         {
-            float heading = (float)(Math.Atan2(
-                secondPosition.X - firstPosition.X,
-                secondPosition.Y - firstPosition.Y) * (180.0 / Math.PI));
-            if (heading < 0f)
-                heading += 360f;
-
-            Vector3 origin = new Vector3(
-                (firstPosition.X + secondPosition.X) * 0.5f,
-                (firstPosition.Y + secondPosition.Y) * 0.5f,
-                (firstPosition.Z + secondPosition.Z) * 0.5f);
-
-            Function.Call(Hash.SET_ENTITY_HEADING, first, heading);
-            Function.Call(Hash.SET_ENTITY_HEADING, second, (heading + 180f) % 360f);
+            // The paired arrest clips use their authored actor offsets from
+            // the synchronized-scene root. Root at the officer and align the
+            // scene rotation to that root actor. Leave both Ped headings to
+            // the synchronized task; forcing identical entity headings here
+            // made the authored cop/crook roles look misaligned.
+            sceneHeading = first.Heading;
+            sceneOrigin = firstPosition;
             first.Task.ClearAll();
             second.Task.ClearAll();
 
             sceneId = Function.Call<int>(
                 Hash.CREATE_SYNCHRONIZED_SCENE,
-                origin.X, origin.Y, origin.Z,
-                0f, 0f, heading, 2);
+                sceneOrigin.X, sceneOrigin.Y, sceneOrigin.Z,
+                0f, 0f, sceneHeading, 2);
             if (sceneId < 0)
                 return false;
 
@@ -93,6 +130,8 @@ internal static class LSImmersiveDictionaryAnimation
             try { if (second != null && second.Exists()) second.Task.ClearAll(); } catch { }
             sceneId = -1;
             longestClipDuration = 0f;
+            sceneOrigin = Vector3.Zero;
+            sceneHeading = 0f;
             return false;
         }
     }
@@ -102,6 +141,21 @@ internal static class LSImmersiveDictionaryAnimation
         Ped suspect,
         out int sceneId,
         out float longestClipDuration)
+    {
+        Vector3 sceneOrigin;
+        float sceneHeading;
+        return TryPlaySynchronizedArrest(
+            officer, suspect, out sceneId, out longestClipDuration,
+            out sceneOrigin, out sceneHeading);
+    }
+
+    internal static bool TryPlaySynchronizedArrest(
+        Ped officer,
+        Ped suspect,
+        out int sceneId,
+        out float longestClipDuration,
+        out Vector3 sceneOrigin,
+        out float sceneHeading)
     {
         return TryPlaySynchronizedPair(
             "mp_arrest_paired",
@@ -114,7 +168,65 @@ internal static class LSImmersiveDictionaryAnimation
             -1,
             1.0f,
             out sceneId,
-            out longestClipDuration);
+            out longestClipDuration,
+            out sceneOrigin,
+            out sceneHeading);
+    }
+
+    internal static bool TryPlaySynchronizedGroundArrest(
+        Ped officer,
+        Ped suspect,
+        out int sceneId,
+        out float longestClipDuration)
+    {
+        Vector3 sceneOrigin;
+        float sceneHeading;
+        return TryPlaySynchronizedGroundArrest(
+            officer, suspect, out sceneId, out longestClipDuration,
+            out sceneOrigin, out sceneHeading);
+    }
+
+    internal static bool TryPlaySynchronizedGroundArrest(
+        Ped officer,
+        Ped suspect,
+        out int sceneId,
+        out float longestClipDuration,
+        out Vector3 sceneOrigin,
+        out float sceneHeading)
+    {
+        return TryPlaySynchronizedPair(
+            "mp_arresting",
+            officer,
+            "arrest_on_floor_front_right_a",
+            suspect,
+            "arrest_on_floor_front_right_b",
+            4.0f,
+            -4.0f,
+            -1,
+            1.0f,
+            out sceneId,
+            out longestClipDuration,
+            out sceneOrigin,
+            out sceneHeading);
+    }
+
+    internal static bool TryGetSynchronizedScenePhase(int sceneId, out float phase)
+    {
+        phase = -1f;
+        if (sceneId < 0)
+            return false;
+        try
+        {
+            float value = Function.Call<float>(Hash.GET_SYNCHRONIZED_SCENE_PHASE, sceneId);
+            if (float.IsNaN(value) || float.IsInfinity(value) || value < 0f)
+                return false;
+            phase = value;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     internal static void RequestDictionary(string dictionary)

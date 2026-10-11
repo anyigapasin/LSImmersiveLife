@@ -113,6 +113,9 @@
     <Event id="lsimmersivelife.police.dispatch.en_route" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
       <Clip id="LSImmersiveLife_Police_dispatch_en_route_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_en_route_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your response to the assigned call is acknowledged.</Clip>
     </Event>
+    <Event id="lsimmersivelife.police.dispatch.scene_active" speaker="dispatch" priority="Dispatch" cooldownMs="45000" expiresMs="45000">
+      <Clip id="LSImmersiveLife_Police_dispatch_scene_active_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_scene_active_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" generator="Windows System.Speech" weight="1">Unit, the incident remains active. Continue to the marked location.</Clip>
+    </Event>
     <Event id="lsimmersivelife.police.dispatch.arrived" speaker="dispatch" priority="Dispatch" cooldownMs="1000" expiresMs="45000">
       <Clip id="LSImmersiveLife_Police_dispatch_arrived_01" file="Police/en-US/dispatch/LSImmersiveLife_Police_dispatch_arrived_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">Your arrival at the reported location is acknowledged.</Clip>
     </Event>

@@ -54,6 +54,7 @@
      maximumQuietPatrolSeconds="600" 
      repeatProtectionMinutes="20"
      maximumActiveIncidents="1" 
+     maximumSuspects="3"
      audioMinimumGapSeconds="5" 
      contextClearQuietSeconds="30" />
 

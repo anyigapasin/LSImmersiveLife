@@ -82,6 +82,7 @@ namespace LSImmersiveLife
             BuildPoliceAuthority();
             BuildPolicePatrol();
             BuildPoliceDispatch();
+            BuildPoliceSuspectInjury();
             BuildPoliceCrimeActivity();
             BuildPoliceNpcResponse();
             BuildPoliceTraffic();
@@ -121,9 +122,21 @@ namespace LSImmersiveLife
             AddNumber("Minimum Quiet Patrol", "Minimum delay between eligible automatic Dispatch offers, in seconds.", 30, 1800, delegate { return Configuration.Police.Dispatch.MinimumQuietPatrolSeconds; }, delegate(int value) { Configuration.Police.Dispatch.MinimumQuietPatrolSeconds = value; });
             AddNumber("Maximum Quiet Patrol", "Maximum delay between eligible automatic Dispatch offers, in seconds.", 30, 3600, delegate { return Configuration.Police.Dispatch.MaximumQuietPatrolSeconds; }, delegate(int value) { Configuration.Police.Dispatch.MaximumQuietPatrolSeconds = value; });
             AddNumber("Repeat Protection", "Minutes before the same authored Dispatch definition may repeat.", 0, 240, delegate { return Configuration.Police.Dispatch.RepeatProtectionMinutes; }, delegate(int value) { Configuration.Police.Dispatch.RepeatProtectionMinutes = value; });
+            AddNumber("Maximum Dispatch Suspects", "Maximum suspects in one Dispatch incident. Test groups at 3; the setting is capped at 15.", 1, 15, delegate { return Configuration.Police.Dispatch.MaximumSuspects; }, delegate(int value) { Configuration.Police.Dispatch.MaximumSuspects = Math.Max(1, Math.Min(15, value)); });
             AddReadOnly("Active Incident Limit", "One active Dispatch incident by design.");
             AddNumber("Audio Minimum Gap", "Minimum spacing between Dispatch audio responses, in seconds.", 0, 60, delegate { return Configuration.Police.Dispatch.AudioMinimumGapSeconds; }, delegate(int value) { Configuration.Police.Dispatch.AudioMinimumGapSeconds = value; });
             AddNumber("Context Clear Quiet", "Quiet interval after a Gang or NPC contact ends, in seconds.", 0, 300, delegate { return Configuration.Police.Dispatch.ContextClearQuietSeconds; }, delegate(int value) { Configuration.Police.Dispatch.ContextClearQuietSeconds = value; });
+        }
+
+        private void BuildPoliceSuspectInjury()
+        {
+            AddHeader("Controlled Suspect Injury");
+            AddNumber("Suspect Health Buffer", "Managed maximum health for Dispatch and Citizen-owned suspects.", 1000, 10000, delegate { return Configuration.Police.SuspectInjury.ControlledMaximumHealth; }, delegate(int value) { Configuration.Police.SuspectInjury.ControlledMaximumHealth = value; });
+            AddNumber("Arrestable Wounded Floor", "Minimum health retained for a living, nonfatal wounded suspect.", 50, 2000, delegate { return Configuration.Police.SuspectInjury.ArrestableWoundedHealthFloor; }, delegate(int value) { Configuration.Police.SuspectInjury.ArrestableWoundedHealthFloor = value; });
+            AddNumber("Damage Bone Retention", "Milliseconds to retain the last valid hit bone when GTA reports Bone 0.", 50, 2000, delegate { return Configuration.Police.SuspectInjury.LastDamageBoneRetentionMilliseconds; }, delegate(int value) { Configuration.Police.SuspectInjury.LastDamageBoneRetentionMilliseconds = value; });
+            AddNumber("Fatal Injury Hit Threshold", "Observed damage events of the same type before a non-head injury becomes fatal. One punch remains recoverable.", 2, 10, delegate { return Configuration.Police.SuspectInjury.CumulativeFatalHitThreshold; }, delegate(int value) { Configuration.Police.SuspectInjury.CumulativeFatalHitThreshold = value; });
+            AddNumber("Downed Repeated Hit Threshold", "Additional hits while downed before a fatal outcome.", 2, 10, delegate { return Configuration.Police.SuspectInjury.RepeatedDamageAfterDownedThreshold; }, delegate(int value) { Configuration.Police.SuspectInjury.RepeatedDamageAfterDownedThreshold = value; });
+            AddNumber("Melee Recovery Window", "Milliseconds before the same Ped resumes its existing response or custody tasks after a punch.", 250, 5000, delegate { return Configuration.Police.SuspectInjury.MeleeReactionRecoveryMilliseconds; }, delegate(int value) { Configuration.Police.SuspectInjury.MeleeReactionRecoveryMilliseconds = value; });
         }
 
         private void BuildPoliceCrimeActivity()
@@ -208,7 +221,6 @@ namespace LSImmersiveLife
         {
             AddHeader("Police Backup Force");
             AddCheck("Backup Force Enabled", "Allow player-requested support units to stage and travel to an active Police scene.", Configuration.Police.Backup.Enabled, delegate(bool value) { Configuration.Police.Backup.Enabled = value; });
-            AddCheck("Automatic Group Support", "Automatically request backup for a group Dispatch and let arriving officers help contain it.", Configuration.Police.Backup.AutomaticGroupSupport, delegate(bool value) { Configuration.Police.Backup.AutomaticGroupSupport = value; });
             AddCheck("Use Saved Backup Favorite", "Use the selected saved backup officer favorite when one is available.", Configuration.Police.Backup.PreferSavedFavoritePed, delegate(bool value) { Configuration.Police.Backup.PreferSavedFavoritePed = value; });
             AddNumber("Backup Units Per Request", "Number of Police vehicles in a support request.", 1, 4, delegate { return Configuration.Police.Backup.UnitsPerRequest; }, delegate(int value) { Configuration.Police.Backup.UnitsPerRequest = value; });
             AddNumber("Officers Per Backup Unit", "Number of officers assigned to each support vehicle.", 1, 2, delegate { return Configuration.Police.Backup.OfficersPerUnit; }, delegate(int value) { Configuration.Police.Backup.OfficersPerUnit = value; });

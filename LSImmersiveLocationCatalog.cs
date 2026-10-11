@@ -305,6 +305,76 @@ namespace LSImmersiveLife
                 }
             }
 
+            // The owner-confirmed location import supplies a named exterior
+            // entrance and one or more nearby interior door references. Treat
+            // these as route candidates only; AmbientWorld must still confirm
+            // the live interior sides, walkable floor, door, and staging.
+            foreach (LSImmersiveLocationDefinition location in locations.Values)
+            {
+                if (location == null
+                    || !location.ExteriorVerified
+                    || !location.InteriorVerified
+                    || !string.Equals(location.IdentityStatus,
+                        "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                foreach (LSImmersiveLocationPoint outsidePoint
+                    in location.FindPoints("ObservedCoordinateCandidate", false))
+                {
+                    if (outsidePoint == null
+                        || !string.Equals(outsidePoint.PositionContext,
+                            "OwnerConfirmedExteriorEntranceReference",
+                            StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(outsidePoint.InteriorId, "0",
+                            StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(outsidePoint.InteriorStatus,
+                            "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(outsidePoint.SourceRef, location.SourceRef,
+                            StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    foreach (LSImmersiveLocationPoint insidePoint
+                        in location.FindPoints("InteriorDoorCandidate", false))
+                    {
+                        int interiorId;
+                        if (insidePoint == null
+                            || !string.Equals(insidePoint.PositionContext,
+                                "OwnerConfirmedInteriorCoordinateReference",
+                                StringComparison.OrdinalIgnoreCase)
+                            || !string.Equals(insidePoint.InteriorStatus,
+                                "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase)
+                            || !string.Equals(insidePoint.SourceRef, location.SourceRef,
+                                StringComparison.OrdinalIgnoreCase)
+                            || !int.TryParse(insidePoint.InteriorId,
+                                NumberStyles.Integer, CultureInfo.InvariantCulture,
+                                out interiorId)
+                            || interiorId == 0)
+                            continue;
+
+                        float actualDistance = outsidePoint.Position.DistanceTo(
+                            insidePoint.Position);
+                        if (float.IsNaN(actualDistance)
+                            || float.IsInfinity(actualDistance)
+                            || actualDistance < 0.05f
+                            || actualDistance > 8f)
+                            continue;
+
+                        string pairKey = "owner-reference|" + location.Id + "|"
+                            + outsidePoint.Id + "|" + insidePoint.Id;
+                        if (!seenPairs.Add(pairKey))
+                            continue;
+
+                        result.Add(new LSImmersiveLocationInteriorAccessPair(
+                            location,
+                            outsidePoint,
+                            location,
+                            insidePoint,
+                            actualDistance,
+                            "OwnerConfirmedMapInteriorDoor_RuntimeValidationRequired"));
+                    }
+                }
+            }
+
             return result;
         }
 

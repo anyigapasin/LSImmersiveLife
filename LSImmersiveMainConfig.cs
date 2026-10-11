@@ -604,6 +604,7 @@ namespace LSImmersiveLife
         internal LSPDAuthoritySettings Authority { get; set; }
         internal LSPolicePatrolSettings Patrol { get; set; }
         internal LSPoliceDispatchSettings Dispatch { get; set; }
+        internal LSPoliceSuspectInjurySettings SuspectInjury { get; set; }
         // Crime Activity is a quiet, player-led patrol layer. It remains
         // separate from the urgent Dispatch producer and has its own exposed
         // discovery, proximity, scene, and cooldown values.
@@ -620,21 +621,83 @@ namespace LSImmersiveLife
         internal LSPoliceCleanupSettings Cleanup { get; set; }
         internal static LSPoliceBehaviorSettings Default()
         {
-            return new LSPoliceBehaviorSettings { Authority = LSPDAuthoritySettings.Default(), Patrol = LSPolicePatrolSettings.Default(), Dispatch = LSPoliceDispatchSettings.Default(), CrimeActivity = LSPoliceCrimeActivitySettings.Default(), NpcResponse = LSPoliceNpcResponseSettings.Default(), Traffic = LSPoliceTrafficSettings.Default(), Response = LSPoliceResponseSettings.Default(), Backup = LSPoliceBackupSettings.Default(), Convoy = LSPoliceConvoySettings.Default(), Cleanup = LSPoliceCleanupSettings.Default() };
+            return new LSPoliceBehaviorSettings { Authority = LSPDAuthoritySettings.Default(), Patrol = LSPolicePatrolSettings.Default(), Dispatch = LSPoliceDispatchSettings.Default(), SuspectInjury = LSPoliceSuspectInjurySettings.Default(), CrimeActivity = LSPoliceCrimeActivitySettings.Default(), NpcResponse = LSPoliceNpcResponseSettings.Default(), Traffic = LSPoliceTrafficSettings.Default(), Response = LSPoliceResponseSettings.Default(), Backup = LSPoliceBackupSettings.Default(), Convoy = LSPoliceConvoySettings.Default(), Cleanup = LSPoliceCleanupSettings.Default() };
         }
         internal static LSPoliceBehaviorSettings Read(XElement n, LSPoliceBehaviorSettings f)
         {
             LSPoliceBehaviorSettings d = f ?? Default();
             if (n == null) return d;
-            return new LSPoliceBehaviorSettings { Authority = LSPDAuthoritySettings.FromXml(n.Element("AuthoritySettings")), Patrol = LSPolicePatrolSettings.Read(n.Element("Patrol"), d.Patrol), Dispatch = LSPoliceDispatchSettings.Read(n.Element("Dispatch"), d.Dispatch), CrimeActivity = LSPoliceCrimeActivitySettings.Read(n.Element("CrimeActivity"), d.CrimeActivity), NpcResponse = LSPoliceNpcResponseSettings.Read(n.Element("NpcResponse"), d.NpcResponse), Traffic = LSPoliceTrafficSettings.Read(n.Element("Traffic"), d.Traffic), Response = LSPoliceResponseSettings.Read(n.Element("Response"), d.Response), Backup = LSPoliceBackupSettings.Read(n.Element("Backup"), d.Backup), Convoy = LSPoliceConvoySettings.Read(n.Element("Convoy"), d.Convoy), Cleanup = LSPoliceCleanupSettings.Read(n.Element("Cleanup"), d.Cleanup) };
+            return new LSPoliceBehaviorSettings { Authority = LSPDAuthoritySettings.FromXml(n.Element("AuthoritySettings")), Patrol = LSPolicePatrolSettings.Read(n.Element("Patrol"), d.Patrol), Dispatch = LSPoliceDispatchSettings.Read(n.Element("Dispatch"), d.Dispatch), SuspectInjury = LSPoliceSuspectInjurySettings.Read(n.Element("SuspectInjury"), d.SuspectInjury), CrimeActivity = LSPoliceCrimeActivitySettings.Read(n.Element("CrimeActivity"), d.CrimeActivity), NpcResponse = LSPoliceNpcResponseSettings.Read(n.Element("NpcResponse"), d.NpcResponse), Traffic = LSPoliceTrafficSettings.Read(n.Element("Traffic"), d.Traffic), Response = LSPoliceResponseSettings.Read(n.Element("Response"), d.Response), Backup = LSPoliceBackupSettings.Read(n.Element("Backup"), d.Backup), Convoy = LSPoliceConvoySettings.Read(n.Element("Convoy"), d.Convoy), Cleanup = LSPoliceCleanupSettings.Read(n.Element("Cleanup"), d.Cleanup) };
         }
         internal void Normalize()
         {
-            Authority = Authority ?? LSPDAuthoritySettings.Default(); Patrol = Patrol ?? LSPolicePatrolSettings.Default(); Dispatch = Dispatch ?? LSPoliceDispatchSettings.Default(); CrimeActivity = CrimeActivity ?? LSPoliceCrimeActivitySettings.Default(); NpcResponse = NpcResponse ?? LSPoliceNpcResponseSettings.Default(); Traffic = Traffic ?? LSPoliceTrafficSettings.Default(); Response = Response ?? LSPoliceResponseSettings.Default(); Backup = Backup ?? LSPoliceBackupSettings.Default(); Convoy = Convoy ?? LSPoliceConvoySettings.Default(); Cleanup = Cleanup ?? LSPoliceCleanupSettings.Default(); Authority.Normalize(); Dispatch.Normalize(); CrimeActivity.Normalize(); NpcResponse.Normalize(); Traffic.Normalize(); Response.Normalize(); Backup.Normalize(); Convoy.Normalize(); Cleanup.Normalize();
+            Authority = Authority ?? LSPDAuthoritySettings.Default(); Patrol = Patrol ?? LSPolicePatrolSettings.Default(); Dispatch = Dispatch ?? LSPoliceDispatchSettings.Default(); SuspectInjury = SuspectInjury ?? LSPoliceSuspectInjurySettings.Default(); CrimeActivity = CrimeActivity ?? LSPoliceCrimeActivitySettings.Default(); NpcResponse = NpcResponse ?? LSPoliceNpcResponseSettings.Default(); Traffic = Traffic ?? LSPoliceTrafficSettings.Default(); Response = Response ?? LSPoliceResponseSettings.Default(); Backup = Backup ?? LSPoliceBackupSettings.Default(); Convoy = Convoy ?? LSPoliceConvoySettings.Default(); Cleanup = Cleanup ?? LSPoliceCleanupSettings.Default(); Authority.Normalize(); Dispatch.Normalize(); SuspectInjury.Normalize(); CrimeActivity.Normalize(); NpcResponse.Normalize(); Traffic.Normalize(); Response.Normalize(); Backup.Normalize(); Convoy.Normalize(); Cleanup.Normalize();
         }
         internal XElement ToXml()
         {
-            return new XElement("Police", Authority.ToXml(), Patrol.ToXml(), Dispatch.ToXml(), CrimeActivity.ToXml(), NpcResponse.ToXml(), Traffic.ToXml(), Response.ToXml(), Backup.ToXml(), Convoy.ToXml(), Cleanup.ToXml());
+            return new XElement("Police", Authority.ToXml(), Patrol.ToXml(), Dispatch.ToXml(), SuspectInjury.ToXml(), CrimeActivity.ToXml(), NpcResponse.ToXml(), Traffic.ToXml(), Response.ToXml(), Backup.ToXml(), Convoy.ToXml(), Cleanup.ToXml());
+        }
+    }
+
+    /// <summary>Shared injury controls for Dispatch and Citizen-owned suspects.</summary>
+    internal sealed class LSPoliceSuspectInjurySettings
+    {
+        internal int ControlledMaximumHealth { get; set; }
+        internal int ArrestableWoundedHealthFloor { get; set; }
+        internal int LastDamageBoneRetentionMilliseconds { get; set; }
+        internal int CumulativeFatalHitThreshold { get; set; }
+        internal int RepeatedDamageAfterDownedThreshold { get; set; }
+        internal int MeleeReactionRecoveryMilliseconds { get; set; }
+
+        internal static LSPoliceSuspectInjurySettings Default()
+        {
+            return new LSPoliceSuspectInjurySettings
+            {
+                ControlledMaximumHealth = 2000,
+                ArrestableWoundedHealthFloor = 250,
+                LastDamageBoneRetentionMilliseconds = 500,
+                CumulativeFatalHitThreshold = 3,
+                RepeatedDamageAfterDownedThreshold = 3,
+                MeleeReactionRecoveryMilliseconds = 1200
+            };
+        }
+
+        internal static LSPoliceSuspectInjurySettings Read(
+            XElement n,
+            LSPoliceSuspectInjurySettings fallback)
+        {
+            LSPoliceSuspectInjurySettings d = fallback ?? Default();
+            return n == null ? d : new LSPoliceSuspectInjurySettings
+            {
+                ControlledMaximumHealth = LSConfig.Int(n, "controlledMaximumHealth", d.ControlledMaximumHealth, 1000, 10000),
+                ArrestableWoundedHealthFloor = LSConfig.Int(n, "arrestableWoundedHealthFloor", d.ArrestableWoundedHealthFloor, 50, 2000),
+                LastDamageBoneRetentionMilliseconds = LSConfig.Int(n, "lastDamageBoneRetentionMilliseconds", d.LastDamageBoneRetentionMilliseconds, 50, 2000),
+                CumulativeFatalHitThreshold = LSConfig.Int(n, "cumulativeFatalHitThreshold", d.CumulativeFatalHitThreshold, 2, 10),
+                RepeatedDamageAfterDownedThreshold = LSConfig.Int(n, "repeatedDamageAfterDownedThreshold", d.RepeatedDamageAfterDownedThreshold, 2, 10),
+                MeleeReactionRecoveryMilliseconds = LSConfig.Int(n, "meleeReactionRecoveryMilliseconds", d.MeleeReactionRecoveryMilliseconds, 250, 5000)
+            };
+        }
+
+        internal void Normalize()
+        {
+            LSPoliceSuspectInjurySettings d = Default();
+            ControlledMaximumHealth = Math.Max(1000, Math.Min(10000, ControlledMaximumHealth > 0 ? ControlledMaximumHealth : d.ControlledMaximumHealth));
+            ArrestableWoundedHealthFloor = Math.Max(50, Math.Min(Math.Min(2000, ControlledMaximumHealth - 1), ArrestableWoundedHealthFloor > 0 ? ArrestableWoundedHealthFloor : d.ArrestableWoundedHealthFloor));
+            LastDamageBoneRetentionMilliseconds = Math.Max(50, Math.Min(2000, LastDamageBoneRetentionMilliseconds > 0 ? LastDamageBoneRetentionMilliseconds : d.LastDamageBoneRetentionMilliseconds));
+            CumulativeFatalHitThreshold = Math.Max(2, Math.Min(10, CumulativeFatalHitThreshold > 0 ? CumulativeFatalHitThreshold : d.CumulativeFatalHitThreshold));
+            RepeatedDamageAfterDownedThreshold = Math.Max(2, Math.Min(10, RepeatedDamageAfterDownedThreshold > 0 ? RepeatedDamageAfterDownedThreshold : d.RepeatedDamageAfterDownedThreshold));
+            MeleeReactionRecoveryMilliseconds = Math.Max(250, Math.Min(5000, MeleeReactionRecoveryMilliseconds > 0 ? MeleeReactionRecoveryMilliseconds : d.MeleeReactionRecoveryMilliseconds));
+        }
+
+        internal XElement ToXml()
+        {
+            return new XElement("SuspectInjury",
+                new XAttribute("controlledMaximumHealth", ControlledMaximumHealth),
+                new XAttribute("arrestableWoundedHealthFloor", ArrestableWoundedHealthFloor),
+                new XAttribute("lastDamageBoneRetentionMilliseconds", LastDamageBoneRetentionMilliseconds),
+                new XAttribute("cumulativeFatalHitThreshold", CumulativeFatalHitThreshold),
+                new XAttribute("repeatedDamageAfterDownedThreshold", RepeatedDamageAfterDownedThreshold),
+                new XAttribute("meleeReactionRecoveryMilliseconds", MeleeReactionRecoveryMilliseconds));
         }
     }
 
@@ -655,16 +718,17 @@ namespace LSImmersiveLife
         internal int MaximumQuietPatrolSeconds { get; set; }
         internal int RepeatProtectionMinutes { get; set; }
         internal int MaximumActiveIncidents { get; set; }
+        internal int MaximumSuspects { get; set; }
         internal int AudioMinimumGapSeconds { get; set; }
         internal int ContextClearQuietSeconds { get; set; }
-        internal static LSPoliceDispatchSettings Default() { return new LSPoliceDispatchSettings { Enabled = true, MinimumQuietPatrolSeconds = 180, MaximumQuietPatrolSeconds = 600, RepeatProtectionMinutes = 20, MaximumActiveIncidents = 1, AudioMinimumGapSeconds = 5, ContextClearQuietSeconds = 30 }; }
+        internal static LSPoliceDispatchSettings Default() { return new LSPoliceDispatchSettings { Enabled = true, MinimumQuietPatrolSeconds = 180, MaximumQuietPatrolSeconds = 600, RepeatProtectionMinutes = 20, MaximumActiveIncidents = 1, MaximumSuspects = 3, AudioMinimumGapSeconds = 5, ContextClearQuietSeconds = 30 }; }
         internal static LSPoliceDispatchSettings Read(XElement n, LSPoliceDispatchSettings f)
         {
             LSPoliceDispatchSettings d = f ?? Default(); if (n == null) return d;
-            LSPoliceDispatchSettings r = new LSPoliceDispatchSettings { Enabled = LSConfig.Bool(n, "enabled", d.Enabled), MinimumQuietPatrolSeconds = LSConfig.Int(n, "minimumQuietPatrolSeconds", d.MinimumQuietPatrolSeconds, 30, 1800), MaximumQuietPatrolSeconds = LSConfig.Int(n, "maximumQuietPatrolSeconds", d.MaximumQuietPatrolSeconds, 30, 3600), RepeatProtectionMinutes = LSConfig.Int(n, "repeatProtectionMinutes", d.RepeatProtectionMinutes, 0, 240), MaximumActiveIncidents = 1, AudioMinimumGapSeconds = LSConfig.Int(n, "audioMinimumGapSeconds", d.AudioMinimumGapSeconds, 0, 60), ContextClearQuietSeconds = LSConfig.Int(n, "contextClearQuietSeconds", d.ContextClearQuietSeconds, 0, 300) }; r.Normalize(); return r;
+            LSPoliceDispatchSettings r = new LSPoliceDispatchSettings { Enabled = LSConfig.Bool(n, "enabled", d.Enabled), MinimumQuietPatrolSeconds = LSConfig.Int(n, "minimumQuietPatrolSeconds", d.MinimumQuietPatrolSeconds, 30, 1800), MaximumQuietPatrolSeconds = LSConfig.Int(n, "maximumQuietPatrolSeconds", d.MaximumQuietPatrolSeconds, 30, 3600), RepeatProtectionMinutes = LSConfig.Int(n, "repeatProtectionMinutes", d.RepeatProtectionMinutes, 0, 240), MaximumActiveIncidents = 1, MaximumSuspects = LSConfig.Int(n, "maximumSuspects", d.MaximumSuspects, 1, 15), AudioMinimumGapSeconds = LSConfig.Int(n, "audioMinimumGapSeconds", d.AudioMinimumGapSeconds, 0, 60), ContextClearQuietSeconds = LSConfig.Int(n, "contextClearQuietSeconds", d.ContextClearQuietSeconds, 0, 300) }; r.Normalize(); return r;
         }
-        internal void Normalize() { MinimumQuietPatrolSeconds = LSConfig.Clamp(MinimumQuietPatrolSeconds, 30, 1800); MaximumQuietPatrolSeconds = LSConfig.Clamp(MaximumQuietPatrolSeconds, MinimumQuietPatrolSeconds, 3600); RepeatProtectionMinutes = LSConfig.Clamp(RepeatProtectionMinutes, 0, 240); MaximumActiveIncidents = 1; AudioMinimumGapSeconds = LSConfig.Clamp(AudioMinimumGapSeconds, 0, 60); ContextClearQuietSeconds = LSConfig.Clamp(ContextClearQuietSeconds, 0, 300); }
-        internal XElement ToXml() { return new XElement("Dispatch", new XAttribute("enabled", Enabled), new XAttribute("minimumQuietPatrolSeconds", MinimumQuietPatrolSeconds), new XAttribute("maximumQuietPatrolSeconds", MaximumQuietPatrolSeconds), new XAttribute("repeatProtectionMinutes", RepeatProtectionMinutes), new XAttribute("maximumActiveIncidents", MaximumActiveIncidents), new XAttribute("audioMinimumGapSeconds", AudioMinimumGapSeconds), new XAttribute("contextClearQuietSeconds", ContextClearQuietSeconds)); }
+        internal void Normalize() { MinimumQuietPatrolSeconds = LSConfig.Clamp(MinimumQuietPatrolSeconds, 30, 1800); MaximumQuietPatrolSeconds = LSConfig.Clamp(MaximumQuietPatrolSeconds, MinimumQuietPatrolSeconds, 3600); RepeatProtectionMinutes = LSConfig.Clamp(RepeatProtectionMinutes, 0, 240); MaximumActiveIncidents = 1; MaximumSuspects = LSConfig.Clamp(MaximumSuspects, 1, 15); AudioMinimumGapSeconds = LSConfig.Clamp(AudioMinimumGapSeconds, 0, 60); ContextClearQuietSeconds = LSConfig.Clamp(ContextClearQuietSeconds, 0, 300); }
+        internal XElement ToXml() { return new XElement("Dispatch", new XAttribute("enabled", Enabled), new XAttribute("minimumQuietPatrolSeconds", MinimumQuietPatrolSeconds), new XAttribute("maximumQuietPatrolSeconds", MaximumQuietPatrolSeconds), new XAttribute("repeatProtectionMinutes", RepeatProtectionMinutes), new XAttribute("maximumActiveIncidents", MaximumActiveIncidents), new XAttribute("maximumSuspects", MaximumSuspects), new XAttribute("audioMinimumGapSeconds", AudioMinimumGapSeconds), new XAttribute("contextClearQuietSeconds", ContextClearQuietSeconds)); }
     }
 
     /// <summary>
@@ -924,6 +988,8 @@ namespace LSImmersiveLife
     internal sealed class LSPoliceBackupSettings
     {
         internal bool Enabled { get; set; }
+        // Retained for backwards-compatible XML round-tripping. Dispatch
+        // Backup is now always player-requested; this legacy value is ignored.
         internal bool AutomaticGroupSupport { get; set; }
         internal bool PreferSavedFavoritePed { get; set; }
         internal int UnitsPerRequest { get; set; }

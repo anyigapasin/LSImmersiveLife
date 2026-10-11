@@ -24,6 +24,10 @@ namespace LSImmersiveLife
             new Dictionary<int, LSPDNPCRecord>();
         private readonly Dictionary<int, XElement> _modelsByHash =
             new Dictionary<int, XElement>();
+        private readonly Dictionary<string, List<string>> _dispatchPedPools =
+            new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, HashSet<int>> _dispatchPedPoolHashes =
+            new Dictionary<string, HashSet<int>>(StringComparer.OrdinalIgnoreCase);
         private XDocument _document;
         private int _sequence;
 
@@ -39,11 +43,127 @@ namespace LSImmersiveLife
         internal int ModelCount { get { return _modelsByHash.Count; } }
         internal string LastLoadError { get; private set; }
 
+        internal bool TryChooseDispatchPedModel(string poolId, out string modelName)
+        {
+            modelName = string.Empty;
+            if (!IsLoaded || string.IsNullOrWhiteSpace(poolId))
+                return false;
+
+            List<string> models;
+            if (!_dispatchPedPools.TryGetValue(poolId.Trim(), out models)
+                || models == null || models.Count == 0)
+                return false;
+
+            modelName = models[_random.Next(models.Count)];
+            return !string.IsNullOrWhiteSpace(modelName);
+        }
+
+        internal bool IsDispatchPedModelInPool(string poolId, int modelHash)
+        {
+            if (!IsLoaded || string.IsNullOrWhiteSpace(poolId))
+                return false;
+
+            HashSet<int> models;
+            return _dispatchPedPoolHashes.TryGetValue(poolId.Trim(), out models)
+                && models != null && models.Contains(modelHash);
+        }
+
+        private void LoadDispatchPedPools(XElement pools, XElement catalog)
+        {
+            if (pools == null || catalog == null)
+                return;
+
+            var catalogByName = new Dictionary<string, XElement>(StringComparer.OrdinalIgnoreCase);
+            foreach (XElement model in catalog.Elements("Ped"))
+            {
+                string name = Attribute(model, "model", string.Empty);
+                if (!string.IsNullOrWhiteSpace(name) && !catalogByName.ContainsKey(name))
+                    catalogByName.Add(name, model);
+            }
+
+            foreach (XElement pool in pools.Elements("Pool"))
+            {
+                string id = Attribute(pool, "id", string.Empty);
+                if (string.IsNullOrWhiteSpace(id) || _dispatchPedPools.ContainsKey(id))
+                    continue;
+
+                bool requireCitizenEligible;
+                if (!bool.TryParse(
+                        Attribute(pool, "requireCitizenEligible", "true"),
+                        out requireCitizenEligible))
+                    requireCitizenEligible = true;
+                string sourceRole = Attribute(pool, "sourceRole", string.Empty);
+                var names = new List<string>();
+                var hashes = new HashSet<int>();
+
+                if (!string.IsNullOrWhiteSpace(sourceRole))
+                {
+                    foreach (XElement model in catalog.Elements("Ped"))
+                    {
+                        if (!string.Equals(
+                                Attribute(model, "role", string.Empty),
+                                sourceRole,
+                                StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        bool citizenEligible;
+                        if (!bool.TryParse(
+                                Attribute(model, "citizenEligible", "false"),
+                                out citizenEligible)
+                            || (requireCitizenEligible && !citizenEligible))
+                            continue;
+
+                        string name = Attribute(model, "model", string.Empty);
+                        int hash;
+                        if (string.IsNullOrWhiteSpace(name)
+                            || !TryReadModelHash(model, out hash)
+                            || !hashes.Add(hash))
+                            continue;
+                        names.Add(name);
+                    }
+                }
+
+                foreach (XElement reference in pool.Elements("Ped"))
+                {
+                    string name = Attribute(reference, "model", string.Empty);
+                    XElement model;
+                    int hash;
+                    if (string.IsNullOrWhiteSpace(name)
+                        || !catalogByName.TryGetValue(name, out model)
+                        || !TryReadModelHash(model, out hash)
+                        || (requireCitizenEligible
+                            && !string.Equals(
+                                Attribute(model, "citizenEligible", "false"),
+                                "true",
+                                StringComparison.OrdinalIgnoreCase))
+                        || !hashes.Add(hash))
+                        continue;
+                    names.Add(name);
+                }
+
+                if (names.Count == 0)
+                {
+                    LogRuntime("NPC_DISPATCH_PED_POOL_UNAVAILABLE",
+                        "Pool=" + id + "; Reason=NO_VALID_CATALOG_MODELS");
+                    continue;
+                }
+
+                _dispatchPedPools.Add(id, names);
+                _dispatchPedPoolHashes.Add(id, hashes);
+            }
+
+            LogRuntime("NPC_DISPATCH_PED_POOLS_LOADED",
+                "Pools=" + _dispatchPedPools.Count
+                + "; Models=" + _dispatchPedPools.Values.Sum(pool => pool.Count));
+        }
+
         internal bool Reload()
         {
             LastLoadError = null;
             _document = null;
             _modelsByHash.Clear();
+            _dispatchPedPools.Clear();
+            _dispatchPedPoolHashes.Clear();
             _sessionRecords.Clear();
             try
             {
@@ -74,6 +194,8 @@ namespace LSImmersiveLife
                     }
                 }
 
+                LoadDispatchPedPools(root.Element("DispatchPedPools"), catalog);
+
                 if (_modelsByHash.Count == 0)
                     throw new InvalidDataException("NPC database has no readable ped model entries.");
                 if (Pool("StatusPools", "Status").Count == 0)
@@ -90,6 +212,9 @@ namespace LSImmersiveLife
                 LastLoadError = ex.Message;
                 _document = null;
                 _modelsByHash.Clear();
+                _dispatchPedPools.Clear();
+                _dispatchPedPoolHashes.Clear();
+                _sessionRecords.Clear();
                 if (_log != null)
                     _log.Exception("NPC_DATABASE_LOAD_FAILED", ex);
                 return false;
