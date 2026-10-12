@@ -91,8 +91,12 @@ namespace LSImmersiveLife
         private const int ScenePreparationTimeoutSeconds = 15;
         private const int SceneActorSetupRetryLimit = 2;
         private const int SceneActorSetupRetryDelayMilliseconds = 1000;
-        private const int InteriorSceneResolutionPendingMaximumSeconds = 15;
-        private const int InteriorSceneResolutionRetryDelayMilliseconds = 1000;
+        private const int SceneResolutionPendingMaximumSeconds = 15;
+        private const int SceneResolutionRetryDelayMilliseconds = 1000;
+        private const int MaximumPlayerRadiusVehicleDefinitionCandidates = 2;
+        private const int MaximumPlayerRadiusRoadFootDefinitionCandidates = 1;
+        private const int MaximumPlayerRadiusGenericFootDefinitionCandidates = 1;
+        private const float PlayerRadiusVehicleRoadSnapDistance = 45f;
         private const int PairedSceneAnimationLoadTimeoutSeconds = 10;
         private const float PairedSceneAnimationApproachDistance = 38f;
         private static readonly Vector3[] DispatchStoreParticipantOffsets =
@@ -149,7 +153,7 @@ namespace LSImmersiveLife
             new Dictionary<int, LSPDSuspectInjuryState>();
         private readonly Dictionary<int, BackupArrestOperation> _backupArrestOperations =
             new Dictionary<int, BackupArrestOperation>();
-        private readonly HashSet<string> _pendingInteriorResolutionDefinitionIds =
+        private readonly HashSet<string> _pendingSceneResolutionDefinitionIds =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private LSPDDispatchEvent _incident;
@@ -186,8 +190,8 @@ namespace LSImmersiveLife
         private bool _pendingOfferBypassesAutomaticQuietPeriod;
         private bool _pendingOfferWaitingLogged;
         private int _pendingOfferMinimumCooldownSeconds;
-        private int _pendingInteriorResolutionRetryCount;
-        private DateTime _pendingInteriorResolutionStartedAt = DateTime.MinValue;
+        private int _pendingSceneResolutionRetryCount;
+        private DateTime _pendingSceneResolutionStartedAt = DateTime.MinValue;
         private bool _acceptKeyDown;
         private bool _rejectKeyDown;
         private bool _investigateKeyDown;
@@ -644,7 +648,7 @@ namespace LSImmersiveLife
             if (!isPatrolling)
             {
                 CancelPendingOffer("Patrol ended before scene preparation completed.");
-                ResetPendingInteriorSceneResolution();
+                ResetPendingSceneResolution();
                 MaintainTrackedSuspectInjuries(now, Game.Player.Character);
                 _patrolSessionStarted = false;
                 _dispatchProducerEnabled = false;
@@ -668,7 +672,7 @@ namespace LSImmersiveLife
             if (_incident != null)
             {
                 CancelPendingOffer("Another Dispatch assignment became active.");
-                ResetPendingInteriorSceneResolution();
+                ResetPendingSceneResolution();
                 if (allowGameplayInput)
                     ProcessControllerInput(suppressEnterInput);
                 if (now < _nextMaintenance)
@@ -688,7 +692,7 @@ namespace LSImmersiveLife
             if (!_settings.Enabled)
             {
                 CancelPendingOffer("Dispatch was disabled before scene preparation completed.");
-                ResetPendingInteriorSceneResolution();
+                ResetPendingSceneResolution();
                 _dispatchProducerEnabled = false;
                 return;
             }
@@ -748,8 +752,8 @@ namespace LSImmersiveLife
                 return "A Dispatch assignment is already active.";
             if (_pendingOffer != null)
                 return "Dispatch is preparing the scene. The call will appear in Police Radio when it is ready.";
-            if (_pendingInteriorResolutionDefinitionIds.Count > 0)
-                return "Dispatch is waiting briefly for the mapped interior and collision probes to become ready.";
+            if (_pendingSceneResolutionDefinitionIds.Count > 0)
+                return "Dispatch is waiting briefly for the selected scene's readiness probes.";
             if (player == null || !player.Exists())
                 return "The player character is unavailable.";
             if (now < _manualRequestRetryAt)
@@ -759,12 +763,12 @@ namespace LSImmersiveLife
             {
                 if (_pendingOffer != null)
                     return "Dispatch is preparing the scene. The call will appear in Police Radio when it is ready.";
-                if (_pendingInteriorResolutionDefinitionIds.Count > 0)
-                    return "Dispatch is waiting briefly for the mapped interior and collision probes to become ready.";
+                if (_pendingSceneResolutionDefinitionIds.Count > 0)
+                    return "Dispatch is waiting briefly for the selected scene's readiness probes.";
                 _manualRequestRetryAt = now.AddSeconds(5);
                 return _definitions.Count == 0
                     ? "Dispatch has no usable callout definitions in its XML catalog."
-                    : "Dispatch could not validate a complete scene at a nearby catalog location.";
+                    : "Dispatch could not validate a complete compatible scene nearby.";
             }
             return "Dispatch request received. Review the new call in Police Radio.";
         }
@@ -781,10 +785,13 @@ namespace LSImmersiveLife
             bool playerLiveInteriorIdAvailable = _ambientWorld != null
                 && _ambientWorld.TryGetDispatchPlayerInteriorId(
                     player, out playerLiveInteriorId);
+            Vector3 playerRoadAnchor = Vector3.Zero;
+            bool playerOutsideLiveInterior = playerLiveInteriorIdAvailable
+                && playerLiveInteriorId == 0;
             List<LSPDDispatchEventDefinition> locationCandidates =
-                _pendingInteriorResolutionDefinitionIds.Count > 0
+                _pendingSceneResolutionDefinitionIds.Count > 0
                     ? _definitions.Where(value => value.Enabled
-                        && _pendingInteriorResolutionDefinitionIds.Contains(value.Id)
+                        && _pendingSceneResolutionDefinitionIds.Contains(value.Id)
                         && value.MinimumSuspects <= _settings.MaximumSuspects).ToList()
                     : ChooseLocationDefinitionCandidates(
                         player,
@@ -793,7 +800,7 @@ namespace LSImmersiveLife
                         playerLiveInteriorIdAvailable);
             if (locationCandidates.Count == 0)
             {
-                ResetPendingInteriorSceneResolution();
+                ResetPendingSceneResolution();
                 _nextOfferAt = _definitions.Count == 0
                     ? now.AddSeconds(30)
                     : NextDefinitionEligibleAt(now);
@@ -807,6 +814,7 @@ namespace LSImmersiveLife
             string locationFailure = "AmbientWorld is not attached by PoliceCore.";
             var locationFailures = new List<string>();
             var preferredInteriorFailures = new List<string>();
+            var pendingVehicleSceneFailures = new List<string>();
             foreach (LSPDDispatchEventDefinition candidateDefinition in locationCandidates)
             {
                 List<LSPDDispatchLocationDefinition> eventAreas =
@@ -835,12 +843,15 @@ namespace LSImmersiveLife
                     requiresVehicleStaging,
                     out sceneResolution,
                     out locationFailure,
+                    Vector3.Zero,
                     candidateDefinition.InteriorLocationId,
                     candidateDefinition.RequiredPhysicalType,
                     candidateDefinition.LocationContext,
                     candidateDefinition.RequiresMappedInterior,
                     playerLiveInteriorId,
-                    playerLiveInteriorIdAvailable))
+                    playerLiveInteriorIdAvailable,
+                    candidateDefinition.VehicleActivity,
+                    false))
                 {
                     definition = candidateDefinition;
                     break;
@@ -867,14 +878,137 @@ namespace LSImmersiveLife
                     break;
             }
 
-            // A mapped interior that is still streaming is not a failed event
-            // type. Hold the offer inside Dispatch's bounded retry window
-            // instead of substituting an unrelated exterior incident.
+            // An explicit request first tries the same randomized mapped/catalog
+            // candidates as every other request. If none resolves, a Player
+            // outside a live interior may receive a runtime-validated nearby
+            // exterior scene. Road definitions are included only when a real
+            // road node is available; generic outdoor definitions work away
+            // from roads. Mapped-interior events never use this fallback.
+            bool hasPendingInteriorResolution = preferredInteriorFailures.Any(failure =>
+                failure.IndexOf("=PENDING:", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (definition == null
+                && playerOutsideLiveInterior
+                && !hasPendingInteriorResolution)
+            {
+                bool playerRadiusRoadSceneAvailable =
+                    TryGetPlayerRadiusRoadVehicleAnchor(player, out playerRoadAnchor);
+                LogRuntime("POLICE_DISPATCH_PLAYER_RADIUS_OUTDOOR_FALLBACK_REQUEST",
+                    "Player=" + player.Handle
+                    + "; Vehicle=" + (player.CurrentVehicle == null
+                        ? 0 : player.CurrentVehicle.Handle)
+                    + "; RoadAnchor=" + (playerRadiusRoadSceneAvailable
+                        ? playerRoadAnchor.ToString() : "Unavailable")
+                    + "; RequestMode=" + (bypassAutomaticQuietPeriod
+                        ? "ExplicitRadio" : "ScheduledDispatch")
+                    + "; Resolution=CatalogFirstThenPlayerRadiusOutdoorFallback");
+                if (bypassAutomaticQuietPeriod && playerRadiusRoadSceneAvailable)
+                {
+                    LogRuntime("POLICE_DISPATCH_PLAYER_RADIUS_ROAD_REQUEST",
+                        "Player=" + player.Handle
+                        + "; Vehicle=" + (player.CurrentVehicle == null
+                            ? 0 : player.CurrentVehicle.Handle)
+                        + "; RoadAnchor=" + playerRoadAnchor
+                        + "; SceneResolution=CatalogFirstThenPlayerRadiusOutdoorFallback");
+                }
+                IEnumerable<string> pendingDefinitionIds =
+                    _pendingSceneResolutionDefinitionIds.Count > 0
+                        ? _pendingSceneResolutionDefinitionIds : null;
+                List<LSPDDispatchEventDefinition> outdoorFallbackCandidates =
+                    ChoosePlayerRadiusOutdoorFallbackCandidates(
+                        now, playerRadiusRoadSceneAvailable, pendingDefinitionIds);
+                foreach (LSPDDispatchEventDefinition candidateDefinition in outdoorFallbackCandidates)
+                {
+                    List<LSPDDispatchLocationDefinition> eventAreas =
+                        new List<LSPDDispatchLocationDefinition>();
+                    foreach (string locationId in candidateDefinition.LocationIds
+                        ?? Enumerable.Empty<string>())
+                    {
+                        LSPDDispatchLocationDefinition area;
+                        if (_locations.TryGetValue(locationId, out area)
+                            && candidateDefinition.CanUseAreaContext(area))
+                            eventAreas.Add(area);
+                    }
+
+                    bool requiresVehicleStaging = candidateDefinition.RequiresVehicle
+                        || candidateDefinition.VehicleStagingRequired;
+                    locationFailure = "AmbientWorld is not attached by PoliceCore.";
+                    LogRuntime(
+                        "POLICE_DISPATCH_PLAYER_RADIUS_OUTDOOR_FALLBACK_ATTEMPT",
+                        "Event=" + candidateDefinition.Id
+                        + "; Context=" + candidateDefinition.LocationContext
+                        + "; VehicleActivity=" + candidateDefinition.VehicleActivity
+                        + "; CatalogCandidatesFailed=" + locationFailures.Count
+                        + "; LiveInteriorFallback=Withheld; PendingSceneResolutionFallback="
+                        + (_pendingSceneResolutionDefinitionIds.Count > 0
+                            ? string.Join(",", _pendingSceneResolutionDefinitionIds)
+                            : "None"));
+                    if (_ambientWorld != null
+                        && _ambientWorld.TryResolveDispatchScene(
+                            eventAreas,
+                            candidateDefinition.IncidentType,
+                            player.Position,
+                            requiresVehicleStaging,
+                            out sceneResolution,
+                            out locationFailure,
+                            playerRoadAnchor,
+                            candidateDefinition.InteriorLocationId,
+                            candidateDefinition.RequiredPhysicalType,
+                            candidateDefinition.LocationContext,
+                            candidateDefinition.RequiresMappedInterior,
+                            playerLiveInteriorId,
+                            playerLiveInteriorIdAvailable,
+                            candidateDefinition.VehicleActivity,
+                            true))
+                    {
+                        definition = candidateDefinition;
+                        LogRuntime(
+                            "POLICE_DISPATCH_PLAYER_RADIUS_OUTDOOR_FALLBACK_SELECTED",
+                            "Event=" + definition.Id
+                            + "; LocationCategory=" + sceneResolution.LocationCategory
+                            + "; ScenePosition=" + sceneResolution.SceneCenter
+                            + "; VehicleActivity=" + definition.VehicleActivity);
+                        break;
+                    }
+
+                    locationFailures.Add(candidateDefinition.Id
+                        + "@PlayerRadiusOutdoorFallback="
+                        + (locationFailure ?? "Location validation failed."));
+                    LogRuntime(
+                        "POLICE_DISPATCH_PLAYER_RADIUS_OUTDOOR_FALLBACK_REJECTED",
+                        "Event=" + candidateDefinition.Id
+                        + "; Context=" + candidateDefinition.LocationContext
+                        + "; VehicleActivity=" + candidateDefinition.VehicleActivity
+                        + "; Failure=" + (locationFailure ?? "Location validation failed."));
+                    sceneResolution = null;
+                    if (candidateDefinition.RequiresVehicle
+                        && (locationFailure ?? string.Empty).IndexOf(
+                            "CollisionPending", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        pendingVehicleSceneFailures.Add(candidateDefinition.Id
+                            + "=PENDING:" + locationFailure);
+                        break;
+                    }
+                }
+                if (definition == null
+                    && pendingVehicleSceneFailures.Count == 0
+                    && _pendingSceneResolutionDefinitionIds.Count > 0
+                    && !playerRadiusRoadSceneAvailable)
+                {
+                    foreach (string pendingId in _pendingSceneResolutionDefinitionIds)
+                        pendingVehicleSceneFailures.Add(pendingId
+                            + "=PENDING:Stage=PlayerRadiusVehicleRoadReference; Result=Unavailable");
+                }
+            }
+
+            // A mapped interior or roadside vehicle point that is still
+            // streaming is not a failed event type. Hold the same candidate
+            // inside Dispatch's bounded retry window before substituting an
+            // unrelated exterior foot incident.
             bool hasResolvedExteriorScene = definition != null
                 && sceneResolution != null
                 && !sceneResolution.IsInteriorScene;
             if (hasResolvedExteriorScene
-                && TryDeferPendingInteriorResolution(
+                && TryDeferPendingSceneResolution(
                     now,
                     preferredInteriorFailures,
                     definition.Id + "@" + sceneResolution.LocationId))
@@ -882,10 +1016,12 @@ namespace LSImmersiveLife
 
             if (definition == null || sceneResolution == null)
             {
-                if (TryDeferPendingInteriorResolution(
-                    now, preferredInteriorFailures, null))
+                if (TryDeferPendingSceneResolution(
+                    now,
+                    preferredInteriorFailures.Concat(pendingVehicleSceneFailures),
+                    null))
                     return false;
-                ResetPendingInteriorSceneResolution();
+                ResetPendingSceneResolution();
                 _nextOfferAt = now.AddSeconds(30);
                 LogDebug(
                     "POLICE_DISPATCH_AMBIENT_WORLD_LOCATION_FAILED",
@@ -906,7 +1042,7 @@ namespace LSImmersiveLife
                         preferredInteriorFailures.Take(3)));
             }
 
-            ResetPendingInteriorSceneResolution(sceneResolution);
+            ResetPendingSceneResolution(sceneResolution);
 
             // Resolve profiles only after a compatible scene has passed
             // physical validation. Failed location searches must not select
@@ -961,12 +1097,12 @@ namespace LSImmersiveLife
             return TryAdvancePendingOffer(player, now);
         }
 
-        private bool TryDeferPendingInteriorResolution(
+        private bool TryDeferPendingSceneResolution(
             DateTime now,
-            IEnumerable<string> interiorFailures,
+            IEnumerable<string> sceneFailures,
             string exteriorCandidateWithheld)
         {
-            List<string> pendingFailures = (interiorFailures
+            List<string> pendingFailures = (sceneFailures
                 ?? Enumerable.Empty<string>())
                 .Where(value => value.IndexOf(
                     "=PENDING:", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -982,38 +1118,38 @@ namespace LSImmersiveLife
             string withheld = string.IsNullOrWhiteSpace(exteriorCandidateWithheld)
                 ? string.Empty
                 : "; ExteriorCandidateWithheld=" + exteriorCandidateWithheld;
-            if (_pendingInteriorResolutionStartedAt == DateTime.MinValue)
-                _pendingInteriorResolutionStartedAt = now;
+            if (_pendingSceneResolutionStartedAt == DateTime.MinValue)
+                _pendingSceneResolutionStartedAt = now;
             double pendingMilliseconds = Math.Max(
-                0d, (now - _pendingInteriorResolutionStartedAt).TotalMilliseconds);
+                0d, (now - _pendingSceneResolutionStartedAt).TotalMilliseconds);
             if (pendingMilliseconds >=
-                TimeSpan.FromSeconds(InteriorSceneResolutionPendingMaximumSeconds).TotalMilliseconds)
+                TimeSpan.FromSeconds(SceneResolutionPendingMaximumSeconds).TotalMilliseconds)
             {
                 LogDebug(
-                    "POLICE_DISPATCH_INTERIOR_RESOLUTION_EXPIRED",
-                    "Retries=" + _pendingInteriorResolutionRetryCount
+                    "POLICE_DISPATCH_SCENE_RESOLUTION_EXPIRED",
+                    "Retries=" + _pendingSceneResolutionRetryCount
                     + "; ElapsedMilliseconds=" + pendingMilliseconds.ToString("0")
-                    + "; MaximumPendingSeconds=" + InteriorSceneResolutionPendingMaximumSeconds
+                    + "; MaximumPendingSeconds=" + SceneResolutionPendingMaximumSeconds
                     + withheld
                     + "; EventFailures=" + string.Join(" | ", pendingFailures));
-                ResetPendingInteriorSceneResolution();
+                ResetPendingSceneResolution();
                 _nextOfferAt = now.AddSeconds(30);
                 return true;
             }
 
-            _pendingInteriorResolutionDefinitionIds.Clear();
+            _pendingSceneResolutionDefinitionIds.Clear();
             foreach (string pendingId in pendingDefinitions)
-                _pendingInteriorResolutionDefinitionIds.Add(pendingId);
-            _pendingInteriorResolutionRetryCount++;
+                _pendingSceneResolutionDefinitionIds.Add(pendingId);
+            _pendingSceneResolutionRetryCount++;
             _nextOfferAt = now.AddMilliseconds(
-                InteriorSceneResolutionRetryDelayMilliseconds);
+                SceneResolutionRetryDelayMilliseconds);
             _manualRequestRetryAt = _nextOfferAt;
             LogDebug(
-                "POLICE_DISPATCH_INTERIOR_RESOLUTION_PENDING",
-                "Retry=" + _pendingInteriorResolutionRetryCount
+                "POLICE_DISPATCH_SCENE_RESOLUTION_PENDING",
+                "Retry=" + _pendingSceneResolutionRetryCount
                 + "; ElapsedMilliseconds=" + pendingMilliseconds.ToString("0")
-                + "; MaximumPendingSeconds=" + InteriorSceneResolutionPendingMaximumSeconds
-                + "; DelayMilliseconds=" + InteriorSceneResolutionRetryDelayMilliseconds
+                + "; MaximumPendingSeconds=" + SceneResolutionPendingMaximumSeconds
+                + "; DelayMilliseconds=" + SceneResolutionRetryDelayMilliseconds
                 + withheld
                 + "; EventFailures=" + string.Join(" | ", pendingFailures));
             return true;
@@ -1144,6 +1280,11 @@ namespace LSImmersiveLife
                         && HasUnloadedRequiredSceneModels(incident);
                     bool boundedInteriorPending = IsInteriorScenePreparationPending(
                         incident, stageReason);
+                    bool boundedVehicleGroundPending = string.Equals(
+                            stage, "SuspectVehiclePlacement",
+                            StringComparison.OrdinalIgnoreCase)
+                        && stageReason.IndexOf(
+                            "Result=CollisionPending", StringComparison.OrdinalIgnoreCase) >= 0;
 
                     if (modelStillStreaming
                         && DateTime.UtcNow < incident.ScenePreparationDeadline)
@@ -1152,6 +1293,26 @@ namespace LSImmersiveLife
                         reason = "Stage=" + stage + "; " + stageReason
                             + "; Result=ModelStreamingPending";
                         return SceneOfferPreflightStatus.Pending;
+                    }
+                    if (boundedVehicleGroundPending
+                        && DateTime.UtcNow < incident.ScenePreparationDeadline
+                        && incident.ScenePreparationDeadline != DateTime.MinValue)
+                    {
+                        DateTime nextRetry = DateTime.UtcNow.AddMilliseconds(
+                            SceneActorSetupRetryDelayMilliseconds);
+                        incident.ScenePreparationNextRetryAt = nextRetry < incident.ScenePreparationDeadline
+                            ? nextRetry : incident.ScenePreparationDeadline;
+                        reason = "Stage=" + stage + "; " + stageReason
+                            + "; MaximumPendingSeconds=" + ScenePreparationTimeoutSeconds
+                            + "; Result=WaitingForVehicleRoadCollision";
+                        return SceneOfferPreflightStatus.Pending;
+                    }
+                    if (boundedVehicleGroundPending)
+                    {
+                        reason = "Stage=" + stage + "; " + stageReason
+                            + "; MaximumPendingSeconds=" + ScenePreparationTimeoutSeconds
+                            + "; Result=VehicleRoadCollisionDeadlineExpired";
+                        return SceneOfferPreflightStatus.Failed;
                     }
                     if (boundedInteriorPending
                         && DateTime.UtcNow < incident.ScenePreparationDeadline
@@ -3951,7 +4112,7 @@ namespace LSImmersiveLife
             ClearPlayerHandcuffState();
             RestoreAllSuspectInjuryStates();
             CancelPendingOffer("Dispatch was reset.");
-            ResetPendingInteriorSceneResolution();
+            ResetPendingSceneResolution();
             if (_incident != null)
             {
                 CloseActiveAudio(_incident);
@@ -3979,14 +4140,14 @@ namespace LSImmersiveLife
             _lastSecuredPoseTaskAt.Clear();
         }
 
-        private void ResetPendingInteriorSceneResolution(
+        private void ResetPendingSceneResolution(
             AmbientDispatchSceneResolution preserveScene = null)
         {
-            _pendingInteriorResolutionDefinitionIds.Clear();
-            _pendingInteriorResolutionRetryCount = 0;
-            _pendingInteriorResolutionStartedAt = DateTime.MinValue;
+            _pendingSceneResolutionDefinitionIds.Clear();
+            _pendingSceneResolutionRetryCount = 0;
+            _pendingSceneResolutionStartedAt = DateTime.MinValue;
             _manualRequestRetryAt = DateTime.MinValue;
-            ReleaseUnusedDispatchInteriorPins("InteriorResolutionReset", preserveScene);
+            ReleaseUnusedDispatchInteriorPins("SceneResolutionReset", preserveScene);
         }
 
         private void ReleaseUnusedDispatchInteriorPins(
@@ -4050,7 +4211,11 @@ namespace LSImmersiveLife
                         + "; PlayerDistance=" + (player == null || !player.Exists()
                             ? "unknown" : player.Position.DistanceTo(suspect.Position)
                                 .ToString("0.0", CultureInfo.InvariantCulture)));
-                    if (player != null && player.Exists()
+                    bool authoredVehicleStopResponse = IsVehicleEntryActivity(incident.VehicleActivity)
+                        && incident.SuspectResponseBranches != null
+                        && incident.SuspectResponseBranches.Count > 0;
+                    if (!authoredVehicleStopResponse
+                        && player != null && player.Exists()
                         && player.Position.DistanceTo(suspect.Position) <= ArrestRadius + 4f
                         && !IsDownedOrInjured(suspect)
                         && !IsCompliant(incident, suspect))
@@ -4058,6 +4223,27 @@ namespace LSImmersiveLife
                         OrderSuspectToComply(suspect, player, false);
                         return true;
                     }
+                }
+
+                if (!incident.VictimVehicleRecovered
+                    && incident.VictimVehicle != null
+                    && incident.VictimVehicle.Exists()
+                    && incident.VictimVehicle.Handle == vehicle.Handle
+                    && hasStoppedTimestamp
+                    && Math.Abs(vehicle.Speed) <= 1.25f
+                    && !TrackedSuspects(incident).Any(member =>
+                        member != null && member.Exists() && !member.IsDead
+                        && member.IsInVehicle() && member.CurrentVehicle != null
+                        && member.CurrentVehicle.Exists()
+                        && member.CurrentVehicle.Handle == vehicle.Handle))
+                {
+                    incident.VictimVehicleRecovered = true;
+                    LogRuntime("POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED",
+                        "Occurrence=" + incident.Id
+                        + "; Victim=" + (incident.Victim == null ? 0 : incident.Victim.Handle)
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Speed=" + vehicle.Speed.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; SuspectOccupants=0; PhysicalStopConfirmed=true");
                 }
 
                 if (hasStoppedTimestamp && now < stoppedAt.AddSeconds(8))
@@ -4257,10 +4443,13 @@ namespace LSImmersiveLife
             if (_incident != null && _incident.SceneBehaviorInitialized
                 && _incident.SuspectResponseBranches != null
                 && _incident.SuspectResponseBranches.Count > 0
-                && !_incident.PlayerEncounterResponseStarted
+                && (!_incident.PlayerEncounterResponseStarted
+                    || IsVehicleEntryActivity(_incident.VehicleActivity))
                 && !TrackedSuspects(_incident).Any(value =>
                     IsDispatchMeleeRecoveryPending(value, now))
-                && IsPlayerNearDispatchOrigin(player))
+                && (IsVehicleEntryActivity(_incident.VehicleActivity)
+                    ? IsPlayerNearVehicleEncounter(_incident, player)
+                    : IsPlayerNearDispatchOrigin(player)))
                 StartPlayerEncounterResponse(player);
             MaintainInteriorStoreUtilityParking(player);
 
@@ -4273,6 +4462,7 @@ namespace LSImmersiveLife
                 {
                     TryStartInteriorStoreRobberyFlight(player);
                     MaintainStagedSceneBehavior(now);
+                    MaintainVehicleSceneActivity(now, player);
                 }
                 ReportSuspectGunfire(player);
                 List<Ped> unresolvedSuspects = LiveSuspects(_incident)
@@ -6015,6 +6205,10 @@ namespace LSImmersiveLife
                         "robbery-active",
                         true);
                 }
+                else if (IsVehicleEntryActivity(_incident.VehicleActivity))
+                {
+                    StartVehicleSceneActivity(player);
+                }
                 else if (type == "kidnapping" && !hasAuthoredSuspectResponses)
                 {
                     bool interiorScene = _incident.SceneResolution != null
@@ -6355,6 +6549,382 @@ namespace LSImmersiveLife
             }
         }
 
+        private void StartVehicleSceneActivity(Ped player)
+        {
+            LSPDDispatchEvent incident = _incident;
+            if (incident == null || !IsVehicleEntryActivity(incident.VehicleActivity))
+                return;
+
+            Vehicle vehicle = incident.SuspectVehicle;
+            if (vehicle == null || !vehicle.Exists())
+            {
+                Fail("The vehicle incident could not start because its prepared vehicle was unavailable.");
+                return;
+            }
+            if (string.Equals(incident.VehicleActivity, "carjacking",
+                    StringComparison.OrdinalIgnoreCase)
+                && (incident.Victim == null || !incident.Victim.Exists()
+                    || incident.Victim.IsDead || incident.Victim.Health <= 0
+                    || incident.Victim.IsInVehicle()
+                    || incident.VictimVehicle == null
+                    || !incident.VictimVehicle.Exists()
+                    || incident.VictimVehicle.Handle != vehicle.Handle))
+            {
+                Fail("The carjacking could not start because the prepared victim was not outside and linked to the occurrence vehicle.");
+                return;
+            }
+
+            string seatFailure;
+            if (!PrepareVehicleEntrySeats(incident, out seatFailure))
+            {
+                Fail("The vehicle incident could not start because its authored occupants no longer fit the prepared vehicle. "
+                    + seatFailure);
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            incident.VehicleActivityStartedAt = now;
+            incident.VehicleActivityNextCheckAt = now;
+            incident.VehicleActivityNextTaskAt = now;
+            incident.VehicleActivityEntryDeadlineAt = DateTime.MinValue;
+            incident.VehicleActivityEntryAttempts = 0;
+            incident.SceneBehaviorInitialized = true;
+            incident.PreArrivalSceneBehaviorInitialized = true;
+
+            if (string.Equals(incident.VehicleActivity, "carjacking",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                incident.VehicleActivityStage = 1;
+                Ped carjacker = incident.Suspect;
+                if (carjacker == null || !carjacker.Exists())
+                {
+                    incident.VehicleActivityStage = 4;
+                    LogRuntime("POLICE_DISPATCH_VEHICLE_ACTIVITY_FAILED",
+                        "Occurrence=" + incident.Id + "; Stage=CarjackerIdentity"
+                        + "; Suspect=Unavailable; Vehicle=" + vehicle.Handle);
+                    Fail("The carjacking could not start because its assigned suspect was unavailable.");
+                    return;
+                }
+                incident.VehicleActivityNextTaskAt = now;
+                bool approachOrdered = TryOrderCarjackingVictimApproach(incident, carjacker);
+                if (!approachOrdered)
+                {
+                    incident.VehicleActivityStage = 4;
+                    LogRuntime("POLICE_DISPATCH_VEHICLE_ACTIVITY_FAILED",
+                        "Occurrence=" + incident.Id
+                        + "; Stage=PhysicalVictimApproach"
+                        + "; Suspect=" + carjacker.Handle
+                        + "; Victim=" + incident.Victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Native=TASK_GO_TO_ENTITY; Result=TaskNotIssued");
+                    Fail("The carjacking could not start because the suspect approach task was unavailable.");
+                    return;
+                }
+                LogRuntime("POLICE_DISPATCH_CARJACKING_APPROACH_STARTED",
+                    "Occurrence=" + incident.Id
+                    + "; Suspect=" + carjacker.Handle
+                    + "; Victim=" + incident.Victim.Handle
+                    + "; VictimVehicle=" + incident.VictimVehicle.Handle
+                    + "; DriverVehicle=" + vehicle.Handle
+                    + "; VictimDistance=" + carjacker.Position.DistanceTo(incident.Victim.Position)
+                        .ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Task=TASK_GO_TO_ENTITY; PhysicalMovement=true; TerminalOutcome=false");
+            }
+            else
+            {
+                incident.VehicleActivityStage = 2;
+                incident.VehicleActivityEntryDeadlineAt = now.AddSeconds(30);
+                LogRuntime("POLICE_DISPATCH_PARKED_VEHICLE_THEFT_STARTED",
+                    "Occurrence=" + incident.Id
+                    + "; Suspects=" + string.Join(",", LiveSuspects(incident)
+                        .Select(value => value.Handle.ToString(CultureInfo.InvariantCulture)))
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Activity=ApproachAndPhysicalEntry; TerminalOutcome=false");
+            }
+        }
+
+        private void MaintainVehicleSceneActivity(DateTime now, Ped player)
+        {
+            LSPDDispatchEvent incident = _incident;
+            if (incident == null || !IsVehicleEntryActivity(incident.VehicleActivity)
+                || incident.VehicleActivityStage <= 0
+                || incident.VehicleActivityStage >= 3
+                || !incident.OwnedByDispatch || incident.HasConvoyCustodyHandoff
+                || now < incident.VehicleActivityNextCheckAt)
+                return;
+
+            incident.VehicleActivityNextCheckAt = now.AddSeconds(1);
+            Vehicle vehicle = incident.SuspectVehicle;
+            if (vehicle == null || !vehicle.Exists())
+            {
+                incident.VehicleActivityStage = 4;
+                LogRuntime("POLICE_DISPATCH_VEHICLE_ACTIVITY_FAILED",
+                    "Occurrence=" + incident.Id + "; Stage=VehicleIdentity"
+                    + "; Vehicle=Unavailable; CleanupReason=VehicleLostDuringEntry");
+                Fail("The suspect vehicle disappeared before the suspect could enter it.");
+                return;
+            }
+
+            if (incident.VehicleActivityStage == 1)
+            {
+                Ped victim = incident.Victim;
+                Ped carjacker = incident.Suspect;
+                if (victim == null || !victim.Exists() || victim.IsDead || victim.Health <= 0
+                    || carjacker == null || !carjacker.Exists() || carjacker.IsDead)
+                {
+                    incident.VehicleActivityStage = 4;
+                    LogRuntime("POLICE_DISPATCH_VEHICLE_ACTIVITY_FAILED",
+                        "Occurrence=" + incident.Id + "; Stage=CarjackingApproach"
+                        + "; Suspect=" + (carjacker == null ? 0 : carjacker.Handle)
+                        + "; Victim=" + (victim == null ? 0 : victim.Handle)
+                        + "; Result=RequiredActorUnavailable");
+                    Fail("The carjacking approach could not continue because the suspect or victim was unavailable.");
+                    return;
+                }
+
+                float victimDistance = carjacker.Position.DistanceTo(victim.Position);
+                if (!incident.VehicleActivityThreatStarted && victimDistance <= 3.0f)
+                {
+                    PlayConfiguredPreArrivalActivity(carjacker, "victim_threat");
+                    incident.VehicleActivityThreatStarted = true;
+                    incident.VehicleActivityNextTaskAt = now.AddSeconds(2);
+                    LogRuntime("POLICE_DISPATCH_CARJACKING_THREAT_STARTED",
+                        "Occurrence=" + incident.Id
+                        + "; Suspect=" + carjacker.Handle
+                        + "; Victim=" + victim.Handle
+                        + "; VictimVehicle=" + vehicle.Handle
+                        + "; Distance=" + victimDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Task=TASK_AIM_GUN_AT_ENTITY; PhysicalThreat=true; TerminalOutcome=false");
+                    return;
+                }
+
+                if (!incident.VehicleActivityThreatStarted)
+                {
+                    if (now >= incident.VehicleActivityStartedAt.AddSeconds(30))
+                    {
+                        incident.VehicleActivityStage = 4;
+                        LogRuntime("POLICE_DISPATCH_CARJACKING_APPROACH_FAILED",
+                            "Occurrence=" + incident.Id
+                            + "; Suspect=" + carjacker.Handle
+                            + "; Victim=" + victim.Handle
+                            + "; Vehicle=" + vehicle.Handle
+                            + "; SuspectPosition=" + carjacker.Position
+                            + "; VictimPosition=" + victim.Position
+                            + "; Distance=" + victimDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; FirstFailedStage=PhysicalVictimApproach"
+                            + "; Native=TASK_GO_TO_ENTITY; Result=Timeout");
+                        Fail("The suspect could not physically reach the victim before the carjacking scene timed out.");
+                        return;
+                    }
+                    return;
+                }
+
+                if (now < incident.VehicleActivityNextTaskAt)
+                    return;
+                incident.VehicleActivityStage = 2;
+                incident.VehicleActivityNextTaskAt = now;
+                incident.VehicleActivityEntryDeadlineAt = now.AddSeconds(30);
+                LogRuntime("POLICE_DISPATCH_CARJACKING_ENTRY_STAGE_STARTED",
+                    "Occurrence=" + incident.Id
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Victim=" + victim.Handle
+                    + "; ThreatDurationSeconds=2; Task=TASK_ENTER_VEHICLE");
+            }
+
+            List<Ped> suspects = LiveSuspects(incident).ToList();
+            if (suspects.Count == 0)
+            {
+                incident.VehicleActivityStage = 4;
+                return;
+            }
+
+            bool allSeated = true;
+            bool entryTaskWindow = now >= incident.VehicleActivityNextTaskAt;
+            bool entryTaskIssued = false;
+            foreach (Ped suspect in suspects)
+            {
+                int seat;
+                if (!incident.VehicleEntrySeatByPedHandle.TryGetValue(suspect.Handle, out seat))
+                {
+                    allSeated = false;
+                    LogDebug("POLICE_DISPATCH_VEHICLE_ENTRY_SEAT_MISSING",
+                        "Occurrence=" + incident.Id + "; Ped=" + suspect.Handle
+                        + "; Vehicle=" + vehicle.Handle);
+                    continue;
+                }
+
+                bool assignedSeatOccupied = false;
+                try
+                {
+                    assignedSeatOccupied = suspect.IsInVehicle()
+                        && suspect.CurrentVehicle != null
+                        && suspect.CurrentVehicle.Exists()
+                        && suspect.CurrentVehicle.Handle == vehicle.Handle
+                        && Function.Call<int>(
+                            Hash.GET_PED_IN_VEHICLE_SEAT, vehicle, seat, false) == suspect.Handle;
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_VEHICLE_ENTRY_STATE_FAILED", ex);
+                }
+                if (assignedSeatOccupied)
+                    continue;
+
+                allSeated = false;
+                if (!entryTaskWindow)
+                    continue;
+                try
+                {
+                    Function.Call(Hash.TASK_ENTER_VEHICLE,
+                        suspect, vehicle, 15000, seat, 1.0f, 1, 0);
+                    Function.Call(Hash.SET_PED_KEEP_TASK, suspect, true);
+                    incident.VehicleActivityEntryAttempts++;
+                    entryTaskIssued = true;
+                    LogRuntime("POLICE_DISPATCH_VEHICLE_ENTRY_TASK_ISSUED",
+                        "Occurrence=" + incident.Id
+                        + "; Event=" + incident.Id.Split('-')[0]
+                        + "; Ped=" + suspect.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Seat=" + seat
+                        + "; Attempt=" + incident.VehicleActivityEntryAttempts
+                        + "; Task=TASK_ENTER_VEHICLE; Teleport=false");
+                }
+                catch (Exception ex)
+                {
+                    entryTaskIssued = true;
+                    LogException("POLICE_DISPATCH_VEHICLE_ENTRY_TASK_FAILED", ex);
+                }
+            }
+            if (entryTaskIssued)
+                incident.VehicleActivityNextTaskAt = now.AddSeconds(3);
+
+            if (allSeated)
+            {
+                Ped driver = suspects.FirstOrDefault(suspect =>
+                {
+                    int seat;
+                    return incident.VehicleEntrySeatByPedHandle.TryGetValue(suspect.Handle, out seat)
+                        && seat == -1;
+                });
+                int driverSeatHandle = 0;
+                try
+                {
+                    driverSeatHandle = Function.Call<int>(
+                        Hash.GET_PED_IN_VEHICLE_SEAT, vehicle, -1, false);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_VEHICLE_DRIVER_SEAT_PROBE_FAILED", ex);
+                }
+                if (driver == null || !driver.Exists()
+                    || driverSeatHandle != driver.Handle)
+                {
+                    LogDebug("POLICE_DISPATCH_VEHICLE_DRIVER_NOT_READY",
+                        "Occurrence=" + incident.Id + "; Vehicle=" + vehicle.Handle
+                        + "; Driver=" + (driver == null ? 0 : driver.Handle)
+                        + "; DriverSeatHandle=" + driverSeatHandle
+                        + "; Native=GET_PED_IN_VEHICLE_SEAT(-1)");
+                    return;
+                }
+
+                Ped pursuitTarget = player != null && player.Exists() && !player.IsDead
+                    ? player : Game.Player.Character;
+                if (pursuitTarget == null || !pursuitTarget.Exists() || pursuitTarget.IsDead)
+                    return;
+                try
+                {
+                    foreach (Ped suspect in suspects)
+                        incident.SuspectResponses[suspect.Handle] = "flee";
+                    driver.BlockPermanentEvents = true;
+                    driver.CanSwitchWeapons = incident.Armed;
+                    CapturePursuitVehicleHealthBaseline(incident, driver);
+                    driver.Task.VehicleChase(pursuitTarget);
+                    incident.VehicleActivityStage = 3;
+                    incident.VehicleActivityNextCheckAt = DateTime.MaxValue;
+                    SetStateForUnresolvedSuspects(LSPDDispatchState.SuspectFleeing);
+                    ReportAudioStage(
+                        "lsimmersivelife.police.pursuit.continuing",
+                        incident,
+                        "vehicle-activity-pursuit-started",
+                        true);
+                    LogRuntime("POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_STARTED",
+                        "Occurrence=" + incident.Id
+                        + "; Event=" + incident.Id.Split('-')[0]
+                        + "; Driver=" + driver.Handle
+                        + "; Victim=" + (incident.Victim == null ? 0 : incident.Victim.Handle)
+                        + "; VictimVehicle=" + (incident.VictimVehicle == null
+                            ? 0 : incident.VictimVehicle.Handle)
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Occupants=" + string.Join(",", suspects
+                            .Select(value => value.Handle.ToString(CultureInfo.InvariantCulture)))
+                        + "; PursuitTask=VehicleChase; TerminalOutcome=false");
+                }
+                catch (Exception ex)
+                {
+                    incident.VehicleActivityStage = 4;
+                    LogException("POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_FAILED", ex);
+                    Fail("The suspect entered the vehicle, but the Dispatch pursuit task could not start.");
+                }
+                return;
+            }
+
+            if (incident.VehicleActivityEntryDeadlineAt != DateTime.MinValue
+                && now >= incident.VehicleActivityEntryDeadlineAt)
+            {
+                incident.VehicleActivityStage = 4;
+                string occupants = string.Join(",", suspects.Select(suspect =>
+                {
+                    int seat;
+                    bool hasSeat = incident.VehicleEntrySeatByPedHandle.TryGetValue(
+                        suspect.Handle, out seat);
+                    bool inAssignedVehicle = suspect.IsInVehicle()
+                        && suspect.CurrentVehicle != null
+                        && suspect.CurrentVehicle.Exists()
+                        && suspect.CurrentVehicle.Handle == vehicle.Handle;
+                    return suspect.Handle + ":seat=" + (hasSeat ? seat.ToString() : "missing")
+                        + ":inVehicle=" + inAssignedVehicle;
+                }).ToArray());
+                LogRuntime("POLICE_DISPATCH_VEHICLE_ENTRY_TIMED_OUT",
+                    "Occurrence=" + incident.Id
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Attempts=" + incident.VehicleActivityEntryAttempts
+                    + "; Suspects=" + occupants
+                    + "; FirstFailedStage=PhysicalVehicleEntry"
+                    + "; Native=TASK_ENTER_VEHICLE/GET_PED_IN_VEHICLE_SEAT");
+                Fail("The Dispatch scene could not complete physical suspect entry into the prepared vehicle.");
+            }
+        }
+
+        private bool TryOrderCarjackingVictimApproach(
+            LSPDDispatchEvent incident,
+            Ped suspect)
+        {
+            Ped victim = incident == null ? null : incident.Victim;
+            if (incident == null || victim == null || !victim.Exists()
+                || suspect == null || !suspect.Exists())
+                return false;
+            try
+            {
+                Function.Call(Hash.TASK_GO_TO_ENTITY,
+                    suspect, victim, -1, 1.6f, 1.0f, 0f, 0);
+                Function.Call(Hash.SET_PED_KEEP_TASK, suspect, true);
+                LogRuntime("POLICE_DISPATCH_CARJACKING_APPROACH_TASK_ISSUED",
+                    "Occurrence=" + incident.Id
+                    + "; Suspect=" + suspect.Handle
+                    + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + (incident.VictimVehicle == null
+                        ? 0 : incident.VictimVehicle.Handle)
+                    + "; Native=TASK_GO_TO_ENTITY; StoppingRange=1.6"
+                    + "; Teleport=false");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_CARJACKING_APPROACH_TASK_FAILED", ex);
+                return false;
+            }
+        }
+
         private void StartVehiclePursuitOnAccept(Ped player)
         {
             LSPDDispatchEvent incident = _incident;
@@ -6435,16 +7005,47 @@ namespace LSImmersiveLife
             incident.PursuitVehicleHealthAtStart[vehicle.Handle] = vehicle.Health;
         }
 
+        private bool IsPlayerNearVehicleEncounter(
+            LSPDDispatchEvent incident,
+            Ped player)
+        {
+            if (incident == null || !IsVehicleEntryActivity(incident.VehicleActivity)
+                || incident.VehicleActivityStage < 3
+                || player == null || !player.Exists() || player.IsDead)
+                return false;
+
+            foreach (Ped suspect in LiveSuspects(incident))
+            {
+                if (suspect.IsInVehicle())
+                    continue;
+                if (player.Position.DistanceTo(suspect.Position)
+                    <= PairedSceneAnimationApproachDistance)
+                    return true;
+                Vehicle vehicle = incident.VehicleForSuspect(suspect);
+                if (vehicle != null && vehicle.Exists()
+                    && Math.Abs(vehicle.Speed) <= 1.25f
+                    && player.Position.DistanceTo(vehicle.Position)
+                        <= ArrestRadius + 8f)
+                    return true;
+            }
+            return false;
+        }
+
         private void StartPlayerEncounterResponse(Ped player)
         {
             LSPDDispatchEvent incident = _incident;
-            if (incident == null || incident.PlayerEncounterResponseStarted
+            bool vehicleEncounter = incident != null
+                && IsVehicleEntryActivity(incident.VehicleActivity);
+            if (incident == null
+                || (incident.PlayerEncounterResponseStarted && !vehicleEncounter)
                 || !incident.OwnedByDispatch || incident.HasConvoyCustodyHandoff
                 || incident.SuspectResponseBranches == null
                 || incident.SuspectResponseBranches.Count == 0
                 || player == null || !player.Exists() || player.IsDead
-                || player.Position.DistanceTo(incident.Origin)
-                    > PairedSceneAnimationApproachDistance)
+                || (vehicleEncounter
+                    ? !IsPlayerNearVehicleEncounter(incident, player)
+                    : player.Position.DistanceTo(incident.Origin)
+                        > PairedSceneAnimationApproachDistance))
                 return;
 
             DateTime now = DateTime.UtcNow;
@@ -6466,9 +7067,18 @@ namespace LSImmersiveLife
             List<Ped> suspects = LiveSuspects(incident)
                 .Where(suspect => !IsArrested(incident, suspect))
                 .ToList();
+            if (vehicleEncounter)
+            {
+                if (incident.VehicleActivityStage < 3)
+                    return;
+                suspects = suspects.Where(suspect => !suspect.IsInVehicle()
+                    && !incident.VehicleEncounterResponseHandles.Contains(suspect.Handle))
+                    .ToList();
+            }
             if (suspects.Count == 0)
             {
-                incident.PlayerEncounterResponseStarted = true;
+                if (!vehicleEncounter)
+                    incident.PlayerEncounterResponseStarted = true;
                 return;
             }
 
@@ -6492,8 +7102,10 @@ namespace LSImmersiveLife
                 return;
             }
 
-            incident.PlayerEncounterResponseStarted = true;
+            if (!vehicleEncounter)
+                incident.PlayerEncounterResponseStarted = true;
             List<string> selected = new List<string>();
+            List<string> selectedResponses = new List<string>();
             for (int index = 0; index < suspects.Count; index++)
             {
                 Ped suspect = suspects[index];
@@ -6508,6 +7120,9 @@ namespace LSImmersiveLife
                 }
                 incident.SuspectResponses[suspect.Handle] = response;
                 selected.Add(suspect.Handle + ":" + response);
+                selectedResponses.Add(response);
+                if (vehicleEncounter)
+                    incident.VehicleEncounterResponseHandles.Add(suspect.Handle);
                 try
                 {
                     suspect.BlockPermanentEvents = true;
@@ -6556,12 +7171,23 @@ namespace LSImmersiveLife
             });
             StartVictimEncounterResponse(incident, fleeingFootSuspect, player);
 
-            bool fleeing = incident.SuspectResponses.Values.Any(value =>
+            IEnumerable<string> responsesForState = vehicleEncounter
+                ? (IEnumerable<string>)selectedResponses : incident.SuspectResponses.Values;
+            bool fleeing = responsesForState.Any(value =>
                 string.Equals(value, "flee", StringComparison.OrdinalIgnoreCase));
-            bool resisting = incident.SuspectResponses.Values.Any(value =>
+            bool resisting = responsesForState.Any(value =>
                 string.Equals(value, "resist", StringComparison.OrdinalIgnoreCase));
-            bool complying = incident.SuspectResponses.Values.Any(value =>
+            bool complying = responsesForState.Any(value =>
                 string.Equals(value, "comply", StringComparison.OrdinalIgnoreCase));
+
+            if (vehicleEncounter)
+            {
+                incident.PlayerEncounterResponseStarted = !TrackedSuspects(incident)
+                    .Where(suspect => suspect != null && suspect.Exists()
+                        && !suspect.IsDead && !IsArrested(incident, suspect))
+                    .Any(suspect => !incident.VehicleEncounterResponseHandles
+                        .Contains(suspect.Handle));
+            }
 
             if (fleeing)
             {
@@ -6803,7 +7429,21 @@ namespace LSImmersiveLife
                     out sceneValidationFailure,
                     _incident.InteriorLocationId,
                     _incident.RequiredPhysicalType,
-                    _incident.LocationContext);
+                    _incident.LocationContext,
+                    _incident.SceneResolution != null
+                        && string.Equals(
+                            _incident.SceneResolution.LocationCategory,
+                            "PlayerRadiusRoadsideFoot",
+                            StringComparison.OrdinalIgnoreCase)
+                        ? TrackedSuspects(_incident)
+                            .Concat(_incident.Victim == null
+                                ? Enumerable.Empty<Ped>()
+                                : new[] { _incident.Victim })
+                            .Concat(_incident.AdditionalParticipants
+                                ?? new List<Ped>())
+                            .Where(actor => actor != null && actor.Exists())
+                            .Select(actor => actor.Handle)
+                        : null);
             }
             if (!sceneRevalidated)
             {
@@ -6821,6 +7461,22 @@ namespace LSImmersiveLife
             }
             _incident.SceneResolution = refreshedScene;
             _incident.Origin = refreshedScene.SceneCenter;
+            if (_incident.SuspectVehicle != null && _incident.SuspectVehicle.Exists()
+                && refreshedScene.HasVehicleStagingPosition
+                && _incident.SuspectVehicle.Position.DistanceTo(
+                    refreshedScene.VehicleStagingPosition) > 6f)
+            {
+                string vehicleIdentityFailure = "Stage=PreparedVehicleSceneIdentity; Vehicle="
+                    + _incident.SuspectVehicle.Handle
+                    + "; VehiclePosition=" + _incident.SuspectVehicle.Position
+                    + "; RevalidatedStaging=" + refreshedScene.VehicleStagingPosition
+                    + "; Result=PreparedVehicleNoLongerMatchesScene";
+                SetScenePreparationFailure(
+                    _incident, "PreparedVehicleSceneIdentity", vehicleIdentityFailure);
+                LogDebug("POLICE_DISPATCH_PREPARED_VEHICLE_SCENE_REJECTED",
+                    "Occurrence=" + _incident.Id + "; " + vehicleIdentityFailure);
+                return false;
+            }
 
             if (!AreAdditionalSuspectModelsLoaded(_incident))
             {
@@ -6905,6 +7561,15 @@ namespace LSImmersiveLife
                             + "; Owner=Dispatch; Reason=" + groupBuildFailure);
                         return false;
                     }
+                    string existingVehicleSeatFailure;
+                    if (!PrepareVehicleEntrySeats(_incident, out existingVehicleSeatFailure))
+                    {
+                        SetScenePreparationFailure(
+                            _incident, "VehicleCapacity", existingVehicleSeatFailure);
+                        LogDebug("POLICE_DISPATCH_VEHICLE_CAPACITY_REJECTED",
+                            "Occurrence=" + _incident.Id + "; " + existingVehicleSeatFailure);
+                        return false;
+                    }
                 }
                 finally
                 {
@@ -6967,30 +7632,41 @@ namespace LSImmersiveLife
 
                 if (_incident.RequiresVehicle)
                 {
-                    if (!refreshedScene.HasVehicleStagingPosition)
+                    if (!refreshedScene.HasVehicleStagingPosition || _ambientWorld == null)
                     {
                         SetScenePreparationFailure(
-                            _incident, "SuspectVehicleStaging", "The incident requires a suspect vehicle but the selected site has no staging position.");
+                            _incident, "SuspectVehicleStaging",
+                            "The incident requires a validated roadside vehicle position and the WorldAmbient placement owner.");
                         return false;
                     }
-                    Vehicle vehicle = World.CreateVehicle(
-                        vehicleModel,
-                        refreshedScene.VehicleStagingPosition,
-                        refreshedScene.VehicleHeading);
-                    if (vehicle == null || !vehicle.Exists())
+                    Vehicle vehicle;
+                    string vehiclePlacementFailure;
+                    if (!_ambientWorld.TryCreateDispatchSceneVehicle(
+                        _incident.Id, vehicleModel, refreshedScene,
+                        out vehicle, out vehiclePlacementFailure))
                     {
                         SetScenePreparationFailure(
-                            _incident, "SuspectVehicleCreation", "GTA did not create the profile-selected suspect vehicle.");
+                            _incident,
+                            vehiclePlacementFailure.StartsWith("Stage=VehicleGroundProbe", StringComparison.OrdinalIgnoreCase)
+                                || vehiclePlacementFailure.StartsWith("Stage=VehicleOccupancy", StringComparison.OrdinalIgnoreCase)
+                                || vehiclePlacementFailure.StartsWith("Stage=VehiclePlacementRevalidation", StringComparison.OrdinalIgnoreCase)
+                                ? "SuspectVehiclePlacement" : "SuspectVehicleCreation",
+                            vehiclePlacementFailure);
+                        LogDebug("POLICE_DISPATCH_VEHICLE_PREPARATION_REJECTED",
+                            "Occurrence=" + _incident.Id
+                            + "; Event=" + _incident.Id.Split('-')[0]
+                            + "; Location=" + refreshedScene.LocationId
+                            + "; Model=" + vehicleModel.Hash
+                            + "; " + vehiclePlacementFailure);
                         return false;
                     }
-                    vehicle.IsPersistent = true;
-                    vehicle.PlaceOnGround();
                     _incident.SuspectVehicle = vehicle;
                     if (!_incident.SuspectVehicles.Any(value => value != null
                         && value.Exists() && value.Handle == vehicle.Handle))
                         _incident.SuspectVehicles.Add(vehicle);
                     _incident.OwnedByDispatch = true;
-                    Ped suspect = refreshedScene.IsInteriorScene
+                    bool entersVehicleAfterOffer = IsVehicleEntryActivity(_incident.VehicleActivity);
+                    Ped suspect = refreshedScene.IsInteriorScene || entersVehicleAfterOffer
                         ? World.CreatePed(pedModel, spawn)
                         : vehicle.CreatePedOnSeat(VehicleSeat.Driver, pedModel);
                     if (suspect == null || !suspect.Exists())
@@ -7064,6 +7740,16 @@ namespace LSImmersiveLife
                     return false;
                 }
 
+                string vehicleSeatFailure;
+                if (!PrepareVehicleEntrySeats(_incident, out vehicleSeatFailure))
+                {
+                    SetScenePreparationFailure(
+                        _incident, "VehicleCapacity", vehicleSeatFailure);
+                    LogDebug("POLICE_DISPATCH_VEHICLE_CAPACITY_REJECTED",
+                        "Occurrence=" + _incident.Id + "; " + vehicleSeatFailure);
+                    return false;
+                }
+
                 if (TrackedSuspects(_incident).Count() != Math.Max(1, _incident.SuspectCount))
                 {
                     SetScenePreparationFailure(
@@ -7101,6 +7787,87 @@ namespace LSImmersiveLife
             {
                 if (pedLoaded) pedModel.MarkAsNoLongerNeeded();
                 if (vehicleLoaded) vehicleModel.MarkAsNoLongerNeeded();
+            }
+        }
+
+        private static bool IsVehicleEntryActivity(string activity)
+        {
+            return string.Equals(activity, "carjacking", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(activity, "parked_theft", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool PrepareVehicleEntrySeats(
+            LSPDDispatchEvent incident,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (incident == null || !IsVehicleEntryActivity(incident.VehicleActivity))
+                return true;
+
+            Vehicle vehicle = incident.SuspectVehicle;
+            if (vehicle == null || !vehicle.Exists())
+            {
+                reason = "Stage=VehicleCapacity; VehicleForSuspects=Unavailable";
+                return false;
+            }
+
+            List<Ped> suspects = TrackedSuspects(incident)
+                .Where(value => value != null && value.Exists() && !value.IsDead)
+                .ToList();
+            if (suspects.Count == 0)
+            {
+                reason = "Stage=VehicleCapacity; Result=NoLiveSuspects";
+                return false;
+            }
+
+            try
+            {
+                int passengerCapacity = Math.Max(0,
+                    Function.Call<int>(Hash.GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS, vehicle));
+                int maximumPassengerSeatsNeeded = Math.Min(
+                    passengerCapacity, Math.Max(0, suspects.Count - 1));
+                var freeSeats = new List<int>();
+                if (Function.Call<bool>(Hash.IS_VEHICLE_SEAT_FREE, vehicle, -1, false))
+                    freeSeats.Add(-1);
+                for (int seat = 0; seat < maximumPassengerSeatsNeeded; seat++)
+                {
+                    if (Function.Call<bool>(Hash.IS_VEHICLE_SEAT_FREE, vehicle, seat, false))
+                        freeSeats.Add(seat);
+                }
+
+                if (freeSeats.Count < suspects.Count)
+                {
+                    reason = "Stage=VehicleCapacity; Native=GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS/"
+                        + "IS_VEHICLE_SEAT_FREE; Vehicle=" + vehicle.Handle
+                        + "; PassengerCapacity=" + passengerCapacity
+                        + "; LiveSuspects=" + suspects.Count
+                        + "; FreeSeats=" + freeSeats.Count
+                        + "; Result=InsufficientSeats";
+                    return false;
+                }
+
+                incident.VehicleEntrySeatByPedHandle.Clear();
+                for (int index = 0; index < suspects.Count; index++)
+                {
+                    Ped suspect = suspects[index];
+                    int seat = freeSeats[index];
+                    incident.VehicleEntrySeatByPedHandle[suspect.Handle] = seat;
+                    RegisterSuspectVehicle(incident, suspect, vehicle);
+                }
+
+                LogRuntime("POLICE_DISPATCH_VEHICLE_ENTRY_SEATS_ASSIGNED",
+                    "Occurrence=" + incident.Id
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Assignments=" + string.Join(",", incident.VehicleEntrySeatByPedHandle
+                        .Select(value => value.Key + ":" + value.Value).ToArray())
+                    + "; PassengerCapacity=" + passengerCapacity);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=VehicleCapacity; Native=GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS/"
+                    + "IS_VEHICLE_SEAT_FREE; Result=Exception:" + ex.GetType().Name;
+                return false;
             }
         }
 
@@ -7244,7 +8011,12 @@ namespace LSImmersiveLife
                 && _ambientWorld.IsDispatchVictimModelInPool(
                     incident.VictimPoolId,
                     incident.Victim.Model.Hash))
+            {
+                if (string.Equals(incident.VehicleActivity, "carjacking",
+                    StringComparison.OrdinalIgnoreCase))
+                    incident.VictimVehicle = incident.SuspectVehicle;
                 return true;
+            }
 
             if (incident.Victim != null)
             {
@@ -7268,6 +8040,16 @@ namespace LSImmersiveLife
                     IsInteriorClerkSnatchBehavior(incident.SceneBehavior)
                         ? spawn + new Vector3(-1.6f, -0.5f, 0f)
                         : spawn + new Vector3(-2f, -1f, 0f);
+                if (string.Equals(incident.VehicleActivity, "carjacking",
+                        StringComparison.OrdinalIgnoreCase)
+                    && incident.SuspectVehicle != null
+                    && incident.SuspectVehicle.Exists())
+                {
+                    float radians = incident.SuspectVehicle.Heading * (float)Math.PI / 180f;
+                    Vector3 side = new Vector3((float)Math.Cos(radians),
+                        -(float)Math.Sin(radians), 0f);
+                    preferredVictimPosition = incident.SuspectVehicle.Position + side * 3.5f;
+                }
                 Ped victim = null;
                 bool reusedAmbientVictim = false;
                 string reuseReason = "Nearby Ped reuse is not applicable to this scene.";
@@ -7288,6 +8070,19 @@ namespace LSImmersiveLife
                         preparedSuspectPositions,
                         out victim,
                         out reuseReason);
+                    if (reusedAmbientVictim
+                        && string.Equals(incident.VehicleActivity, "carjacking",
+                            StringComparison.OrdinalIgnoreCase)
+                        && (incident.SuspectVehicle == null || !incident.SuspectVehicle.Exists()
+                            || victim == null || !victim.Exists()
+                            || victim.Position.DistanceTo(incident.SuspectVehicle.Position) > 8f))
+                    {
+                        if (victim != null)
+                            _ambientWorld.ReleaseDispatchCivilian(victim, incident.Id);
+                        victim = null;
+                        reusedAmbientVictim = false;
+                        reuseReason = "The nearby civilian is not physically beside the selected victim vehicle.";
+                    }
                 }
 
                 if (!reusedAmbientVictim)
@@ -7384,6 +8179,18 @@ namespace LSImmersiveLife
                 // failures still reach the correct Dispatch cleanup path.
                 incident.Victim = victim;
                 incident.VictimWasExistingAmbient = reusedAmbientVictim;
+                if (string.Equals(incident.VehicleActivity, "carjacking",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    incident.VictimVehicle = incident.SuspectVehicle;
+                    if (incident.VictimVehicle == null || !incident.VictimVehicle.Exists())
+                    {
+                        SetScenePreparationFailure(
+                            incident, "VictimVehicleAssociation",
+                            "The carjacking victim was prepared without the occurrence's validated vehicle.");
+                        return false;
+                    }
+                }
                 if (!incident.VictimStartsDead)
                     victim.Task.LookAt(Game.Player.Character, 3000);
                 if (!incident.VictimStartsDead
@@ -7409,6 +8216,8 @@ namespace LSImmersiveLife
                     + "; Pool=" + incident.VictimPoolId
                     + "; Model=" + victim.Model.Hash
                     + "; Ped=" + victim.Handle
+                    + "; Vehicle=" + (incident.VictimVehicle == null
+                        ? 0 : incident.VictimVehicle.Handle)
                     + (reusedAmbientVictim ? "; Source=NearbyAmbientPed" : "; Source=GeneratedFallback"));
                 return true;
             }
@@ -8086,6 +8895,178 @@ namespace LSImmersiveLife
         {
             return model != null && model.IsValid && model.IsInCdImage
                 && (vehicle ? model.IsVehicle : model.IsPed);
+        }
+
+        private List<LSPDDispatchEventDefinition> ChoosePlayerRadiusOutdoorFallbackCandidates(
+            DateTime now,
+            bool includeRoadScenes,
+            IEnumerable<string> preferredDefinitionIds = null)
+        {
+            DateTime repeatAfter = now.AddMinutes(-_settings.RepeatProtectionMinutes);
+            HashSet<string> preferredIds = preferredDefinitionIds == null
+                ? null
+                : new HashSet<string>(preferredDefinitionIds,
+                    StringComparer.OrdinalIgnoreCase);
+            bool IsAvailable(LSPDDispatchEventDefinition definition)
+            {
+                if (definition == null || !definition.Enabled
+                    || definition.MinimumSuspects > _settings.MaximumSuspects
+                    || definition.RequiresMappedInterior
+                    || !string.IsNullOrWhiteSpace(definition.InteriorLocationId)
+                    || !string.IsNullOrWhiteSpace(definition.RequiredPhysicalType)
+                    || (definition.BranchIds ?? new List<string>()).Contains(
+                        "dispatch-road-vehicle-speed-chaos", StringComparer.OrdinalIgnoreCase))
+                    return false;
+                if (preferredIds != null && preferredIds.Count > 0
+                    && !preferredIds.Contains(definition.Id))
+                    return false;
+
+                DateTime lastOffered;
+                return !_definitionOfferedAt.TryGetValue(definition.Id, out lastOffered)
+                    || lastOffered <= repeatAfter;
+            }
+
+            List<LSPDDispatchEventDefinition> eligibleVehicle = _definitions.Where(definition =>
+                IsAvailable(definition)
+                && definition.RequiresVehicle
+                && !string.IsNullOrWhiteSpace(definition.VehicleActivity)
+                && !string.Equals(definition.VehicleActivity, "none",
+                    StringComparison.OrdinalIgnoreCase)
+                && (string.Equals(definition.LocationContext, "any",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(definition.LocationContext, "road_vehicle",
+                        StringComparison.OrdinalIgnoreCase))).ToList();
+            List<LSPDDispatchEventDefinition> eligibleRoadFoot = _definitions.Where(definition =>
+                IsAvailable(definition)
+                && !definition.RequiresVehicle
+                && !definition.VehicleStagingRequired
+                && string.Equals(definition.VehicleActivity, "none",
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(definition.LocationContext, "road_foot",
+                    StringComparison.OrdinalIgnoreCase)).ToList();
+            List<LSPDDispatchEventDefinition> eligibleGenericFoot = _definitions.Where(definition =>
+                IsAvailable(definition)
+                && !definition.RequiresVehicle
+                && !definition.VehicleStagingRequired
+                && (string.IsNullOrWhiteSpace(definition.VehicleActivity)
+                    || string.Equals(definition.VehicleActivity, "none",
+                        StringComparison.OrdinalIgnoreCase))
+                && string.Equals(definition.LocationContext, "any",
+                    StringComparison.OrdinalIgnoreCase)).ToList();
+
+            List<LSPDDispatchEventDefinition> movingRoad = BuildWeightedDefinitionOrder(
+                eligibleVehicle.Where(definition => string.Equals(
+                    definition.VehicleActivity, "moving_road",
+                    StringComparison.OrdinalIgnoreCase)));
+            List<LSPDDispatchEventDefinition> parkedVehicle = BuildWeightedDefinitionOrder(
+                eligibleVehicle.Where(definition => !string.Equals(
+                    definition.VehicleActivity, "moving_road",
+                    StringComparison.OrdinalIgnoreCase)));
+            List<LSPDDispatchEventDefinition> vehicleCandidates = movingRoad
+                .Take(1)
+                .Concat(parkedVehicle.Take(1))
+                .Take(MaximumPlayerRadiusVehicleDefinitionCandidates)
+                .ToList();
+            List<LSPDDispatchEventDefinition> roadFootCandidates = BuildWeightedDefinitionOrder(
+                eligibleRoadFoot)
+                .Take(MaximumPlayerRadiusRoadFootDefinitionCandidates)
+                .ToList();
+            List<LSPDDispatchEventDefinition> genericFootCandidates = BuildWeightedDefinitionOrder(
+                eligibleGenericFoot)
+                .Take(MaximumPlayerRadiusGenericFootDefinitionCandidates)
+                .ToList();
+            if (!includeRoadScenes)
+            {
+                vehicleCandidates.Clear();
+                roadFootCandidates.Clear();
+            }
+            List<LSPDDispatchEventDefinition> candidates = BuildWeightedDefinitionOrder(
+                vehicleCandidates.Concat(roadFootCandidates).Concat(genericFootCandidates))
+                .ToList();
+            LogRuntime("POLICE_DISPATCH_PLAYER_RADIUS_OUTDOOR_FALLBACK_CANDIDATES_READY",
+                "EligibleVehicleEvents=" + eligibleVehicle.Count
+                + "; MovingRoadEvents=" + movingRoad.Count
+                + "; ParkedOrRoadsideEvents=" + parkedVehicle.Count
+                + "; EligibleRoadFootEvents=" + eligibleRoadFoot.Count
+                + "; EligibleGenericFootEvents=" + eligibleGenericFoot.Count
+                + "; SelectedVehicle=" + string.Join(",", vehicleCandidates.Select(value => value.Id))
+                + "; SelectedRoadFoot=" + string.Join(",", roadFootCandidates.Select(value => value.Id))
+                + "; SelectedGenericFoot=" + string.Join(",", genericFootCandidates.Select(value => value.Id))
+                + "; Selected=" + string.Join(",", candidates.Select(value => value.Id))
+                + "; CandidateLimit=" + (MaximumPlayerRadiusVehicleDefinitionCandidates
+                    + MaximumPlayerRadiusRoadFootDefinitionCandidates
+                    + MaximumPlayerRadiusGenericFootDefinitionCandidates)
+                + "; RoadScenesAvailable=" + includeRoadScenes
+                + "; Selection=CatalogFirstThenPlayerRadiusOutdoorFallback"
+                + "; CitizenTrafficBranchesExcluded=True");
+            return candidates;
+        }
+
+        private static bool TryGetPlayerRadiusRoadVehicleAnchor(
+            Ped player,
+            out Vector3 roadAnchor)
+        {
+            roadAnchor = Vector3.Zero;
+            if (player == null || !player.Exists())
+                return false;
+            Vehicle vehicle = player.CurrentVehicle;
+            Vector3 playerPosition = vehicle != null && vehicle.Exists()
+                ? vehicle.Position : player.Position;
+            try
+            {
+                if (Function.Call<int>(Hash.GET_INTERIOR_AT_COORDS,
+                    playerPosition.X, playerPosition.Y, playerPosition.Z) != 0)
+                    return false;
+
+                if (Function.Call<bool>(Hash.IS_POINT_ON_ROAD,
+                    playerPosition.X, playerPosition.Y, playerPosition.Z, 0))
+                {
+                    roadAnchor = playerPosition;
+                    return true;
+                }
+
+                using (OutputArgument nodeOutput = new OutputArgument())
+                using (OutputArgument headingOutput = new OutputArgument())
+                {
+                    bool found = Function.Call<bool>(
+                        Hash.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING,
+                        playerPosition.X,
+                        playerPosition.Y,
+                        playerPosition.Z,
+                        nodeOutput,
+                        headingOutput,
+                        1,
+                        3.0f,
+                        0);
+                    if (!found)
+                        return false;
+
+                    Vector3 nearestRoadNode = nodeOutput.GetResult<Vector3>();
+                    float roadHeading = headingOutput.GetResult<float>();
+                    float distance = nearestRoadNode == Vector3.Zero
+                        ? float.MaxValue : HorizontalDistance(playerPosition, nearestRoadNode);
+                    if (nearestRoadNode == Vector3.Zero
+                        || float.IsNaN(roadHeading) || float.IsInfinity(roadHeading)
+                        || distance > PlayerRadiusVehicleRoadSnapDistance
+                        || Math.Abs(nearestRoadNode.Z - playerPosition.Z) > 8f)
+                        return false;
+
+                    roadAnchor = nearestRoadNode;
+                    return true;
+                }
+            }
+            catch
+            {
+                roadAnchor = Vector3.Zero;
+                return false;
+            }
+        }
+
+        private static float HorizontalDistance(Vector3 first, Vector3 second)
+        {
+            float x = first.X - second.X;
+            float y = first.Y - second.Y;
+            return (float)Math.Sqrt((x * x) + (y * y));
         }
 
         private List<LSPDDispatchEventDefinition> ChooseLocationDefinitionCandidates(
@@ -8959,6 +9940,31 @@ namespace LSImmersiveLife
                 return;
             }
 
+            bool recoveredVictimVehicle = incident != null
+                && incident.VictimVehicleRecovered
+                && incident.VictimVehicle != null
+                && incident.VictimVehicle.Exists()
+                && incident.VictimVehicle.Handle == vehicle.Handle;
+            if (recoveredVictimVehicle)
+            {
+                try
+                {
+                    vehicle.IsPersistent = false;
+                    vehicle.MarkAsNoLongerNeeded();
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_RECOVERED_VEHICLE_RELEASE_FAILED", ex);
+                }
+                LogRuntime("POLICE_DISPATCH_RECOVERED_VEHICLE_RELEASED",
+                    "Occurrence=" + incident.Id
+                    + "; Victim=" + (incident.Victim == null ? 0 : incident.Victim.Handle)
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; Deleted=false; DispatchPersistenceReleased=true");
+                return;
+            }
+
             int vehicleHandle = vehicle.Handle;
             try { vehicle.Delete(); }
             catch (Exception ex)
@@ -9033,6 +10039,10 @@ namespace LSImmersiveLife
                 if (incident.SuspectVehicles != null) incident.SuspectVehicles.Clear();
                 if (incident.SuspectVehicleByPedHandle != null)
                     incident.SuspectVehicleByPedHandle.Clear();
+                if (incident.VehicleEntrySeatByPedHandle != null)
+                    incident.VehicleEntrySeatByPedHandle.Clear();
+                if (incident.VehicleEncounterResponseHandles != null)
+                    incident.VehicleEncounterResponseHandles.Clear();
                 if (incident.Suspects != null) incident.Suspects.Clear();
                 if (incident.ArrestedSuspects != null) incident.ArrestedSuspects.Clear();
                 if (incident.CompliantSuspects != null) incident.CompliantSuspects.Clear();
@@ -9110,6 +10120,7 @@ namespace LSImmersiveLife
             }
             incident.Victim = null;
             incident.VictimWasExistingAmbient = false;
+            incident.VictimVehicle = null;
             incident.AdditionalParticipants.Clear();
             incident.ExistingAmbientSceneParticipantHandles.Clear();
             incident.SceneParticipantAmbientClaimAttemptedIndexes.Clear();
@@ -9584,6 +10595,7 @@ namespace LSImmersiveLife
                 candidates,
                 "dispatch",
                 definition.RequiresVehicle,
+                definition.VehicleAssetTypes,
                 out resolved,
                 out failureReason);
         }
@@ -9592,6 +10604,19 @@ namespace LSImmersiveLife
             IList<LSPDCriminalProfileDefinition> candidates,
             string activity,
             bool requireVehicle,
+            out LSPDCriminalProfileDefinition resolved,
+            out string failureReason)
+        {
+            return TryResolveUsableCriminalProfile(
+                candidates, activity, requireVehicle, null,
+                out resolved, out failureReason);
+        }
+
+        private bool TryResolveUsableCriminalProfile(
+            IList<LSPDCriminalProfileDefinition> candidates,
+            string activity,
+            bool requireVehicle,
+            IEnumerable<string> requiredVehicleTypes,
             out LSPDCriminalProfileDefinition resolved,
             out string failureReason)
         {
@@ -9615,6 +10640,7 @@ namespace LSImmersiveLife
                     activity,
                     _random,
                     _recentCriminalAssetIdSet,
+                    requiredVehicleTypes,
                     out selected,
                     out catalogFailure))
                 {

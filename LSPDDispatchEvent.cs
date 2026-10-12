@@ -187,6 +187,7 @@ namespace LSImmersiveLife
         internal string Value { get; private set; }
         internal string Role { get; private set; }
         internal string Category { get; private set; }
+        internal string VehicleType { get; private set; }
         internal string FallbackId { get; private set; }
         internal int Weight { get; private set; }
 
@@ -205,6 +206,7 @@ namespace LSImmersiveLife
                 Value = value,
                 Role = Optional(node, "role", kind.ToLowerInvariant()),
                 Category = Optional(node, "category", "general"),
+                VehicleType = Optional(node, "vehicleType", string.Empty),
                 FallbackId = Optional(node, "fallbackId", string.Empty),
                 Weight = Integer(node, "weight", 1, 1, 1000)
             };
@@ -430,6 +432,20 @@ namespace LSImmersiveLife
             out LSPDCriminalProfileDefinition resolved,
             out string failureReason)
         {
+            return TryResolveProfile(
+                source, activity, random, recentAssetIds, null,
+                out resolved, out failureReason);
+        }
+
+        internal bool TryResolveProfile(
+            LSPDCriminalProfileDefinition source,
+            string activity,
+            Random random,
+            ISet<string> recentAssetIds,
+            IEnumerable<string> requiredVehicleTypes,
+            out LSPDCriminalProfileDefinition resolved,
+            out string failureReason)
+        {
             resolved = null;
             failureReason = string.Empty;
             if (source == null)
@@ -447,10 +463,14 @@ namespace LSImmersiveLife
             string weaponPoolId = string.Equals(activity, "convoy", StringComparison.OrdinalIgnoreCase)
                 && !string.IsNullOrWhiteSpace(source.ConvoyWeaponPoolId)
                 ? source.ConvoyWeaponPoolId : source.WeaponPoolId;
+            ISet<string> vehicleTypes = requiredVehicleTypes == null
+                ? null
+                : new HashSet<string>(requiredVehicleTypes.Where(value =>
+                    !string.IsNullOrWhiteSpace(value)), StringComparer.OrdinalIgnoreCase);
             LSPDCriminalAssetDefinition ped = Select(
                 pedPoolId, "ped", random, recentAssetIds);
             LSPDCriminalAssetDefinition vehicle = Select(
-                vehiclePoolId, "vehicle", random, recentAssetIds);
+                vehiclePoolId, "vehicle", random, recentAssetIds, vehicleTypes);
             LSPDCriminalAssetDefinition weapon = Select(
                 weaponPoolId, "weapon", random, recentAssetIds);
 
@@ -475,7 +495,7 @@ namespace LSImmersiveLife
                 vehicle,
                 weapon,
                 Values(pedPoolId, "ped", random, 12),
-                Values(vehiclePoolId, "vehicle", random, 8),
+                Values(vehiclePoolId, "vehicle", random, 8, vehicleTypes),
                 Values(weaponPoolId, "weapon", random, 12));
             if (resolved == null
                 || string.IsNullOrWhiteSpace(resolved.ModelName)
@@ -544,6 +564,16 @@ namespace LSImmersiveLife
             Random random,
             int maximum)
         {
+            return Values(poolId, assetType, random, maximum, null);
+        }
+
+        private List<string> Values(
+            string poolId,
+            string assetType,
+            Random random,
+            int maximum,
+            ISet<string> requiredVehicleTypes)
+        {
             LSPDCriminalAssetPoolDefinition pool;
             if (string.IsNullOrWhiteSpace(poolId)
                 || !_pools.TryGetValue(poolId, out pool)
@@ -553,6 +583,8 @@ namespace LSImmersiveLife
             var candidates = pool.AssetIds
                 .Where(id => source.ContainsKey(id))
                 .Select(id => source[id])
+                .Where(value => IsVehicleAssetTypeAllowed(
+                    value, assetType, requiredVehicleTypes))
                 .ToList();
             var result = new List<string>();
             int target = Math.Min(Math.Max(1, maximum), candidates.Count);
@@ -577,7 +609,8 @@ namespace LSImmersiveLife
             string poolId,
             string assetType,
             Random random,
-            ISet<string> recentAssetIds)
+            ISet<string> recentAssetIds,
+            ISet<string> requiredVehicleTypes = null)
         {
             LSPDCriminalAssetPoolDefinition pool;
             if (string.IsNullOrWhiteSpace(poolId)
@@ -588,6 +621,8 @@ namespace LSImmersiveLife
             List<LSPDCriminalAssetDefinition> candidates = pool.AssetIds
                 .Where(id => source.ContainsKey(id))
                 .Select(id => source[id])
+                .Where(value => IsVehicleAssetTypeAllowed(
+                    value, assetType, requiredVehicleTypes))
                 .ToList();
             if (recentAssetIds != null && candidates.Count > 1)
             {
@@ -608,6 +643,17 @@ namespace LSImmersiveLife
                     return candidate;
             }
             return candidates[candidates.Count - 1];
+        }
+
+        private static bool IsVehicleAssetTypeAllowed(
+            LSPDCriminalAssetDefinition asset,
+            string assetType,
+            ISet<string> requiredVehicleTypes)
+        {
+            return requiredVehicleTypes == null || requiredVehicleTypes.Count == 0
+                || !string.Equals(assetType, "vehicle", StringComparison.OrdinalIgnoreCase)
+                || (asset != null && !string.IsNullOrWhiteSpace(asset.VehicleType)
+                    && requiredVehicleTypes.Contains(asset.VehicleType));
         }
 
         private IDictionary<string, LSPDCriminalAssetDefinition> Assets(string assetType)
@@ -696,6 +742,45 @@ namespace LSImmersiveLife
                 Contexts = string.IsNullOrWhiteSpace(context)
                     ? new List<string>()
                     : new List<string> { context.Trim() }
+            };
+        }
+
+        internal static LSPDDispatchLocationDefinition ForPlayerRadiusVehicleScene(
+            Vector3 playerPosition)
+        {
+            return new LSPDDispatchLocationDefinition
+            {
+                Id = "runtime.player-radius-vehicle-scene",
+                Position = playerPosition,
+                MinimumPlayerDistance = 0f,
+                MaximumPlayerDistance = 100f,
+                Contexts = new List<string> { "road_vehicle" }
+            };
+        }
+
+        internal static LSPDDispatchLocationDefinition ForPlayerRadiusRoadFootScene(
+            Vector3 playerPosition)
+        {
+            return new LSPDDispatchLocationDefinition
+            {
+                Id = "runtime.player-radius-road-foot-scene",
+                Position = playerPosition,
+                MinimumPlayerDistance = 0f,
+                MaximumPlayerDistance = 100f,
+                Contexts = new List<string> { "road_foot" }
+            };
+        }
+
+        internal static LSPDDispatchLocationDefinition ForPlayerRadiusOutdoorFootScene(
+            Vector3 playerPosition)
+        {
+            return new LSPDDispatchLocationDefinition
+            {
+                Id = "runtime.player-radius-outdoor-foot-scene",
+                Position = playerPosition,
+                MinimumPlayerDistance = 0f,
+                MaximumPlayerDistance = 100f,
+                Contexts = new List<string> { "any" }
             };
         }
 
@@ -835,6 +920,8 @@ namespace LSImmersiveLife
         internal bool Enabled { get; private set; }
         internal bool RequiresVehicle { get; private set; }
         internal bool VehicleStagingRequired { get; private set; }
+        internal string VehicleActivity { get; private set; }
+        internal List<string> VehicleAssetTypes { get; private set; }
         internal bool Mobile { get; private set; }
         internal bool StartPursuitOnAccept { get; private set; }
         internal bool Armed { get; private set; }
@@ -1120,6 +1207,30 @@ namespace LSImmersiveLife
             string interiorLocationId = Optional(node, "interiorLocationId", string.Empty);
             bool vehicleStagingRequired = Bool(node, "vehicleStagingRequired", false);
             bool requiresVehicle = Bool(node, "requiresVehicle", false);
+            string vehicleActivity = Optional(node, "vehicleActivity", "none").Trim().ToLowerInvariant();
+            List<string> vehicleAssetTypes = IdList(node, "vehicleAssetTypes");
+            if (!new[] { "none", "carjacking", "parked_theft", "moving_road" }
+                .Contains(vehicleActivity, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException(
+                    "Dispatch event has an unsupported vehicleActivity: " + vehicleActivity);
+            if (vehicleActivity != "none" && !requiresVehicle)
+                throw new InvalidDataException(
+                    "A vehicle activity requires an authored suspect vehicle.");
+            if (vehicleActivity != "none" && vehicleAssetTypes.Count == 0)
+                throw new InvalidDataException(
+                    "A vehicle entry activity requires authored Criminal Profile vehicle asset types.");
+            if (vehicleAssetTypes.Count > 0 && !requiresVehicle)
+                throw new InvalidDataException(
+                    "Vehicle asset type filters require an authored suspect vehicle.");
+            if ((vehicleActivity == "carjacking"
+                    && !string.Equals(Required(node, "type"), "carjacking", StringComparison.OrdinalIgnoreCase))
+                || (vehicleActivity == "parked_theft"
+                    && !string.Equals(Required(node, "type"), "vehicle_theft", StringComparison.OrdinalIgnoreCase))
+                || (vehicleActivity == "moving_road"
+                    && !new[] { "reckless_driver", "vehicle_pursuit" }.Contains(
+                        Required(node, "type"), StringComparer.OrdinalIgnoreCase)))
+                throw new InvalidDataException(
+                    "Vehicle activity must match its criminal Dispatch event type.");
             int minimumSuspectVehicles = IntegerInRange(
                 node, "minimumSuspectVehicles", requiresVehicle ? 1 : 0, 0, 2);
             int maximumSuspectVehicles = IntegerInRange(
@@ -1351,6 +1462,8 @@ namespace LSImmersiveLife
                 Enabled = Bool(node, "enabled", true),
                 RequiresVehicle = requiresVehicle,
                 VehicleStagingRequired = vehicleStagingRequired,
+                VehicleActivity = vehicleActivity,
+                VehicleAssetTypes = vehicleAssetTypes,
                 Mobile = Bool(node, "mobile", false),
                 StartPursuitOnAccept = Bool(node, "startPursuitOnAccept", false),
                 Armed = Bool(node, "armed", false),
@@ -1622,6 +1735,7 @@ namespace LSImmersiveLife
         internal List<string> WeaponNameCandidates { get; set; }
         internal bool RequiresVehicle { get; set; }
         internal bool VehicleStagingRequired { get; set; }
+        internal string VehicleActivity { get; set; }
         internal bool Mobile { get; set; }
         internal bool StartPursuitOnAccept { get; set; }
         internal bool Armed { get; set; }
@@ -1674,10 +1788,21 @@ namespace LSImmersiveLife
         // fleeing suspect.
         internal Ped Victim { get; set; }
         internal bool VictimWasExistingAmbient { get; set; }
+        internal Vehicle VictimVehicle { get; set; }
+        internal bool VictimVehicleRecovered { get; set; }
         internal List<Ped> AdditionalParticipants { get; private set; } = new List<Ped>();
         internal Vehicle SuspectVehicle { get; set; }
         internal List<Vehicle> SuspectVehicles { get; private set; } = new List<Vehicle>();
         internal Dictionary<int, int> SuspectVehicleByPedHandle { get; private set; } = new Dictionary<int, int>();
+        internal Dictionary<int, int> VehicleEntrySeatByPedHandle { get; private set; } = new Dictionary<int, int>();
+        internal HashSet<int> VehicleEncounterResponseHandles { get; private set; } = new HashSet<int>();
+        internal int VehicleActivityStage { get; set; }
+        internal bool VehicleActivityThreatStarted { get; set; }
+        internal int VehicleActivityEntryAttempts { get; set; }
+        internal DateTime VehicleActivityStartedAt { get; set; }
+        internal DateTime VehicleActivityNextTaskAt { get; set; }
+        internal DateTime VehicleActivityNextCheckAt { get; set; }
+        internal DateTime VehicleActivityEntryDeadlineAt { get; set; }
         internal Vehicle ParkedPlayerUtility { get; set; }
         internal bool OwnedByDispatch { get; set; }
         internal bool HasConvoyCustodyHandoff { get; set; }
@@ -1819,6 +1944,7 @@ namespace LSImmersiveLife
                     criminalProfile.WeaponName),
                 RequiresVehicle = definition.RequiresVehicle,
                 VehicleStagingRequired = definition.VehicleStagingRequired,
+                VehicleActivity = definition.VehicleActivity,
                 Mobile = definition.Mobile,
                 StartPursuitOnAccept = definition.StartPursuitOnAccept,
                 Armed = definition.Armed || profileArmed,

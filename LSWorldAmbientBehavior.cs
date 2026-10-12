@@ -73,7 +73,42 @@ namespace LSImmersiveLife
         private const float MaximumInteriorPlayerFallbackDistance = 18f;
         private const ulong PinInteriorInMemoryNativeHash = 0x2CA429C029CCF247;
         private const ulong UnpinInteriorNativeHash = 0x261CCE7EED010641;
+        private const ulong GetNthClosestVehicleNodeWithHeadingNativeHash = 0x80CA6A8B6C094CC4;
         private const int RecentLocationHistoryLimit = 8;
+        private const int MaximumMovingRoadCandidateAnchorsToValidate = 3;
+        private const int MaximumPlayerRadiusRoadNodeCandidates = 6;
+        private const float MovingRoadReferenceSnapDistance = 45f;
+        private const float MovingRoadMinimumPlayerDistance = 55f;
+        private const float MovingRoadMaximumPlayerDistance = 100f;
+        private const float MovingRoadMinimumRouteDistance = 20f;
+        private const float MovingRoadMaximumRouteDistance = 60f;
+        private const float MovingRoadRouteProbeDistance = 35f;
+        private const float MovingRoadVehicleOccupancyRadius = 3.5f;
+        private const float MovingRoadPedOccupancyRadius = 2.5f;
+        private const float MovingRoadElevationTolerance = 8f;
+        private const float PlayerRadiusOutdoorFootMinimumDistance = 20f;
+        private const float PlayerRadiusOutdoorFootMaximumDistance = 90f;
+        private static readonly float[] PlayerRadiusOutdoorFootProbeDistances =
+        {
+            32f,
+            52f
+        };
+        private static readonly float[] PlayerRadiusRoadsideLateralOffsets =
+        {
+            4f,
+            7f
+        };
+        private static readonly Vector2[] PlayerRadiusOutdoorFootProbeDirections =
+        {
+            new Vector2(1f, 0f),
+            new Vector2(-1f, 0f),
+            new Vector2(0f, 1f),
+            new Vector2(0f, -1f),
+            new Vector2(0.70710678f, 0.70710678f),
+            new Vector2(0.70710678f, -0.70710678f),
+            new Vector2(-0.70710678f, 0.70710678f),
+            new Vector2(-0.70710678f, -0.70710678f)
+        };
         private const float DispatchCivilianSearchRadius = 10f;
         private const float DispatchCivilianMinimumSuspectDistance = 2.25f;
         private const int MaximumDispatchCivilianCandidatesToInspect = 24;
@@ -99,6 +134,13 @@ namespace LSImmersiveLife
             new Vector2(0f, 0f),
             new Vector2(0f, 4f),
             new Vector2(0f, -4f)
+        };
+        private static readonly float[] DispatchMovingRoadSceneOffsets =
+        {
+            60f,
+            -60f,
+            80f,
+            -80f
         };
         private static readonly Vector2[] DispatchVictimFallbackDirections =
         {
@@ -2125,21 +2167,18 @@ namespace LSImmersiveLife
             bool requiresVehicle,
             out AmbientDispatchSceneResolution scene,
             out string reason,
+            Vector3 playerRadiusRoadAnchor,
             string requiredInteriorLocationId = null,
             string requiredPhysicalType = null,
             string requiredLocationContext = null,
             bool requiresMappedInterior = false,
             int playerLiveInteriorId = 0,
-            bool playerLiveInteriorIdAvailable = false)
+            bool playerLiveInteriorIdAvailable = false,
+            string vehicleActivity = "none",
+            bool allowPlayerRadiusOutdoorScene = false)
         {
             scene = null;
             reason = string.Empty;
-            if (_locationCatalog == null)
-            {
-                reason = "The existing LSImmersiveLocation catalog is unavailable.";
-                return false;
-            }
-
             int resolvedPlayerInteriorId = playerLiveInteriorIdAvailable
                 ? playerLiveInteriorId : GetInteriorAt(playerPosition);
 
@@ -2152,6 +2191,72 @@ namespace LSImmersiveLife
             List<LSPDDispatchLocationDefinition> eligibleAreas = registeredAreas
                 .Where(area => area.IsEligibleFor(playerPosition))
                 .ToList();
+            bool movingRoadVehicleScene = string.Equals(
+                vehicleActivity, "moving_road", StringComparison.OrdinalIgnoreCase);
+            if (movingRoadVehicleScene && !requiresVehicle)
+            {
+                reason = "Stage=MovingRoadSceneRequirements; RequiresVehicle=false; Result=Rejected";
+                return false;
+            }
+            bool playerRadiusVehicleActivity = requiresVehicle
+                && (string.Equals(vehicleActivity, "moving_road",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(vehicleActivity, "parked_theft",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(vehicleActivity, "carjacking",
+                        StringComparison.OrdinalIgnoreCase))
+                && (string.IsNullOrWhiteSpace(requiredLocationContext)
+                    || string.Equals(requiredLocationContext, "any",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(requiredLocationContext, "road_vehicle",
+                        StringComparison.OrdinalIgnoreCase));
+            bool playerRadiusRoadFootActivity = !requiresVehicle
+                && string.Equals(vehicleActivity, "none",
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(requiredLocationContext, "road_foot",
+                    StringComparison.OrdinalIgnoreCase);
+            bool playerRadiusGenericFootActivity = !requiresVehicle
+                && !string.IsNullOrWhiteSpace(requiredLocationContext)
+                && string.Equals(requiredLocationContext, "any",
+                    StringComparison.OrdinalIgnoreCase)
+                && (string.IsNullOrWhiteSpace(vehicleActivity)
+                    || string.Equals(vehicleActivity, "none",
+                        StringComparison.OrdinalIgnoreCase));
+            if (allowPlayerRadiusOutdoorScene
+                && resolvedPlayerInteriorId == 0
+                && !requiresMappedInterior
+                && string.IsNullOrWhiteSpace(requiredInteriorLocationId)
+                && string.IsNullOrWhiteSpace(requiredPhysicalType)
+                && (playerRadiusVehicleActivity || playerRadiusRoadFootActivity
+                    || playerRadiusGenericFootActivity))
+            {
+                if (playerRadiusVehicleActivity)
+                    return TryResolvePlayerRadiusVehicleScene(
+                        incidentType,
+                        vehicleActivity,
+                        playerPosition,
+                        playerRadiusRoadAnchor,
+                        out scene,
+                        out reason);
+                if (playerRadiusRoadFootActivity)
+                    return TryResolvePlayerRadiusRoadFootScene(
+                        incidentType,
+                        playerPosition,
+                        playerRadiusRoadAnchor,
+                        out scene,
+                        out reason);
+                return TryResolvePlayerRadiusOutdoorFootScene(
+                    incidentType,
+                    playerPosition,
+                    out scene,
+                    out reason);
+            }
+            if (_locationCatalog == null)
+            {
+                reason = "The existing LSImmersiveLocation catalog is unavailable.";
+                return false;
+            }
+
             // Exterior dispatch can resolve directly from any compatible
             // catalog site near the Player. This runs before geographic anchor
             // fallback; named interiors remain bound to their authored access
@@ -2458,11 +2563,19 @@ namespace LSImmersiveLife
                     .ToList();
                 if (fallbackCandidates.Count == 0)
                     fallbackCandidates = nearbyFallbackCandidates;
-                Shuffle(fallbackCandidates);
+                if (movingRoadVehicleScene)
+                    fallbackCandidates = fallbackCandidates
+                        .OrderBy(candidate => Distance2D(
+                            candidate.Point.Position, playerPosition))
+                        .ToList();
+                else
+                    Shuffle(fallbackCandidates);
 
                 foreach (DispatchLocationCandidate candidate in fallbackCandidates)
                 {
-                    if (checkedNearbyFallbackCandidates++ >= MaximumSurveyCandidatesToValidate)
+                    if (checkedNearbyFallbackCandidates++ >= (movingRoadVehicleScene
+                        ? MaximumMovingRoadCandidateAnchorsToValidate
+                        : MaximumSurveyCandidatesToValidate))
                         break;
 
                     if (!MatchesDispatchLocationContext(
@@ -2493,6 +2606,7 @@ namespace LSImmersiveLife
                         playerPosition,
                         false,
                         requiresVehicle,
+                        movingRoadVehicleScene,
                         GetDispatchExteriorRoadHeightTolerance(candidate.Area),
                         out resolved,
                         out candidateFailure)
@@ -2550,7 +2664,13 @@ namespace LSImmersiveLife
                 .ToList();
             if (freshCandidates.Count > 0)
                 candidates = freshCandidates;
-            Shuffle(candidates);
+            if (movingRoadVehicleScene)
+                candidates = candidates
+                    .OrderBy(candidate => Distance2D(
+                        candidate.Point.Position, playerPosition))
+                    .ToList();
+            else
+                Shuffle(candidates);
 
             if (RequiresNamedLocation(incidentType, requiredPhysicalType) && candidates.Count == 0)
             {
@@ -2566,7 +2686,9 @@ namespace LSImmersiveLife
             int checkedAreaCandidates = 0;
             foreach (DispatchLocationCandidate candidate in candidates)
             {
-                if (checkedAreaCandidates++ >= MaximumSurveyCandidatesToValidate)
+                if (checkedAreaCandidates++ >= (movingRoadVehicleScene
+                    ? MaximumMovingRoadCandidateAnchorsToValidate
+                    : MaximumSurveyCandidatesToValidate))
                     break;
 
                 AmbientDispatchSceneResolution resolved;
@@ -2585,6 +2707,7 @@ namespace LSImmersiveLife
                     playerPosition,
                     true,
                     requiresVehicle,
+                    movingRoadVehicleScene,
                     GetDispatchExteriorRoadHeightTolerance(candidate.Area),
                     out resolved,
                     out candidateFailure))
@@ -2631,6 +2754,7 @@ namespace LSImmersiveLife
                     playerPosition,
                     true,
                     requiresVehicle,
+                movingRoadVehicleScene,
                     GetDispatchExteriorRoadHeightTolerance(area),
                     out resolved,
                     out fallbackFailure))
@@ -2672,7 +2796,8 @@ namespace LSImmersiveLife
             out string reason,
             string requiredInteriorLocationId = null,
             string requiredPhysicalType = null,
-            string requiredLocationContext = null)
+            string requiredLocationContext = null,
+            IEnumerable<int> excludedPreparedPedHandles = null)
         {
             refreshed = null;
             reason = string.Empty;
@@ -2751,6 +2876,34 @@ namespace LSImmersiveLife
                     previous.IsMappedInteriorDispatchScene);
             }
 
+            if (string.Equals(previous.LocationCategory, "PlayerRadiusOutdoorFoot",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return TryRevalidatePlayerRadiusOutdoorFootScene(
+                    previous,
+                    playerPosition,
+                    requiresVehicle,
+                    requiredPhysicalType,
+                    requiredLocationContext,
+                    excludedPreparedPedHandles,
+                    out refreshed,
+                    out reason);
+            }
+
+            if (string.Equals(previous.LocationCategory, "PlayerRadiusRoadsideFoot",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return TryRevalidatePlayerRadiusRoadFootScene(
+                    previous,
+                    playerPosition,
+                    requiresVehicle,
+                    requiredPhysicalType,
+                    requiredLocationContext,
+                    excludedPreparedPedHandles,
+                    out refreshed,
+                    out reason);
+            }
+
             LSImmersiveLocationCatalog.LSImmersiveLocationDefinition previousLocation;
             if (!string.IsNullOrWhiteSpace(requiredPhysicalType)
                 && (_locationCatalog == null
@@ -2759,6 +2912,19 @@ namespace LSImmersiveLife
             {
                 reason = "The selected site no longer matches the event's required physical type.";
                 return false;
+            }
+
+            if (string.Equals(previous.LocationCategory, "PlayerRadiusRoadNode",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(previous.VehicleStagingMode, "moving_road",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return TryRevalidateVehicleScene(
+                    previous,
+                    playerPosition,
+                    requiresVehicle,
+                    out refreshed,
+                    out reason);
             }
 
             bool resolved = TryBuildDispatchScene(
@@ -2775,12 +2941,155 @@ namespace LSImmersiveLife
                 playerPosition,
                 false,
                 requiresVehicle,
+                false,
                 previous.ExteriorRoadHeightTolerance,
                 out refreshed,
                 out reason);
             if (resolved && refreshed != null)
                 refreshed.LocationReviewStatus = previous.LocationReviewStatus;
             return resolved;
+        }
+
+        private bool TryRevalidatePlayerRadiusOutdoorFootScene(
+            AmbientDispatchSceneResolution previous,
+            Vector3 playerPosition,
+            bool requiresVehicle,
+            string requiredPhysicalType,
+            string requiredLocationContext,
+            IEnumerable<int> excludedPreparedPedHandles,
+            out AmbientDispatchSceneResolution refreshed,
+            out string reason)
+        {
+            refreshed = null;
+            reason = string.Empty;
+            if (previous == null || previous.IsInteriorScene || requiresVehicle
+                || !string.IsNullOrWhiteSpace(previous.LocationId)
+                || !string.IsNullOrWhiteSpace(requiredPhysicalType)
+                || !string.Equals(requiredLocationContext, "any",
+                    StringComparison.OrdinalIgnoreCase)
+                || previous.Area == null
+                || !string.Equals(previous.Area.Id,
+                    "runtime.player-radius-outdoor-foot-scene",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "Stage=PlayerRadiusOutdoorFootRevalidationIdentity; Result=RuntimeOutdoorFootContractChanged";
+                return false;
+            }
+
+            float playerDistance = Distance2D(previous.SceneCenter, playerPosition);
+            if (playerDistance < PlayerRadiusOutdoorFootMinimumDistance
+                || playerDistance > PlayerRadiusOutdoorFootMaximumDistance)
+            {
+                reason = "Stage=PlayerRadiusOutdoorFootRevalidationRange; PlayerDistance="
+                    + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + PlayerRadiusOutdoorFootMinimumDistance + "-"
+                    + PlayerRadiusOutdoorFootMaximumDistance + "; Result=Rejected";
+                return false;
+            }
+
+            var excludedHandles = new HashSet<int>((excludedPreparedPedHandles
+                ?? Enumerable.Empty<int>()).Where(handle => handle > 0));
+            Vector3 safePosition;
+            string placementFailure;
+            if (!TryValidateOutdoorPedPosition(
+                previous.SceneCenter,
+                9f,
+                MovingRoadElevationTolerance,
+                out safePosition,
+                out placementFailure,
+                excludedHandles)
+                || Distance2D(safePosition, previous.SceneCenter) > 9f)
+            {
+                reason = string.IsNullOrWhiteSpace(placementFailure)
+                    ? "Stage=PlayerRadiusOutdoorFootRevalidationSnap; Native=GET_SAFE_COORD_FOR_PED; Result=Rejected"
+                    : placementFailure;
+                return false;
+            }
+
+            previous.SceneCenter = safePosition;
+            previous.ActorPosition = safePosition;
+            previous.Heading = (float)(Math.Atan2(
+                playerPosition.X - safePosition.X,
+                playerPosition.Y - safePosition.Y) * 180d / Math.PI);
+            refreshed = previous;
+            Log("AMBIENT_WORLD_PLAYER_RADIUS_OUTDOOR_FOOT_SCENE_REVALIDATED",
+                "ScenePosition=" + safePosition
+                + "; PlayerDistance=" + Distance2D(safePosition, playerPosition)
+                    .ToString("0.0", CultureInfo.InvariantCulture)
+                + "; ExcludedPreparedPeds=" + excludedHandles.Count
+                + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/"
+                    + "GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/GET_NEXT_POSITION_ON_STREET"
+                + "; OwnershipPreserved=true");
+            return true;
+        }
+
+        private bool TryRevalidatePlayerRadiusRoadFootScene(
+            AmbientDispatchSceneResolution previous,
+            Vector3 playerPosition,
+            bool requiresVehicle,
+            string requiredPhysicalType,
+            string requiredLocationContext,
+            IEnumerable<int> excludedPreparedPedHandles,
+            out AmbientDispatchSceneResolution refreshed,
+            out string reason)
+        {
+            refreshed = null;
+            reason = string.Empty;
+            if (previous == null || previous.IsInteriorScene || requiresVehicle
+                || !string.IsNullOrWhiteSpace(previous.LocationId)
+                || !string.IsNullOrWhiteSpace(requiredPhysicalType)
+                || !string.Equals(requiredLocationContext, "road_foot",
+                    StringComparison.OrdinalIgnoreCase)
+                || previous.Area == null
+                || !string.Equals(previous.Area.Id,
+                    "runtime.player-radius-road-foot-scene",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                reason = "Stage=PlayerRadiusRoadFootRevalidationIdentity; Result=RuntimeRoadFootContractChanged";
+                return false;
+            }
+
+            float playerDistance = Distance2D(previous.SceneCenter, playerPosition);
+            if (playerDistance > MovingRoadMaximumPlayerDistance)
+            {
+                reason = "Stage=PlayerRadiusRoadFootRevalidationRange; PlayerDistance="
+                    + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Maximum=" + MovingRoadMaximumPlayerDistance
+                    + "; Result=Rejected";
+                return false;
+            }
+
+            var excludedHandles = new HashSet<int>((excludedPreparedPedHandles
+                ?? Enumerable.Empty<int>()).Where(handle => handle > 0));
+            Vector3 safePedPosition;
+            string placementFailure;
+            if (!TryValidateOutdoorPedPosition(
+                previous.SceneCenter,
+                10f,
+                MovingRoadElevationTolerance,
+                out safePedPosition,
+                out placementFailure,
+                excludedHandles))
+            {
+                reason = placementFailure;
+                return false;
+            }
+            if (Distance2D(safePedPosition, previous.SceneCenter) > 10f)
+            {
+                reason = "Stage=PlayerRadiusRoadFootRevalidationSnap; Native=GET_SAFE_COORD_FOR_PED; Result=Rejected";
+                return false;
+            }
+
+            previous.SceneCenter = safePedPosition;
+            previous.ActorPosition = safePedPosition;
+            refreshed = previous;
+            Log("AMBIENT_WORLD_PLAYER_RADIUS_ROAD_FOOT_SCENE_REVALIDATED",
+                "ScenePosition=" + safePedPosition
+                + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; ExcludedPreparedPeds=" + excludedHandles.Count
+                + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/GET_GROUND_Z_AND_NORMAL"
+                + "; OwnershipPreserved=true");
+            return true;
         }
 
         /// <summary>
@@ -3308,6 +3617,273 @@ namespace LSImmersiveLife
                 reservedSuspectPositions,
                 out victim,
                 out reason);
+        }
+
+        internal bool TryCreateDispatchSceneVehicle(
+            string incidentId,
+            Model model,
+            AmbientDispatchSceneResolution scene,
+            out Vehicle vehicle,
+            out string reason)
+        {
+            vehicle = null;
+            reason = "The occurrence, loaded vehicle model, or validated roadside scene is unavailable.";
+            if (string.IsNullOrWhiteSpace(incidentId)
+                || scene == null
+                || scene.IsInteriorScene
+                || !scene.HasVehicleStagingPosition
+                || !model.IsValid
+                || !model.IsInCdImage
+                || !model.IsLoaded)
+            {
+                reason = "Stage=VehicleModelOrScene; Model="
+                    + (model == null ? "null" : model.Hash.ToString(CultureInfo.InvariantCulture))
+                    + "; Loaded=" + (model != null && model.IsLoaded)
+                    + "; HasStaging=" + (scene != null && scene.HasVehicleStagingPosition)
+                    + "; Interior=" + (scene != null && scene.IsInteriorScene);
+                return false;
+            }
+
+            Vector3 staging = scene.VehicleStagingPosition;
+            int interiorId;
+            bool stagingOnRoad;
+            float groundZ;
+            Vector3 groundNormal;
+            bool groundFound;
+            try
+            {
+                interiorId = Function.Call<int>(
+                    Hash.GET_INTERIOR_AT_COORDS, staging.X, staging.Y, staging.Z);
+                stagingOnRoad = Function.Call<bool>(
+                    Hash.IS_POINT_ON_ROAD, staging.X, staging.Y, staging.Z, 0);
+                groundFound = World.GetGroundHeightAndNormal(
+                    staging, out groundZ, out groundNormal);
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=VehicleGroundProbe; Native=GET_INTERIOR_AT_COORDS/"
+                    + "GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; Result=Exception:"
+                    + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_REJECTED",
+                    "Incident=" + incidentId + "; " + reason);
+                return false;
+            }
+
+            bool movingRoadStaging = string.Equals(scene.VehicleStagingMode,
+                "moving_road", StringComparison.OrdinalIgnoreCase);
+            bool playerRadiusParkedStaging = !movingRoadStaging
+                && string.Equals(scene.LocationCategory, "PlayerRadiusRoadNode",
+                    StringComparison.OrdinalIgnoreCase);
+            Vector3 confirmedRoadNode = Vector3.Zero;
+            float confirmedRoadHeading = 0f;
+            float confirmedRoadSnapDistance = float.MaxValue;
+            string roadNodeConfirmationFailure = "NotRequired";
+            bool nativeRoadNodeConfirmed = false;
+            if (movingRoadStaging && !stagingOnRoad)
+            {
+                nativeRoadNodeConfirmed = TryGetClosestDispatchVehicleRoadNode(
+                    staging,
+                    2f,
+                    MovingRoadElevationTolerance,
+                    "VehiclePlacementRoadNodeConfirmation",
+                    out confirmedRoadNode,
+                    out confirmedRoadHeading,
+                    out confirmedRoadSnapDistance,
+                    out roadNodeConfirmationFailure,
+                    true)
+                    && confirmedRoadNode != Vector3.Zero
+                    && !float.IsNaN(confirmedRoadHeading)
+                    && !float.IsInfinity(confirmedRoadHeading)
+                    && confirmedRoadSnapDistance <= 2f
+                    && Math.Abs(confirmedRoadNode.Z - staging.Z)
+                        <= MovingRoadElevationTolerance;
+            }
+            bool movingRoadPositionConfirmed = stagingOnRoad || nativeRoadNodeConfirmed;
+            if (movingRoadStaging && interiorId == 0
+                && movingRoadPositionConfirmed && !groundFound)
+            {
+                bool collisionRequested = false;
+                string collisionRequestFailure = string.Empty;
+                try
+                {
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                        staging.X, staging.Y, staging.Z);
+                    collisionRequested = true;
+                }
+                catch (Exception ex)
+                {
+                    collisionRequestFailure = "Exception:" + ex.GetType().Name;
+                }
+
+                if (collisionRequested)
+                {
+                    reason = "Stage=VehicleGroundProbe; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/"
+                        + "REQUEST_COLLISION_AT_COORD; Position=" + staging
+                        + "; OnRoad=" + stagingOnRoad
+                        + "; NativeRoadNodeConfirmed=" + nativeRoadNodeConfirmed
+                        + "; RoadNode=" + (nativeRoadNodeConfirmed
+                            ? confirmedRoadNode.ToString() : "Unavailable")
+                        + "; RoadNodeSnapDistance="
+                        + (nativeRoadNodeConfirmed
+                            ? confirmedRoadSnapDistance.ToString("0.00", CultureInfo.InvariantCulture)
+                            : "Unavailable")
+                        + "; GroundFound=false; Result=CollisionPending";
+                    Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_PENDING",
+                        "Incident=" + incidentId + "; " + reason);
+                    return false;
+                }
+
+                reason = "Stage=VehicleGroundProbe; Native=REQUEST_COLLISION_AT_COORD; Position="
+                    + staging + "; OnRoad=" + stagingOnRoad
+                    + "; NativeRoadNodeConfirmed=" + nativeRoadNodeConfirmed
+                    + "; RoadNodeConfirmation=" + roadNodeConfirmationFailure
+                    + "; Result=Rejected; CollisionRequest=" + collisionRequestFailure;
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_REJECTED",
+                    "Incident=" + incidentId + "; " + reason);
+                return false;
+            }
+
+            if (interiorId != 0 || !groundFound
+                || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                || float.IsNaN(groundNormal.Z) || float.IsInfinity(groundNormal.Z)
+                || groundNormal.Z < 0.65f
+                || Math.Abs(staging.Z - groundZ) > 3f
+                || (movingRoadStaging && !movingRoadPositionConfirmed))
+            {
+                reason = "Stage=VehicleGroundProbe; Native=GET_INTERIOR_AT_COORDS/"
+                    + "IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; InteriorId=" + interiorId
+                    + "; OnRoad=" + stagingOnRoad
+                    + "; NativeRoadNodeConfirmed=" + nativeRoadNodeConfirmed
+                    + "; RoadNodeConfirmation=" + roadNodeConfirmationFailure
+                    + "; Position=" + staging
+                    + "; GroundFound=" + groundFound
+                    + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; NormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_REJECTED",
+                    "Incident=" + incidentId + "; " + reason);
+                return false;
+            }
+
+            staging.Z = groundZ;
+            bool overlappingVehicle = HasOverlappingVehicle(staging, 2.35f);
+            bool overlappingPed = HasOverlappingPed(staging, 2.0f);
+            if (overlappingVehicle || overlappingPed)
+            {
+                reason = "Stage=VehicleOccupancy; Result="
+                    + (overlappingVehicle ? "NearbyVehicle" : "NearbyPed")
+                    + "; ProbeRadius=2.35/2.0";
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_REJECTED",
+                    "Incident=" + incidentId + "; " + reason);
+                return false;
+            }
+
+            try
+            {
+                vehicle = World.CreateVehicle(model, staging, scene.VehicleHeading);
+                if (vehicle == null || !vehicle.Exists())
+                {
+                    vehicle = null;
+                    reason = "Stage=VehicleCreation; Native=CREATE_VEHICLE; Result=NoEntity";
+                    Log("AMBIENT_WORLD_DISPATCH_VEHICLE_CREATE_FAILED",
+                        "Incident=" + incidentId + "; Model=" + model.Hash + "; " + reason);
+                    return false;
+                }
+
+                vehicle.IsPersistent = true;
+                vehicle.PlaceOnGround();
+                int placedInteriorId = Function.Call<int>(
+                    Hash.GET_INTERIOR_AT_COORDS,
+                    vehicle.Position.X, vehicle.Position.Y, vehicle.Position.Z);
+                bool placedOnRoad = Function.Call<bool>(
+                    Hash.IS_POINT_ON_ROAD,
+                    vehicle.Position.X, vehicle.Position.Y, vehicle.Position.Z, 0);
+                Vector3 confirmedPlacedRoadNode = Vector3.Zero;
+                float confirmedPlacedRoadHeading = 0f;
+                float confirmedPlacedRoadSnapDistance = float.MaxValue;
+                string placedRoadNodeFailure = "NotRequired";
+                bool placedRoadNodeConfirmed = false;
+                if (movingRoadStaging && !placedOnRoad)
+                {
+                    placedRoadNodeConfirmed = TryGetClosestDispatchVehicleRoadNode(
+                        vehicle.Position,
+                        2f,
+                        MovingRoadElevationTolerance,
+                        "PlacedVehicleRoadNodeConfirmation",
+                        out confirmedPlacedRoadNode,
+                        out confirmedPlacedRoadHeading,
+                        out confirmedPlacedRoadSnapDistance,
+                        out placedRoadNodeFailure,
+                        true)
+                        && confirmedPlacedRoadNode != Vector3.Zero
+                        && !float.IsNaN(confirmedPlacedRoadHeading)
+                        && !float.IsInfinity(confirmedPlacedRoadHeading)
+                        && confirmedPlacedRoadSnapDistance <= 2f
+                        && Math.Abs(confirmedPlacedRoadNode.Z - vehicle.Position.Z)
+                            <= MovingRoadElevationTolerance;
+                }
+                float placedRoadsideSeparation = float.MaxValue;
+                if (playerRadiusParkedStaging)
+                {
+                    float placedRoadHeading;
+                    Vector3 placedRoadNode = World.GetNextPositionOnStreetWithHeading(
+                        vehicle.Position, out placedRoadHeading);
+                    if (placedRoadNode != Vector3.Zero)
+                        placedRoadsideSeparation = Distance2D(vehicle.Position, placedRoadNode);
+                }
+                if (placedInteriorId != 0
+                    || (movingRoadStaging && !placedOnRoad && !placedRoadNodeConfirmed)
+                    || (playerRadiusParkedStaging
+                        && (placedRoadsideSeparation < 1.25f
+                            || placedRoadsideSeparation > 14f))
+                    || vehicle.Position.DistanceTo(staging) > 6f)
+                {
+                    int rejectedHandle = vehicle.Handle;
+                    float stagingDistance = vehicle.Position.DistanceTo(staging);
+                    try { vehicle.Delete(); } catch { }
+                    vehicle = null;
+                    reason = "Stage=VehiclePlacementRevalidation; Native=GET_INTERIOR_AT_COORDS/IS_POINT_ON_ROAD/"
+                        + "ENTITY_COORDS; PlacedInteriorId=" + placedInteriorId
+                        + "; PlacedOnRoad=" + placedOnRoad
+                        + "; PlacedRoadNodeConfirmed=" + placedRoadNodeConfirmed
+                        + "; PlacedRoadNode=" + (placedRoadNodeConfirmed
+                            ? confirmedPlacedRoadNode.ToString() : "Unavailable")
+                        + "; PlacedRoadNodeConfirmation=" + placedRoadNodeFailure
+                        + "; PlacedRoadsideSeparation=" + placedRoadsideSeparation
+                        + "; StagingDistance=" + stagingDistance
+                            .ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; Vehicle=" + rejectedHandle + "; Result=Rejected";
+                    Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_REJECTED",
+                        "Incident=" + incidentId + "; " + reason);
+                    return false;
+                }
+
+                reason = string.Empty;
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_CREATED",
+                    "Incident=" + incidentId
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Model=" + model.Hash
+                    + "; Position=" + vehicle.Position
+                    + "; Heading=" + scene.VehicleHeading.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; OnRoad=" + placedOnRoad
+                    + "; NativeRoadNodeConfirmed=" + placedRoadNodeConfirmed
+                    + "; CatalogLocation=" + (scene.LocationId ?? string.Empty)
+                    + "; Owner=DispatchOccurrence");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (vehicle != null)
+                {
+                    try { if (vehicle.Exists()) vehicle.Delete(); } catch { }
+                    vehicle = null;
+                }
+                reason = "Stage=VehicleCreation; Native=CREATE_VEHICLE/PLACE_VEHICLE_ON_GROUND; Result=Exception:"
+                    + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_CREATE_FAILED",
+                    "Incident=" + incidentId + "; Model=" + model.Hash + "; " + reason);
+                return false;
+            }
         }
 
         internal bool TryCreateDispatchSceneParticipant(
@@ -4701,20 +5277,65 @@ namespace LSImmersiveLife
             Vector3 playerPosition,
             bool enforcePlayerDistanceWindow,
             bool requiresVehicle,
+            bool movingRoadVehicleScene,
             float maximumStreetHeightDelta,
             out AmbientDispatchSceneResolution scene,
             out string reason)
         {
             scene = null;
             reason = string.Empty;
-            Vector3 safePedPosition;
-            if (!TryValidateOutdoorPedPosition(
-                authoredPosition,
-                maximumSnapDistance,
-                maximumStreetHeightDelta,
-                out safePedPosition,
-                out reason))
-                return false;
+            Vector3 safePedPosition = authoredPosition;
+            Vector3 vehiclePosition = Vector3.Zero;
+            float vehicleHeading = 0f;
+            Vector3 vehicleRoutePosition = Vector3.Zero;
+            float vehicleRouteHeading = 0f;
+            bool hasVehiclePosition = false;
+
+            if (movingRoadVehicleScene)
+            {
+                if (!requiresVehicle)
+                {
+                    reason = "Stage=MovingRoadSceneRequirements; RequiresVehicle=false; Result=Rejected";
+                    return false;
+                }
+                if (!TryResolveMovingRoadVehicleStaging(
+                    authoredPosition,
+                    area,
+                    playerPosition,
+                    enforcePlayerDistanceWindow,
+                    out vehiclePosition,
+                    out vehicleHeading,
+                    out vehicleRoutePosition,
+                    out vehicleRouteHeading,
+                    out reason))
+                    return false;
+                safePedPosition = vehiclePosition;
+                hasVehiclePosition = true;
+            }
+            else
+            {
+                if (!TryValidateOutdoorPedPosition(
+                    authoredPosition,
+                    maximumSnapDistance,
+                    maximumStreetHeightDelta,
+                    out safePedPosition,
+                    out reason))
+                    return false;
+
+                if (requiresVehicle)
+                {
+                    if (!TryResolveVehicleStaging(
+                        safePedPosition,
+                        area,
+                        playerPosition,
+                        enforcePlayerDistanceWindow,
+                        out vehiclePosition,
+                        out vehicleHeading,
+                        out reason))
+                        return false;
+                    hasVehiclePosition = true;
+                }
+            }
 
             if (area == null
                 || (enforcePlayerDistanceWindow
@@ -4723,23 +5344,6 @@ namespace LSImmersiveLife
             {
                 reason = "Stage=SceneAreaRange; Result=Runtime-safe point falls outside the event's authored player-distance window.";
                 return false;
-            }
-
-            Vector3 vehiclePosition = Vector3.Zero;
-            float vehicleHeading = 0f;
-            bool hasVehiclePosition = false;
-            if (requiresVehicle)
-            {
-                if (!TryResolveVehicleStaging(
-                    safePedPosition,
-                    area,
-                    playerPosition,
-                    enforcePlayerDistanceWindow,
-                    out vehiclePosition,
-                    out vehicleHeading,
-                    out reason))
-                    return false;
-                hasVehiclePosition = true;
             }
 
             scene = new AmbientDispatchSceneResolution
@@ -4755,10 +5359,15 @@ namespace LSImmersiveLife
                 AuthoredPosition = authoredPosition,
                 SceneCenter = safePedPosition,
                 ActorPosition = safePedPosition,
-                Heading = heading,
+                Heading = movingRoadVehicleScene ? vehicleHeading : heading,
                 VehicleStagingPosition = vehiclePosition,
                 VehicleHeading = vehicleHeading,
+                VehicleRoutePosition = vehicleRoutePosition,
+                VehicleRouteHeading = vehicleRouteHeading,
+                VehicleStagingMode = movingRoadVehicleScene
+                    ? "moving_road" : requiresVehicle ? "parked_ground" : "none",
                 HasVehicleStagingPosition = hasVehiclePosition,
+                HasVehicleRoute = movingRoadVehicleScene,
                 IsSurveyedPoint = surveyedPoint,
                 MaximumSnapDistance = maximumSnapDistance,
                 ExteriorRoadHeightTolerance = maximumStreetHeightDelta,
@@ -4773,19 +5382,659 @@ namespace LSImmersiveLife
             return true;
         }
 
+        private bool TryResolvePlayerRadiusVehicleScene(
+            string incidentType,
+            string vehicleActivity,
+            Vector3 playerPosition,
+            Vector3 playerRadiusRoadAnchor,
+            out AmbientDispatchSceneResolution scene,
+            out string reason)
+        {
+            scene = null;
+            reason = string.Empty;
+            LSPDDispatchLocationDefinition runtimeArea =
+                LSPDDispatchLocationDefinition.ForPlayerRadiusVehicleScene(playerPosition);
+            Vector3 vehiclePosition;
+            float vehicleHeading;
+            Vector3 routePosition = Vector3.Zero;
+            float routeHeading = 0f;
+            Vector3 actorPosition;
+            bool movingRoad = string.Equals(vehicleActivity, "moving_road",
+                StringComparison.OrdinalIgnoreCase);
+
+            if (movingRoad)
+            {
+                if (!TryResolveMovingRoadVehicleStaging(
+                    playerRadiusRoadAnchor == Vector3.Zero
+                        ? playerPosition : playerRadiusRoadAnchor,
+                    runtimeArea,
+                    playerPosition,
+                    false,
+                    out vehiclePosition,
+                    out vehicleHeading,
+                    out routePosition,
+                    out routeHeading,
+                    out reason,
+                    true))
+                    return false;
+                actorPosition = vehiclePosition;
+            }
+            else if (string.Equals(vehicleActivity, "parked_theft",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(vehicleActivity, "carjacking",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryResolvePlayerRadiusParkedVehicleStaging(
+                    playerPosition,
+                    playerRadiusRoadAnchor,
+                    out actorPosition,
+                    out vehiclePosition,
+                    out vehicleHeading,
+                    out reason,
+                    true))
+                    return false;
+            }
+            else
+            {
+                reason = "Stage=PlayerRadiusVehicleActivity; VehicleActivity="
+                    + (vehicleActivity ?? string.Empty) + "; Result=Unsupported";
+                return false;
+            }
+
+            scene = new AmbientDispatchSceneResolution
+            {
+                Area = runtimeArea,
+                AreaLocationId = runtimeArea.Id,
+                AreaAnchorPosition = playerPosition,
+                LocationId = string.Empty,
+                LocationName = movingRoad
+                    ? "Player-radius validated road nodes"
+                    : "Player-radius validated roadside ground",
+                LocationCategory = "PlayerRadiusRoadNode",
+                PointId = movingRoad
+                    ? "player-radius-road-node"
+                    : "player-radius-roadside-position",
+                SourceCaptureId = string.Empty,
+                AuthoredPosition = playerPosition,
+                SceneCenter = actorPosition,
+                ActorPosition = actorPosition,
+                Heading = vehicleHeading,
+                VehicleStagingPosition = vehiclePosition,
+                VehicleHeading = vehicleHeading,
+                VehicleRoutePosition = routePosition,
+                VehicleRouteHeading = routeHeading,
+                VehicleStagingMode = movingRoad ? "moving_road" : "parked_ground",
+                HasVehicleStagingPosition = true,
+                HasVehicleRoute = movingRoad,
+                IsSurveyedPoint = false,
+                MaximumSnapDistance = 0f,
+                ExteriorRoadHeightTolerance = MovingRoadElevationTolerance,
+                IsInteriorScene = false,
+                CatalogInteriorId = string.Empty,
+                LiveInteriorId = 0,
+                IncidentType = incidentType ?? string.Empty,
+                ValidationStatus = movingRoad
+                    ? "RuntimeValidatedPlayerRadiusRoadNodes_NoLocationRecord"
+                    : "RuntimeValidatedPlayerRadiusRoadsideGround_NoLocationRecord",
+                LocationReviewStatus = "RuntimePlayerRadius_NoSurveyedLocation"
+            };
+            Log("AMBIENT_WORLD_PLAYER_RADIUS_VEHICLE_SCENE_RESOLVED",
+                "IncidentType=" + (incidentType ?? string.Empty)
+                + "; VehicleActivity=" + vehicleActivity
+                + "; LocationCatalogSite=None"
+                + "; PlayerPosition=" + playerPosition
+                + "; ScenePosition=" + actorPosition
+                + "; VehiclePosition=" + vehiclePosition
+                + "; VehicleHeading=" + vehicleHeading.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; RoutePosition=" + (movingRoad ? routePosition.ToString() : "NotRequired")
+                + "; PlayerDistance=" + Distance2D(vehiclePosition, playerPosition)
+                    .ToString("0.0", CultureInfo.InvariantCulture)
+                + "; Validation=" + scene.ValidationStatus);
+            LogLocationResolution(scene, true);
+            return true;
+        }
+
+        private bool TryResolvePlayerRadiusOutdoorFootScene(
+            string incidentType,
+            Vector3 playerPosition,
+            out AmbientDispatchSceneResolution scene,
+            out string reason)
+        {
+            scene = null;
+            reason = "Stage=PlayerRadiusOutdoorFootReference; Result=NoSafeCandidate";
+            if (playerPosition == Vector3.Zero)
+            {
+                reason = "Stage=PlayerRadiusOutdoorFootIdentity; Native=PlayerPosition; Result=Invalid";
+                return false;
+            }
+
+            LSPDDispatchLocationDefinition runtimeArea =
+                LSPDDispatchLocationDefinition.ForPlayerRadiusOutdoorFootScene(playerPosition);
+            List<Vector2> directions = PlayerRadiusOutdoorFootProbeDirections.ToList();
+            Shuffle(directions);
+            string lastFailure = reason;
+            foreach (float distance in PlayerRadiusOutdoorFootProbeDistances)
+            {
+                foreach (Vector2 direction in directions)
+                {
+                    Vector3 query = playerPosition + new Vector3(
+                        direction.X * distance, direction.Y * distance, 0f);
+                    Vector3 safePosition;
+                    string placementFailure;
+                    if (!TryValidateOutdoorPedPosition(
+                        query,
+                        9f,
+                        MovingRoadElevationTolerance,
+                        out safePosition,
+                        out placementFailure))
+                    {
+                        lastFailure = placementFailure;
+                        continue;
+                    }
+
+                    float playerDistance = Distance2D(safePosition, playerPosition);
+                    if (playerDistance < PlayerRadiusOutdoorFootMinimumDistance
+                        || playerDistance > PlayerRadiusOutdoorFootMaximumDistance)
+                    {
+                        lastFailure = "Stage=PlayerRadiusOutdoorFootRange; PlayerDistance="
+                            + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; RequiredRange=" + PlayerRadiusOutdoorFootMinimumDistance + "-"
+                            + PlayerRadiusOutdoorFootMaximumDistance + "; Result=Rejected";
+                        continue;
+                    }
+
+                    float heading = (float)(Math.Atan2(
+                        playerPosition.X - safePosition.X,
+                        playerPosition.Y - safePosition.Y) * 180d / Math.PI);
+                    scene = new AmbientDispatchSceneResolution
+                    {
+                        Area = runtimeArea,
+                        AreaLocationId = runtimeArea.Id,
+                        AreaAnchorPosition = playerPosition,
+                        LocationId = string.Empty,
+                        LocationName = "Player-radius validated outdoor scene",
+                        LocationCategory = "PlayerRadiusOutdoorFoot",
+                        PointId = "player-radius-outdoor-foot-position",
+                        SourceCaptureId = string.Empty,
+                        AuthoredPosition = playerPosition,
+                        SceneCenter = safePosition,
+                        ActorPosition = safePosition,
+                        Heading = heading,
+                        VehicleStagingPosition = Vector3.Zero,
+                        VehicleHeading = 0f,
+                        VehicleRoutePosition = Vector3.Zero,
+                        VehicleRouteHeading = 0f,
+                        VehicleStagingMode = "none",
+                        HasVehicleStagingPosition = false,
+                        HasVehicleRoute = false,
+                        IsSurveyedPoint = false,
+                        MaximumSnapDistance = 0f,
+                        ExteriorRoadHeightTolerance = MovingRoadElevationTolerance,
+                        IsInteriorScene = false,
+                        CatalogInteriorId = string.Empty,
+                        LiveInteriorId = 0,
+                        IncidentType = incidentType ?? string.Empty,
+                        ValidationStatus = "RuntimeValidatedPlayerRadiusOutdoorFoot_NoLocationRecord",
+                        LocationReviewStatus = "RuntimePlayerRadius_NoSurveyedLocation"
+                    };
+                    Log("AMBIENT_WORLD_PLAYER_RADIUS_OUTDOOR_FOOT_SCENE_RESOLVED",
+                        "IncidentType=" + (incidentType ?? string.Empty)
+                        + "; LocationCatalogSite=None"
+                        + "; PlayerPosition=" + playerPosition
+                        + "; ScenePosition=" + safePosition
+                        + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/"
+                            + "GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/GET_NEXT_POSITION_ON_STREET"
+                        + "; Validation=" + scene.ValidationStatus);
+                    LogLocationResolution(scene, false);
+                    reason = string.Empty;
+                    return true;
+                }
+            }
+
+            reason = lastFailure;
+            Log("AMBIENT_WORLD_PLAYER_RADIUS_OUTDOOR_FOOT_SCENE_REJECTED",
+                "IncidentType=" + (incidentType ?? string.Empty)
+                + "; PlayerPosition=" + playerPosition
+                + "; ProbeCount=" + (PlayerRadiusOutdoorFootProbeDistances.Length
+                    * PlayerRadiusOutdoorFootProbeDirections.Length)
+                + "; FirstRejectedStage=" + reason);
+            return false;
+        }
+
+        private List<Vector3> BuildPlayerRadiusRoadsideCandidates(
+            Vector3 query,
+            float roadHeading)
+        {
+            var candidates = new List<Vector3>();
+            try
+            {
+                Vector3 roadside;
+                if (World.GetPositionOnRoadside(query, Direction.Any, out roadside)
+                    && roadside != Vector3.Zero)
+                    candidates.Add(roadside);
+            }
+            catch
+            {
+            }
+
+            float radians = roadHeading * (float)Math.PI / 180f;
+            Vector3 right = new Vector3(
+                (float)Math.Cos(radians), (float)-Math.Sin(radians), 0f);
+            var lateralCandidates = new List<Vector3>();
+            foreach (float offset in PlayerRadiusRoadsideLateralOffsets)
+            {
+                lateralCandidates.Add(query + (right * offset));
+                lateralCandidates.Add(query - (right * offset));
+            }
+            Shuffle(lateralCandidates);
+            candidates.AddRange(lateralCandidates);
+            return candidates;
+        }
+
+        private bool TryResolvePlayerRadiusRoadFootScene(
+            string incidentType,
+            Vector3 playerPosition,
+            Vector3 playerRadiusRoadAnchor,
+            out AmbientDispatchSceneResolution scene,
+            out string reason)
+        {
+            scene = null;
+            reason = "Stage=PlayerRadiusRoadFootReference; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+            LSPDDispatchLocationDefinition runtimeArea =
+                LSPDDispatchLocationDefinition.ForPlayerRadiusRoadFootScene(playerPosition);
+            Vector3 roadQuery = playerRadiusRoadAnchor == Vector3.Zero
+                ? playerPosition : playerRadiusRoadAnchor;
+            Vector3 roadReference;
+            float referenceHeading;
+            float referenceDistance;
+            string referenceFailure;
+            if (!TryGetClosestDispatchVehicleRoadNode(
+                roadQuery,
+                MovingRoadReferenceSnapDistance,
+                MovingRoadElevationTolerance,
+                "PlayerRadiusRoadFootReference",
+                out roadReference,
+                out referenceHeading,
+                out referenceDistance,
+                out referenceFailure,
+                true))
+            {
+                reason = referenceFailure;
+                return false;
+            }
+
+            float radians = referenceHeading * (float)Math.PI / 180f;
+            Vector3 forward = new Vector3(
+                (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+            string lastFailure = reason;
+            foreach (float offset in DispatchMovingRoadSceneOffsets)
+            {
+                Vector3 query = roadReference + (forward * offset);
+                List<Vector3> roadsideCandidates = BuildPlayerRadiusRoadsideCandidates(
+                    query, referenceHeading);
+                if (roadsideCandidates.Count == 0)
+                {
+                    lastFailure = "Stage=PlayerRadiusRoadFootPosition; Native=GET_POSITION_ON_ROADSIDE; Query="
+                        + query + "; Result=false";
+                    continue;
+                }
+                foreach (Vector3 roadsideCandidate in roadsideCandidates)
+                {
+                Vector3 roadside = roadsideCandidate;
+
+                float playerDistance = Distance2D(roadside, playerPosition);
+                if (playerDistance < MovingRoadMinimumRouteDistance
+                    || playerDistance > MovingRoadMaximumPlayerDistance)
+                {
+                    lastFailure = "Stage=PlayerRadiusRoadFootRange; PlayerDistance="
+                        + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; RequiredRange=" + MovingRoadMinimumRouteDistance + "-"
+                        + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                    continue;
+                }
+
+                int interiorId;
+                bool onRoad;
+                float groundZ;
+                Vector3 groundNormal;
+                bool groundFound;
+                try
+                {
+                    interiorId = Function.Call<int>(
+                        Hash.GET_INTERIOR_AT_COORDS,
+                        roadside.X, roadside.Y, roadside.Z);
+                    onRoad = Function.Call<bool>(
+                        Hash.IS_POINT_ON_ROAD,
+                        roadside.X, roadside.Y, roadside.Z, 0);
+                    groundFound = World.GetGroundHeightAndNormal(
+                        roadside, out groundZ, out groundNormal);
+                }
+                catch (Exception ex)
+                {
+                    lastFailure = "Stage=PlayerRadiusRoadFootGround; Native=GET_INTERIOR_AT_COORDS/"
+                        + "GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; Position=" + roadside
+                        + "; Result=Exception:" + ex.GetType().Name;
+                    continue;
+                }
+                if (!groundFound)
+                {
+                    try
+                    {
+                        Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                            roadside.X, roadside.Y, roadside.Z);
+                    }
+                    catch { }
+                    lastFailure = "Stage=PlayerRadiusRoadFootGround; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; Position="
+                        + roadside + "; Result=false; CollisionRequested=true";
+                    continue;
+                }
+                if (interiorId != 0 || onRoad
+                    || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                    || float.IsNaN(groundNormal.Z) || float.IsInfinity(groundNormal.Z)
+                    || groundNormal.Z < 0.65f || Math.Abs(roadside.Z - groundZ) > 3f)
+                {
+                    lastFailure = "Stage=PlayerRadiusRoadFootGround; Native=GET_INTERIOR_AT_COORDS/"
+                        + "IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; InteriorId=" + interiorId
+                        + "; OnRoad=" + onRoad
+                        + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; NormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; Result=Rejected";
+                    continue;
+                }
+                roadside.Z = groundZ;
+
+                Vector3 roadNode;
+                float roadHeading;
+                float roadSeparation;
+                string roadNodeFailure;
+                if (!TryGetClosestDispatchVehicleRoadNode(
+                    roadside,
+                    14f,
+                    MovingRoadElevationTolerance,
+                    "PlayerRadiusRoadFootOffset",
+                    out roadNode,
+                    out roadHeading,
+                    out roadSeparation,
+                    out roadNodeFailure,
+                    true)
+                    || roadSeparation < 1.25f || roadSeparation > 14f
+                    || Math.Abs(roadside.Z - roadNode.Z) > MovingRoadElevationTolerance)
+                {
+                    lastFailure = string.IsNullOrWhiteSpace(roadNodeFailure)
+                        ? "Stage=PlayerRadiusRoadFootLaneClearance; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; RoadSeparation="
+                            + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; RequiredRange=1.25-14; Result=Rejected"
+                        : roadNodeFailure;
+                    continue;
+                }
+
+                Vector3 safePedPosition;
+                string pedFailure;
+                if (!TryValidateOutdoorPedPosition(
+                    roadside,
+                    10f,
+                    MovingRoadElevationTolerance,
+                    out safePedPosition,
+                    out pedFailure))
+                {
+                    lastFailure = pedFailure;
+                    continue;
+                }
+                float participantDistance = Distance2D(safePedPosition, roadside);
+                if (participantDistance > 10f)
+                {
+                    lastFailure = "Stage=PlayerRadiusRoadFootParticipantSpacing; Native=GET_SAFE_COORD_FOR_PED; ParticipantDistance="
+                        + participantDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Maximum=10; Result=Rejected";
+                    continue;
+                }
+
+                scene = new AmbientDispatchSceneResolution
+                {
+                    Area = runtimeArea,
+                    AreaLocationId = runtimeArea.Id,
+                    AreaAnchorPosition = playerPosition,
+                    LocationId = string.Empty,
+                    LocationName = "Player-radius validated roadside foot scene",
+                    LocationCategory = "PlayerRadiusRoadsideFoot",
+                    PointId = "player-radius-road-foot-position",
+                    SourceCaptureId = string.Empty,
+                    AuthoredPosition = playerPosition,
+                    SceneCenter = safePedPosition,
+                    ActorPosition = safePedPosition,
+                    Heading = roadHeading,
+                    VehicleStagingPosition = Vector3.Zero,
+                    VehicleHeading = 0f,
+                    VehicleRoutePosition = Vector3.Zero,
+                    VehicleRouteHeading = 0f,
+                    VehicleStagingMode = "none",
+                    HasVehicleStagingPosition = false,
+                    HasVehicleRoute = false,
+                    IsSurveyedPoint = false,
+                    MaximumSnapDistance = 0f,
+                    ExteriorRoadHeightTolerance = MovingRoadElevationTolerance,
+                    IsInteriorScene = false,
+                    CatalogInteriorId = string.Empty,
+                    LiveInteriorId = 0,
+                    IncidentType = incidentType ?? string.Empty,
+                    ValidationStatus = "RuntimeValidatedPlayerRadiusRoadFoot_NoLocationRecord",
+                    LocationReviewStatus = "RuntimePlayerRadius_NoSurveyedLocation"
+                };
+                Log("AMBIENT_WORLD_PLAYER_RADIUS_ROAD_FOOT_SCENE_RESOLVED",
+                    "IncidentType=" + (incidentType ?? string.Empty)
+                    + "; LocationCatalogSite=None"
+                    + "; PlayerPosition=" + playerPosition
+                    + "; ScenePosition=" + safePedPosition
+                    + "; RoadReference=" + roadReference
+                    + "; RoadSeparation=" + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; PlayerDistance=" + Distance2D(safePedPosition, playerPosition)
+                        .ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Validation=" + scene.ValidationStatus);
+                LogLocationResolution(scene, false);
+                reason = string.Empty;
+                return true;
+                }
+            }
+
+            reason = lastFailure;
+            Log("AMBIENT_WORLD_PLAYER_RADIUS_ROAD_FOOT_SCENE_REJECTED",
+                "IncidentType=" + (incidentType ?? string.Empty)
+                + "; PlayerPosition=" + playerPosition
+                + "; RoadReference=" + roadReference
+                + "; FirstRejectedStage=" + reason);
+            return false;
+        }
+
+        private bool TryResolvePlayerRadiusParkedVehicleStaging(
+            Vector3 playerPosition,
+            Vector3 playerRadiusRoadAnchor,
+            out Vector3 actorPosition,
+            out Vector3 vehiclePosition,
+            out float vehicleHeading,
+            out string reason,
+            bool allowNativeRoadNodeWhenRoadFlagFails = false)
+        {
+            actorPosition = Vector3.Zero;
+            vehiclePosition = Vector3.Zero;
+            vehicleHeading = 0f;
+            reason = "Stage=PlayerRadiusRoadsideReference; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+            try
+            {
+                Vector3 roadQuery = playerRadiusRoadAnchor == Vector3.Zero
+                    ? playerPosition : playerRadiusRoadAnchor;
+                Vector3 roadReference;
+                float referenceHeading;
+                float referenceDistance;
+                string referenceFailure;
+                if (!TryGetClosestDispatchVehicleRoadNode(
+                    roadQuery,
+                    MovingRoadReferenceSnapDistance,
+                    MovingRoadElevationTolerance,
+                    "PlayerRadiusRoadsideReference",
+                    out roadReference,
+                    out referenceHeading,
+                    out referenceDistance,
+                    out referenceFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails))
+                {
+                    reason = referenceFailure;
+                    return false;
+                }
+
+                float radians = referenceHeading * (float)Math.PI / 180f;
+                Vector3 forward = new Vector3(
+                    (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+                string lastFailure = reason;
+                string pendingCollisionFailure = string.Empty;
+                foreach (float offset in DispatchMovingRoadSceneOffsets)
+                {
+                    Vector3 query = roadReference + (forward * offset);
+                    List<Vector3> roadsideCandidates = BuildPlayerRadiusRoadsideCandidates(
+                        query, referenceHeading);
+                    if (roadsideCandidates.Count == 0)
+                    {
+                        lastFailure = "Stage=PlayerRadiusRoadside; Native=GET_POSITION_ON_ROADSIDE; Result=false";
+                        continue;
+                    }
+                    foreach (Vector3 roadsideCandidate in roadsideCandidates)
+                    {
+                    Vector3 roadside = roadsideCandidate;
+
+                    float playerDistance = Distance2D(roadside, playerPosition);
+                    if (playerDistance < MovingRoadMinimumRouteDistance
+                        || playerDistance > MovingRoadMaximumPlayerDistance)
+                    {
+                        lastFailure = "Stage=PlayerRadiusRoadsideRange; PlayerDistance="
+                            + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; RequiredRange=" + MovingRoadMinimumRouteDistance + "-"
+                            + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                        continue;
+                    }
+
+                    int interiorId = Function.Call<int>(
+                        Hash.GET_INTERIOR_AT_COORDS, roadside.X, roadside.Y, roadside.Z);
+                    bool onRoad = Function.Call<bool>(
+                        Hash.IS_POINT_ON_ROAD, roadside.X, roadside.Y, roadside.Z, 0);
+                    float groundZ;
+                    Vector3 groundNormal;
+                    bool groundFound = World.GetGroundHeightAndNormal(
+                        roadside, out groundZ, out groundNormal);
+                    if (interiorId != 0 || onRoad || !groundFound
+                        || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                        || groundNormal.Z < 0.65f || Math.Abs(roadside.Z - groundZ) > 3f)
+                    {
+                        lastFailure = "Stage=PlayerRadiusRoadsideGround; Native=GET_INTERIOR_AT_COORDS/"
+                            + "IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; InteriorId="
+                            + interiorId + "; OnRoad=" + onRoad + "; GroundFound=" + groundFound
+                            + "; Position=" + roadside
+                            + "; NormalZ=" + (groundFound ? groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; Result=Rejected";
+                        if (!groundFound && interiorId == 0 && !onRoad)
+                        {
+                            try { Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                                roadside.X, roadside.Y, roadside.Z); }
+                            catch { }
+                            pendingCollisionFailure = "Stage=PlayerRadiusRoadsideGround; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD"
+                                + "; Position=" + roadside
+                                + "; InteriorId=" + interiorId
+                                + "; OnRoad=" + onRoad
+                                + "; CollisionRequested=true; Result=CollisionPending";
+                        }
+                        continue;
+                    }
+                    roadside.Z = groundZ;
+
+                    Vector3 roadNode;
+                    float roadHeading;
+                    float roadSeparation;
+                    string roadNodeFailure;
+                    if (!TryGetClosestDispatchVehicleRoadNode(
+                        roadside,
+                        14f,
+                        MovingRoadElevationTolerance,
+                        "PlayerRadiusRoadsideOffset",
+                        out roadNode,
+                        out roadHeading,
+                        out roadSeparation,
+                        out roadNodeFailure,
+                        allowNativeRoadNodeWhenRoadFlagFails)
+                        || roadSeparation < 1.25f || roadSeparation > 14f
+                        || Math.Abs(roadside.Z - roadNode.Z) > MovingRoadElevationTolerance)
+                    {
+                        lastFailure = string.IsNullOrWhiteSpace(roadNodeFailure)
+                            ? "Stage=PlayerRadiusRoadsideOffset; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; "
+                                + "RoadSeparation=" + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; RequiredRange=1.25-14; Result=Rejected"
+                            : roadNodeFailure;
+                        continue;
+                    }
+                    if (HasOverlappingVehicle(roadside, 2.35f)
+                        || HasOverlappingPed(roadside, 2.0f))
+                    {
+                        lastFailure = "Stage=PlayerRadiusRoadsideOccupancy; Native=GET_NEARBY_VEHICLES/GET_NEARBY_PEDS; Result=Occupied";
+                        continue;
+                    }
+
+                    Vector3 safePedPosition;
+                    string pedFailure;
+                    if (!TryValidateOutdoorPedPosition(
+                        roadside,
+                        10f,
+                        MovingRoadElevationTolerance,
+                        out safePedPosition,
+                        out pedFailure))
+                    {
+                        lastFailure = pedFailure;
+                        continue;
+                    }
+                    if (Distance2D(safePedPosition, roadside) > 12f)
+                    {
+                        lastFailure = "Stage=PlayerRadiusRoadsideParticipantSpacing; Native=GET_SAFE_COORD_FOR_PED; "
+                            + "ParticipantDistance=" + Distance2D(safePedPosition, roadside)
+                                .ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Maximum=12; Result=Rejected";
+                        continue;
+                    }
+
+                    actorPosition = safePedPosition;
+                    vehiclePosition = roadside;
+                    vehicleHeading = roadHeading;
+                    reason = string.Empty;
+                    return true;
+                    }
+                }
+
+                reason = !string.IsNullOrWhiteSpace(pendingCollisionFailure)
+                    ? "PENDING:" + pendingCollisionFailure
+                        + "; RetryRequiresGroundNormalAndClearanceRevalidation=true"
+                    : lastFailure;
+                return false;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=PlayerRadiusRoadsideProbe; Native=GET_POSITION_ON_ROADSIDE/"
+                    + "GET_INTERIOR_AT_COORDS/IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/"
+                    + "GET_CLOSEST_VEHICLE_NODE_WITH_HEADING/GET_SAFE_COORD_FOR_PED; Result=Exception:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
         private bool TryValidateOutdoorPedPosition(
             Vector3 authoredPosition,
             float maximumCorrectionDistance,
             float maximumStreetHeightDelta,
             out Vector3 safePosition,
-            out string reason)
+            out string reason,
+            ISet<int> excludedPedHandles = null)
         {
             safePosition = authoredPosition;
             reason = string.Empty;
             try
             {
-                // Interior captures are not promoted to AI-accessible interiors.
-                // The current dispatch path is deliberately exterior-only.
+                // This helper validates exterior pedestrian placements only.
+                // Captured interiors must use mapped access and live-interior
+                // validation rather than being promoted through this path.
                 int authoredInteriorId = Function.Call<int>(
                     Hash.GET_INTERIOR_AT_COORDS,
                     authoredPosition.X,
@@ -4872,7 +6121,7 @@ namespace LSImmersiveLife
                     return false;
                 }
 
-                if (HasOverlappingPed(safe, 1.35f))
+                if (HasOverlappingPed(safe, 1.35f, excludedPedHandles))
                 {
                     reason = "Stage=ExteriorPedOccupancy; Native=ENTITY_CLEARANCE"
                         + "; Result=Another pedestrian occupies the candidate point.";
@@ -5004,6 +6253,668 @@ namespace LSImmersiveLife
             }
         }
 
+        private static bool TryGetClosestDispatchVehicleRoadNode(
+            Vector3 query,
+            float maximumSnapDistance,
+            float maximumElevationDelta,
+            string stageName,
+            out Vector3 roadNode,
+            out float heading,
+            out float snapDistance,
+            out string reason,
+            bool allowNativeRoadNodeWhenRoadFlagFails = false,
+            int maximumNodeCandidates = 1)
+        {
+            roadNode = Vector3.Zero;
+            heading = 0f;
+            snapDistance = float.MaxValue;
+            string stage = string.IsNullOrWhiteSpace(stageName)
+                ? "VehicleRoadNode" : stageName.Trim();
+            reason = "Stage=" + stage
+                + "; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Query=" + query
+                + "; Result=false";
+            if (query == Vector3.Zero || maximumSnapDistance <= 0f)
+            {
+                reason = "Stage=" + stage
+                    + "; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Query=" + query
+                    + "; Result=InvalidQuery";
+                return false;
+            }
+
+            int candidateCount = Math.Max(1, Math.Min(
+                MaximumPlayerRadiusRoadNodeCandidates, maximumNodeCandidates));
+            string lastFailure = reason;
+            try
+            {
+                for (int candidateOrdinal = 1;
+                    candidateOrdinal <= candidateCount;
+                    candidateOrdinal++)
+                {
+                    using (OutputArgument nodeOutput = new OutputArgument())
+                    using (OutputArgument headingOutput = new OutputArgument())
+                    {
+                        bool found;
+                        bool enumerateAlternateNode = candidateCount > 1
+                            && candidateOrdinal > 1;
+                        if (enumerateAlternateNode)
+                        {
+                            using (OutputArgument laneCountOutput = new OutputArgument())
+                            {
+                                found = Function.Call<bool>(
+                                    (Hash)GetNthClosestVehicleNodeWithHeadingNativeHash,
+                                    query.X,
+                                    query.Y,
+                                    query.Z,
+                                    candidateOrdinal,
+                                    nodeOutput,
+                                    headingOutput,
+                                    laneCountOutput,
+                                    0,
+                                    3.0f,
+                                    0f);
+                            }
+                        }
+                        else
+                        {
+                            found = Function.Call<bool>(
+                                Hash.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING,
+                                query.X,
+                                query.Y,
+                                query.Z,
+                                nodeOutput,
+                                headingOutput,
+                                1,
+                                3.0f,
+                                0);
+                        }
+                        if (!found)
+                        {
+                            lastFailure = "Stage=" + stage
+                                + "; Native=" + (enumerateAlternateNode
+                                    ? "GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING"
+                                    : "GET_CLOSEST_VEHICLE_NODE_WITH_HEADING")
+                                + "; Query=" + query
+                                + "; CandidateOrdinal=" + candidateOrdinal
+                                + "; CandidateCount=" + candidateCount
+                                + "; Result=false";
+                            break;
+                        }
+
+                        Vector3 candidate = nodeOutput.GetResult<Vector3>();
+                        float candidateHeading = headingOutput.GetResult<float>();
+                        float candidateDistance = candidate == Vector3.Zero
+                            ? float.MaxValue : Distance2D(query, candidate);
+                        float elevationDelta = candidate == Vector3.Zero
+                            ? float.MaxValue : Math.Abs(candidate.Z - query.Z);
+                        bool onRoad = candidate != Vector3.Zero
+                            && Function.Call<bool>(Hash.IS_POINT_ON_ROAD,
+                                candidate.X, candidate.Y, candidate.Z, 0);
+                        if (candidate == Vector3.Zero
+                            || float.IsNaN(candidateHeading) || float.IsInfinity(candidateHeading)
+                            || candidateDistance > maximumSnapDistance
+                            || elevationDelta > maximumElevationDelta
+                            || (!onRoad && !allowNativeRoadNodeWhenRoadFlagFails))
+                        {
+                            lastFailure = "Stage=" + stage
+                                + "; Native=" + (enumerateAlternateNode
+                                    ? "GET_NTH_CLOSEST_VEHICLE_NODE_WITH_HEADING"
+                                    : "GET_CLOSEST_VEHICLE_NODE_WITH_HEADING")
+                                + "/IS_POINT_ON_ROAD"
+                                + "; Query=" + query
+                                + "; Candidate=" + candidate
+                                + "; CandidateOrdinal=" + candidateOrdinal
+                                + "; CandidateCount=" + candidateCount
+                                + "; Heading=" + candidateHeading.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; SnapDistance=" + candidateDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; MaximumSnapDistance=" + maximumSnapDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; ElevationDelta=" + elevationDelta.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; MaximumElevationDelta=" + maximumElevationDelta.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; OnRoad=" + onRoad
+                                + "; NativeVehicleNodeAllowance=" + allowNativeRoadNodeWhenRoadFlagFails
+                                + "; Result=Rejected";
+                            continue;
+                        }
+
+                        roadNode = candidate;
+                        heading = candidateHeading;
+                        snapDistance = candidateDistance;
+                        reason = string.Empty;
+                        return true;
+                    }
+                }
+                reason = lastFailure;
+                return false;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=" + stage
+                    + "; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING/IS_POINT_ON_ROAD"
+                    + "; Query=" + query + "; Result=Exception:" + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        private bool TryResolveMovingRoadVehicleStaging(
+            Vector3 catalogAnchor,
+            LSPDDispatchLocationDefinition area,
+            Vector3 playerPosition,
+            bool enforcePlayerDistanceWindow,
+            out Vector3 stagingPosition,
+            out float heading,
+            out Vector3 routePosition,
+            out float routeHeading,
+            out string reason,
+            bool allowNativeRoadNodeWhenRoadFlagFails = false)
+        {
+            stagingPosition = Vector3.Zero;
+            heading = 0f;
+            routePosition = Vector3.Zero;
+            routeHeading = 0f;
+            reason = "Stage=MovingRoadReference; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+            if (catalogAnchor == Vector3.Zero || area == null
+                || !area.IsEligibleFor(playerPosition))
+            {
+                reason = "Stage=MovingRoadCatalogArea; Result=AreaNotEligibleForPlayer";
+                return false;
+            }
+
+            try
+            {
+                int anchorInteriorId = Function.Call<int>(
+                    Hash.GET_INTERIOR_AT_COORDS,
+                    catalogAnchor.X, catalogAnchor.Y, catalogAnchor.Z);
+                if (anchorInteriorId != 0)
+                {
+                    reason = "Stage=MovingRoadCatalogAnchor; Native=GET_INTERIOR_AT_COORDS; InteriorId="
+                        + anchorInteriorId + "; Result=Rejected";
+                    return false;
+                }
+
+                Vector3 roadReference;
+                float referenceHeading;
+                float referenceSnapDistance;
+                string referenceFailure;
+                if (!TryGetClosestDispatchVehicleRoadNode(
+                    catalogAnchor,
+                    MovingRoadReferenceSnapDistance,
+                    MovingRoadElevationTolerance,
+                    "MovingRoadReference",
+                    out roadReference,
+                    out referenceHeading,
+                    out referenceSnapDistance,
+                    out referenceFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails))
+                {
+                    reason = referenceFailure;
+                    return false;
+                }
+
+                Vector3 validatedReference;
+                string validatedReferenceFailure;
+                if (!TryValidateMovingRoadPoint(
+                    roadReference, "Reference", false,
+                    out validatedReference, out validatedReferenceFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails))
+                {
+                    reason = validatedReferenceFailure;
+                    return false;
+                }
+
+                float radians = referenceHeading * (float)Math.PI / 180f;
+                Vector3 forward = new Vector3(
+                    (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+                string lastFailure = "Stage=MovingRoadNode; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+                foreach (float offset in DispatchMovingRoadSceneOffsets)
+                {
+                    Vector3 query = validatedReference + (forward * offset);
+                    Vector3 candidate;
+                    float candidateHeading;
+                    float querySnapDistance;
+                    string candidateNodeFailure;
+                    if (!TryGetClosestDispatchVehicleRoadNode(
+                        query,
+                        18f,
+                        MovingRoadElevationTolerance,
+                        "MovingRoadNode",
+                        out candidate,
+                        out candidateHeading,
+                        out querySnapDistance,
+                        out candidateNodeFailure,
+                        allowNativeRoadNodeWhenRoadFlagFails,
+                        allowNativeRoadNodeWhenRoadFlagFails
+                            ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                    {
+                        lastFailure = candidateNodeFailure;
+                        continue;
+                    }
+
+                    Vector3 validatedCandidate;
+                    string candidateFailure;
+                    if (!TryValidateMovingRoadPoint(
+                        candidate, "VehicleNode", true,
+                        out validatedCandidate, out candidateFailure,
+                        allowNativeRoadNodeWhenRoadFlagFails))
+                    {
+                        lastFailure = candidateFailure;
+                        continue;
+                    }
+
+                    float playerDistance = Distance2D(validatedCandidate, playerPosition);
+                    if (playerDistance < MovingRoadMinimumPlayerDistance
+                        || playerDistance > MovingRoadMaximumPlayerDistance)
+                    {
+                        lastFailure = "Stage=MovingRoadPlayerRange; PlayerDistance="
+                            + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; RequiredRange=" + MovingRoadMinimumPlayerDistance + "-"
+                            + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                        continue;
+                    }
+                    if (enforcePlayerDistanceWindow
+                        && (!area.IsEligibleFor(playerPosition)
+                            || !IsWithinPlayerDistance(area, validatedCandidate, playerPosition)))
+                    {
+                        lastFailure = "Stage=MovingRoadCatalogRange; Area=" + area.Id
+                            + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Result=Rejected";
+                        continue;
+                    }
+
+                    float candidateRadians = candidateHeading * (float)Math.PI / 180f;
+                    Vector3 candidateForward = new Vector3(
+                        (float)Math.Sin(candidateRadians), (float)Math.Cos(candidateRadians), 0f);
+                    Vector3 routeQuery = validatedCandidate
+                        + (candidateForward * MovingRoadRouteProbeDistance);
+                    Vector3 rawRoutePosition;
+                    float nextHeading;
+                    float routeQuerySnapDistance;
+                    string routeNodeFailure;
+                    if (!TryGetClosestDispatchVehicleRoadNode(
+                        routeQuery,
+                        18f,
+                        MovingRoadElevationTolerance,
+                        "MovingRoadRoute",
+                        out rawRoutePosition,
+                        out nextHeading,
+                        out routeQuerySnapDistance,
+                        out routeNodeFailure,
+                        allowNativeRoadNodeWhenRoadFlagFails,
+                        allowNativeRoadNodeWhenRoadFlagFails
+                            ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                    {
+                        lastFailure = routeNodeFailure;
+                        continue;
+                    }
+                    Vector3 validatedRoutePosition;
+                    string routeFailure;
+                    if (!TryValidateMovingRoadPoint(
+                        rawRoutePosition, "RouteNode", false,
+                        out validatedRoutePosition, out routeFailure,
+                        allowNativeRoadNodeWhenRoadFlagFails))
+                    {
+                        lastFailure = routeFailure;
+                        continue;
+                    }
+
+                    float routeDistance = Distance2D(validatedCandidate, validatedRoutePosition);
+                    if (routeDistance < MovingRoadMinimumRouteDistance
+                        || routeDistance > MovingRoadMaximumRouteDistance
+                        || Math.Abs(validatedRoutePosition.Z - validatedCandidate.Z)
+                            > MovingRoadElevationTolerance)
+                    {
+                        lastFailure = "Stage=MovingRoadRoute; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; "
+                            + "RouteDistance=" + routeDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; ElevationDelta=" + Math.Abs(validatedRoutePosition.Z - validatedCandidate.Z)
+                                .ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Result=Rejected";
+                        continue;
+                    }
+
+                    stagingPosition = validatedCandidate;
+                    heading = candidateHeading;
+                    routePosition = validatedRoutePosition;
+                    routeHeading = nextHeading;
+                    reason = string.Empty;
+                    return true;
+                }
+
+                reason = lastFailure;
+                return false;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=MovingRoadProbe; Native=GET_INTERIOR_AT_COORDS/"
+                    + "IS_POINT_ON_ROAD/GET_GROUND_HEIGHT_AND_NORMAL/"
+                    + "GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=Exception:"
+                    + ex.GetType().Name;
+                return false;
+            }
+        }
+
+        private static bool TryValidateMovingRoadPoint(
+            Vector3 candidate,
+            string stageName,
+            bool checkOccupancy,
+            out Vector3 validatedPosition,
+            out string reason,
+            bool allowNativeRoadNodeWhenRoadFlagFails = false)
+        {
+            validatedPosition = candidate;
+            reason = string.Empty;
+            int interiorId;
+            bool onRoad;
+            try
+            {
+                interiorId = Function.Call<int>(
+                    Hash.GET_INTERIOR_AT_COORDS, candidate.X, candidate.Y, candidate.Z);
+                if (interiorId != 0)
+                {
+                    reason = "Stage=MovingRoad" + stageName
+                        + "; Native=GET_INTERIOR_AT_COORDS; Position=" + candidate
+                        + "; InteriorId=" + interiorId
+                        + "; Result=Rejected";
+                    return false;
+                }
+                onRoad = Function.Call<bool>(
+                    Hash.IS_POINT_ON_ROAD, candidate.X, candidate.Y, candidate.Z, 0);
+                if (!onRoad && allowNativeRoadNodeWhenRoadFlagFails)
+                {
+                    Vector3 confirmedRoadNode;
+                    float confirmedHeading;
+                    float confirmationDistance;
+                    string confirmationFailure;
+                    bool nativeRoadNodeConfirmed = TryGetClosestDispatchVehicleRoadNode(
+                        candidate,
+                        2f,
+                        MovingRoadElevationTolerance,
+                        "MovingRoad" + stageName + "RoadNodeConfirmation",
+                        out confirmedRoadNode,
+                        out confirmedHeading,
+                        out confirmationDistance,
+                        out confirmationFailure,
+                        true)
+                        && confirmedRoadNode != Vector3.Zero
+                        && !float.IsNaN(confirmedHeading)
+                        && !float.IsInfinity(confirmedHeading)
+                        && confirmationDistance <= 2f
+                        && Math.Abs(confirmedRoadNode.Z - candidate.Z)
+                            <= MovingRoadElevationTolerance;
+                    if (!nativeRoadNodeConfirmed)
+                    {
+                        reason = "Stage=MovingRoad" + stageName
+                            + "; Native=IS_POINT_ON_ROAD=false/GET_CLOSEST_VEHICLE_NODE_WITH_HEADING"
+                            + "; Position=" + candidate
+                            + "; RoadNodeConfirmation=" + confirmationFailure
+                            + "; Result=Rejected";
+                        return false;
+                    }
+                    onRoad = true;
+                }
+                if (!onRoad)
+                {
+                    reason = "Stage=MovingRoad" + stageName
+                        + "; Native=IS_POINT_ON_ROAD; Position=" + candidate
+                        + "; Result=false";
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=MovingRoad" + stageName
+                    + "; Native=GET_INTERIOR_AT_COORDS/IS_POINT_ON_ROAD; Position=" + candidate
+                    + "; Result=Exception:"
+                    + ex.GetType().Name;
+                return false;
+            }
+
+            float groundZ;
+            Vector3 groundNormal;
+            bool groundFound;
+            try
+            {
+                groundFound = World.GetGroundHeightAndNormal(
+                    candidate, out groundZ, out groundNormal);
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=MovingRoad" + stageName
+                    + "; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; Position=" + candidate
+                    + "; Result=Exception:"
+                    + ex.GetType().Name;
+                return false;
+            }
+            Vector3 confirmedRoadNodeForGroundFallback = Vector3.Zero;
+            float confirmedRoadHeadingForGroundFallback = 0f;
+            float confirmedRoadSnapDistanceForGroundFallback = float.MaxValue;
+            string groundFallbackFailure = string.Empty;
+            bool nativeRoadSurfaceConfirmed = !groundFound
+                && allowNativeRoadNodeWhenRoadFlagFails
+                && TryGetClosestDispatchVehicleRoadNode(
+                    candidate,
+                    2f,
+                    MovingRoadElevationTolerance,
+                    "MovingRoad" + stageName + "GroundNodeConfirmation",
+                    out confirmedRoadNodeForGroundFallback,
+                    out confirmedRoadHeadingForGroundFallback,
+                    out confirmedRoadSnapDistanceForGroundFallback,
+                    out groundFallbackFailure,
+                    true)
+                && confirmedRoadNodeForGroundFallback != Vector3.Zero
+                && !float.IsNaN(confirmedRoadHeadingForGroundFallback)
+                && !float.IsInfinity(confirmedRoadHeadingForGroundFallback)
+                && confirmedRoadSnapDistanceForGroundFallback <= 2f
+                && Math.Abs(confirmedRoadNodeForGroundFallback.Z - candidate.Z)
+                    <= MovingRoadElevationTolerance;
+            if (!groundFound && !nativeRoadSurfaceConfirmed)
+            {
+                try
+                {
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                        candidate.X, candidate.Y, candidate.Z);
+                }
+                catch { }
+                reason = "Stage=MovingRoad" + stageName
+                    + "; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; Position=" + candidate
+                    + "; Result=false"
+                    + "; CollisionRequested=true"
+                    + "; NativeRoadNodeConfirmation="
+                    + (string.IsNullOrWhiteSpace(groundFallbackFailure)
+                        ? "Unavailable" : groundFallbackFailure);
+                return false;
+            }
+            if (groundFound
+                && (float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                    || float.IsNaN(groundNormal.Z) || float.IsInfinity(groundNormal.Z)
+                    || groundNormal.Z < 0.65f
+                    || Math.Abs(candidate.Z - groundZ) > 3f))
+            {
+                reason = "Stage=MovingRoad" + stageName
+                    + "; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; Position=" + candidate
+                    + "; GroundZ="
+                    + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; NormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
+                return false;
+            }
+
+            candidate.Z = groundFound
+                ? groundZ
+                : confirmedRoadNodeForGroundFallback.Z;
+            if (checkOccupancy)
+            {
+                bool occupiedVehicle = HasOverlappingVehicle(
+                    candidate, MovingRoadVehicleOccupancyRadius);
+                bool occupiedPed = HasOverlappingPed(
+                    candidate, MovingRoadPedOccupancyRadius);
+                if (occupiedVehicle || occupiedPed)
+                {
+                    reason = "Stage=MovingRoad" + stageName
+                        + "; Native=GET_NEARBY_VEHICLES/GET_NEARBY_PEDS; Position=" + candidate
+                        + "; Vehicle="
+                        + occupiedVehicle + "; Ped=" + occupiedPed
+                        + "; Result=Occupied";
+                    return false;
+                }
+            }
+
+            validatedPosition = candidate;
+            return true;
+        }
+
+        private bool TryRevalidateVehicleScene(
+            AmbientDispatchSceneResolution previous,
+            Vector3 playerPosition,
+            bool requiresVehicle,
+            out AmbientDispatchSceneResolution refreshed,
+            out string reason)
+        {
+            refreshed = null;
+            reason = string.Empty;
+            if (!requiresVehicle || previous == null
+                || previous.Area == null
+                || !previous.HasVehicleStagingPosition
+                || previous.VehicleStagingPosition == Vector3.Zero)
+            {
+                reason = "Stage=VehicleSceneRevalidationIdentity; Result=MissingVehicleOrStagingPlan";
+                return false;
+            }
+
+            bool runtimePlayerRadiusScene = string.Equals(
+                previous.LocationCategory, "PlayerRadiusRoadNode",
+                StringComparison.OrdinalIgnoreCase);
+            if (!runtimePlayerRadiusScene)
+            {
+                LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location;
+                if (_locationCatalog == null
+                    || !_locationCatalog.TryGetLocation(previous.LocationId, out location)
+                    || IsRejectedSurveyRecord(location)
+                    || !IsCompatibleWithIncident(location, previous.IncidentType))
+                {
+                    reason = "Stage=VehicleSceneRevalidationIdentity; Location="
+                        + previous.LocationId + "; Result=CatalogReferenceChanged";
+                    return false;
+                }
+            }
+
+            float playerDistance = Distance2D(
+                previous.VehicleStagingPosition, playerPosition);
+            if (runtimePlayerRadiusScene
+                && (playerDistance < MovingRoadMinimumRouteDistance
+                    || playerDistance > MovingRoadMaximumPlayerDistance))
+            {
+                reason = "Stage=PlayerRadiusVehicleRevalidationRange; PlayerDistance="
+                    + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + MovingRoadMinimumRouteDistance + "-"
+                    + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                return false;
+            }
+
+            Vector3 validatedVehicle = previous.VehicleStagingPosition;
+            Vector3 validatedRoute = previous.VehicleRoutePosition;
+            if (string.Equals(previous.VehicleStagingMode, "moving_road",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!previous.HasVehicleRoute || previous.VehicleRoutePosition == Vector3.Zero)
+                {
+                    reason = "Stage=MovingRoadRevalidationRoute; Result=MissingRoutePlan";
+                    return false;
+                }
+                string vehicleFailure;
+                if (!TryValidateMovingRoadPoint(
+                    previous.VehicleStagingPosition, "VehicleNode", false,
+                    out validatedVehicle, out vehicleFailure,
+                    runtimePlayerRadiusScene))
+                {
+                    reason = vehicleFailure;
+                    return false;
+                }
+                string routeFailure;
+                if (!TryValidateMovingRoadPoint(
+                    previous.VehicleRoutePosition, "RouteNode", false,
+                    out validatedRoute, out routeFailure,
+                    runtimePlayerRadiusScene))
+                {
+                    reason = routeFailure;
+                    return false;
+                }
+
+                float routeDistance = Distance2D(validatedVehicle, validatedRoute);
+                if (routeDistance < MovingRoadMinimumRouteDistance
+                    || routeDistance > MovingRoadMaximumRouteDistance
+                    || Math.Abs(validatedRoute.Z - validatedVehicle.Z)
+                        > MovingRoadElevationTolerance)
+                {
+                    reason = "Stage=MovingRoadRevalidationRoute; RouteDistance="
+                        + routeDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; ElevationDelta=" + Math.Abs(validatedRoute.Z - validatedVehicle.Z)
+                            .ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Result=Rejected";
+                    return false;
+                }
+            }
+            else if (runtimePlayerRadiusScene)
+            {
+                int vehicleInterior = Function.Call<int>(Hash.GET_INTERIOR_AT_COORDS,
+                    validatedVehicle.X, validatedVehicle.Y, validatedVehicle.Z);
+                int actorInterior = Function.Call<int>(Hash.GET_INTERIOR_AT_COORDS,
+                    previous.SceneCenter.X, previous.SceneCenter.Y, previous.SceneCenter.Z);
+                bool vehicleOnRoad = Function.Call<bool>(Hash.IS_POINT_ON_ROAD,
+                    validatedVehicle.X, validatedVehicle.Y, validatedVehicle.Z, 0);
+                float vehicleGroundZ;
+                Vector3 vehicleGroundNormal;
+                bool vehicleGroundFound = World.GetGroundHeightAndNormal(
+                    validatedVehicle, out vehicleGroundZ, out vehicleGroundNormal);
+                float roadHeading;
+                Vector3 roadNode;
+                float roadSeparation;
+                string roadNodeFailure;
+                bool roadNodeFound = TryGetClosestDispatchVehicleRoadNode(
+                    validatedVehicle,
+                    14f,
+                    MovingRoadElevationTolerance,
+                    "PlayerRadiusParkedRevalidationRoadNode",
+                    out roadNode,
+                    out roadHeading,
+                    out roadSeparation,
+                    out roadNodeFailure,
+                    runtimePlayerRadiusScene);
+                if (vehicleInterior != 0 || actorInterior != 0 || vehicleOnRoad
+                    || !vehicleGroundFound || vehicleGroundNormal.Z < 0.65f
+                    || Math.Abs(validatedVehicle.Z - vehicleGroundZ) > 3f
+                    || !roadNodeFound || roadNode == Vector3.Zero || float.IsNaN(roadHeading)
+                    || float.IsInfinity(roadHeading)
+                    || roadSeparation < 1.25f || roadSeparation > 14f
+                    || Distance2D(previous.SceneCenter, validatedVehicle) > 12f)
+                {
+                    reason = "Stage=PlayerRadiusParkedRevalidation; Native=GET_INTERIOR_AT_COORDS/"
+                        + "IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/"
+                        + "GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; VehicleInterior=" + vehicleInterior
+                        + "; ActorInterior=" + actorInterior + "; VehicleOnRoad=" + vehicleOnRoad
+                        + "; GroundFound=" + vehicleGroundFound + "; RoadSeparation="
+                        + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; RoadNodeFailure=" + (roadNodeFound ? "None" : roadNodeFailure)
+                        + "; Result=Rejected";
+                    return false;
+                }
+                validatedVehicle.Z = vehicleGroundZ;
+            }
+
+            previous.VehicleStagingPosition = validatedVehicle;
+            previous.VehicleRoutePosition = validatedRoute;
+            refreshed = previous;
+            reason = string.Empty;
+            Log("AMBIENT_WORLD_VEHICLE_SCENE_REVALIDATED",
+                "Location=" + (runtimePlayerRadiusScene
+                    ? "NoSurveyedLocation" : previous.LocationId)
+                + "; Mode=" + previous.VehicleStagingMode
+                + "; VehicleNode=" + validatedVehicle
+                + "; RouteNode=" + (previous.HasVehicleRoute
+                    ? validatedRoute.ToString() : "NotRequired")
+                + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; Native=IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD"
+                + "; OccupancyDeferredToVehicleCreation=true");
+            return true;
+        }
+
         /// <summary>
         /// Resolves one additional, physically valid roadside position for a
         /// bounded Dispatch multi-vehicle test scene. The caller owns the
@@ -5024,6 +6935,16 @@ namespace LSImmersiveLife
                 reason = "The first Dispatch roadside staging point is unavailable.";
                 return false;
             }
+
+            if (string.Equals(scene.VehicleStagingMode, "moving_road",
+                    StringComparison.OrdinalIgnoreCase))
+                return TryResolveAdditionalMovingRoadVehicleStaging(
+                    scene,
+                    out stagingPosition,
+                    out heading,
+                    out reason,
+                    string.Equals(scene.LocationCategory, "PlayerRadiusRoadNode",
+                        StringComparison.OrdinalIgnoreCase));
 
             float radians = scene.VehicleHeading * (float)Math.PI / 180f;
             Vector3 forward = new Vector3((float)Math.Sin(radians),
@@ -5063,11 +6984,139 @@ namespace LSImmersiveLife
             return false;
         }
 
-        private static bool HasOverlappingPed(Vector3 position, float minimumSeparation)
+        private bool TryResolveAdditionalMovingRoadVehicleStaging(
+            AmbientDispatchSceneResolution scene,
+            out Vector3 stagingPosition,
+            out float heading,
+            out string reason,
+            bool allowNativeRoadNodeWhenRoadFlagFails)
+        {
+            stagingPosition = Vector3.Zero;
+            heading = 0f;
+            reason = "Stage=AdditionalMovingRoadVehicle; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+            float radians = scene.VehicleHeading * (float)Math.PI / 180f;
+            Vector3 forward = new Vector3(
+                (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+            float[] offsets = { 30f, -30f, 45f, -45f };
+            string lastFailure = reason;
+            for (int index = 0; index < offsets.Length; index++)
+            {
+                Vector3 query = scene.VehicleStagingPosition + (forward * offsets[index]);
+                Vector3 rawCandidate;
+                float candidateHeading;
+                float snapDistance;
+                string candidateNodeFailure;
+                if (!TryGetClosestDispatchVehicleRoadNode(
+                    query,
+                    18f,
+                    MovingRoadElevationTolerance,
+                    "AdditionalMovingRoadVehicleNode",
+                    out rawCandidate,
+                    out candidateHeading,
+                    out snapDistance,
+                    out candidateNodeFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails,
+                    allowNativeRoadNodeWhenRoadFlagFails
+                        ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                {
+                    lastFailure = candidateNodeFailure;
+                    continue;
+                }
+
+                Vector3 candidate;
+                string candidateFailure;
+                if (!TryValidateMovingRoadPoint(rawCandidate, "AdditionalVehicleNode",
+                    true, out candidate, out candidateFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails))
+                {
+                    lastFailure = candidateFailure;
+                    continue;
+                }
+                float vehicleSeparation = Distance2D(
+                    scene.VehicleStagingPosition, candidate);
+                float playerDistance = Distance2D(scene.Area.Position, candidate);
+                if (vehicleSeparation < 18f || vehicleSeparation > 60f
+                    || playerDistance < MovingRoadMinimumRouteDistance
+                    || playerDistance > MovingRoadMaximumPlayerDistance
+                    || Math.Abs(candidate.Z - scene.VehicleStagingPosition.Z)
+                        > MovingRoadElevationTolerance)
+                {
+                    lastFailure = "Stage=AdditionalMovingRoadVehicleSpacing; VehicleSeparation="
+                        + vehicleSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; ElevationDelta=" + Math.Abs(candidate.Z - scene.VehicleStagingPosition.Z)
+                            .ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Result=Rejected";
+                    continue;
+                }
+
+                float routeRadians = candidateHeading * (float)Math.PI / 180f;
+                Vector3 routeForward = new Vector3(
+                    (float)Math.Sin(routeRadians), (float)Math.Cos(routeRadians), 0f);
+                Vector3 routeQuery = candidate + (routeForward * MovingRoadRouteProbeDistance);
+                Vector3 rawRoute;
+                float routeHeading;
+                float routeSnapDistance;
+                string routeNodeFailure;
+                if (!TryGetClosestDispatchVehicleRoadNode(
+                    routeQuery,
+                    18f,
+                    MovingRoadElevationTolerance,
+                    "AdditionalMovingRoadRoute",
+                    out rawRoute,
+                    out routeHeading,
+                    out routeSnapDistance,
+                    out routeNodeFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails,
+                    allowNativeRoadNodeWhenRoadFlagFails
+                        ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                {
+                    lastFailure = routeNodeFailure;
+                    continue;
+                }
+                Vector3 validatedRoute;
+                string routeFailure;
+                if (!TryValidateMovingRoadPoint(rawRoute, "AdditionalVehicleRouteNode",
+                    false, out validatedRoute, out routeFailure,
+                    allowNativeRoadNodeWhenRoadFlagFails))
+                {
+                    lastFailure = routeFailure;
+                    continue;
+                }
+                float routeDistance = Distance2D(candidate, validatedRoute);
+                if (routeDistance < MovingRoadMinimumRouteDistance
+                    || routeDistance > MovingRoadMaximumRouteDistance
+                    || Math.Abs(validatedRoute.Z - candidate.Z) > MovingRoadElevationTolerance)
+                {
+                    lastFailure = "Stage=AdditionalMovingRoadRoute; RouteDistance="
+                        + routeDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; ElevationDelta=" + Math.Abs(validatedRoute.Z - candidate.Z)
+                            .ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Result=Rejected";
+                    continue;
+                }
+
+                stagingPosition = candidate;
+                heading = candidateHeading;
+                reason = string.Empty;
+                return true;
+            }
+
+            reason = lastFailure;
+            return false;
+        }
+
+        private static bool HasOverlappingPed(
+            Vector3 position,
+            float minimumSeparation,
+            ISet<int> excludedPedHandles = null)
         {
             foreach (Ped ped in World.GetNearbyPeds(position, minimumSeparation))
             {
                 if (ped == null || !ped.Exists())
+                    continue;
+                if (excludedPedHandles != null
+                    && excludedPedHandles.Contains(ped.Handle))
                     continue;
                 if (ped.Position.DistanceTo(position) < minimumSeparation)
                     return true;
@@ -6297,6 +8346,11 @@ namespace LSImmersiveLife
                 + "; VehicleRequired=" + requiresVehicle
                 + "; VehicleStaging=" + (scene.HasVehicleStagingPosition
                     ? scene.VehicleStagingPosition.ToString() : "Unavailable")
+                + "; VehicleStagingMode=" + (scene.VehicleStagingMode ?? "none")
+                + "; VehicleRoute=" + (scene.HasVehicleRoute
+                    ? scene.VehicleRoutePosition.ToString() : "NotRequired")
+                + "; LocationCatalogSite=" + (scene.LocationCategory == "PlayerRadiusRoadNode"
+                    ? "None" : scene.LocationId)
                 + "; Identity=" + identity
                 + "; RuntimeValidation=" + (scene.ValidationStatus ?? "Unknown")
                 + "; InteriorPair=" + (scene.InteriorAccessPair == null
@@ -7200,7 +9254,11 @@ namespace LSImmersiveLife
         internal float Heading { get; set; }
         internal Vector3 VehicleStagingPosition { get; set; }
         internal float VehicleHeading { get; set; }
+        internal Vector3 VehicleRoutePosition { get; set; }
+        internal float VehicleRouteHeading { get; set; }
+        internal string VehicleStagingMode { get; set; }
         internal bool HasVehicleStagingPosition { get; set; }
+        internal bool HasVehicleRoute { get; set; }
         internal bool IsSurveyedPoint { get; set; }
         internal float MaximumSnapDistance { get; set; }
         internal float ExteriorRoadHeightTolerance { get; set; }
