@@ -42,8 +42,11 @@ namespace LSImmersiveLife
         private const float GangFootSupportArrivalDistance = 18f;
         private const float GangFootSupportTaskRefreshDistance = 14f;
         private const float GangCombatAssignmentDistance = 32f;
-        private const float MinimumPursuitSpawnDistance = 65f;
-        private const float MaximumPursuitSpawnDistance = 145f;
+        // Pursuit support should stage close enough to join the evolving stop,
+        // while remaining far enough away to avoid spawning on top of actors.
+        // Every point still has to resolve to a live vehicle road node.
+        private const float MinimumPursuitSpawnDistance = 42f;
+        private const float MaximumPursuitSpawnDistance = 110f;
         private const float DispatchVehicleCloseDistance = 32f;
         private const float DispatchVehicleStoppedSpeed = 1.25f;
         private const float DispatchOfficerContainmentDistance = 5.5f;
@@ -53,6 +56,10 @@ namespace LSImmersiveLife
         private const float DispatchFootLeadContainmentDistance = 8.0f;
         private const float DispatchFootStoppedSpeedThreshold = 0.75f;
         private const int DispatchFootSpeedRefreshMilliseconds = 1000;
+        private const int DispatchFootApproachProgressSampleMilliseconds = 3000;
+        private const int DispatchFootApproachStallTimeoutSeconds = 10;
+        private const int MaximumDispatchFootApproachRecoveries = 2;
+        private const float DispatchFootApproachProgressDistance = 2f;
         private const int DispatchArrestCombatCheckMilliseconds = 150;
         private const int DispatchInteriorAccessTimeoutSeconds = 75;
         private const int DispatchInteriorAccessMaximumDoorRetries = 3;
@@ -139,7 +146,7 @@ namespace LSImmersiveLife
         private List<Ped> _dispatchVehiclePursuitTargetCache = new List<Ped>();
         private List<Ped> _dispatchFootPursuitTargetCache = new List<Ped>();
         private DateTime _nextDispatchFootSupportAt = DateTime.MinValue;
-        private DateTime _nextDispatchInterceptionApproachTaskAt = DateTime.MinValue;
+        private DateTime _nextDispatchGroupSceneSupportAt = DateTime.MinValue;
         private AmbientInteriorAccessRoute _dispatchInteriorRoute;
         private int _dispatchInteriorOfficerHandle;
         private int _dispatchInteriorTargetHandle;
@@ -159,8 +166,11 @@ namespace LSImmersiveLife
             new Dictionary<int, int>();
         private readonly Dictionary<int, int> _dispatchFootLeadBySuspect =
             new Dictionary<int, int>();
-        private readonly Dictionary<int, DateTime> _dispatchFootApproachTaskAt =
-            new Dictionary<int, DateTime>();
+        private readonly Dictionary<int, int> _dispatchGroupSceneOfficerBySuspect =
+            new Dictionary<int, int>();
+        private readonly Dictionary<int, DispatchFootApproachTaskState>
+            _dispatchFootApproachTaskStates =
+                new Dictionary<int, DispatchFootApproachTaskState>();
         private int _dispatchFootSpeedTargetHandle;
         private float _dispatchFootTargetSpeed = float.MaxValue;
         private DateTime _dispatchFootSpeedSampleAt = DateTime.MinValue;
@@ -206,6 +216,10 @@ namespace LSImmersiveLife
             internal bool VehiclePursuitLead;
             internal bool VehiclePursuitBlocker;
             internal bool VehicleContainmentStopRequested;
+            internal bool DispatchGroupSceneSupport;
+            internal bool DispatchGroupSceneExitRequested;
+            internal int DispatchGroupSceneSupportTargetHandle;
+            internal DateTime NextDispatchGroupSceneExitTaskAt = DateTime.MinValue;
             internal int DispatchFootPursuitSuspectHandle;
             internal DateTime NextDispatchFootPursuitRouteAt = DateTime.MinValue;
             internal int DispatchVehiclePursuitSuspectHandle;
@@ -242,6 +256,25 @@ namespace LSImmersiveLife
             internal bool GangSupportStartedLogged;
             internal bool GangDriverLossLogged;
             internal bool GangStandDownRouteStarted;
+        }
+
+        private sealed class DispatchFootApproachTaskState
+        {
+            internal int TargetHandle;
+            internal bool LeadRole;
+            internal DateTime NextProgressSampleAt;
+            internal DateTime LastProgressAt;
+            internal float LastTargetDistance = float.MaxValue;
+            internal int RecoveryCount;
+            internal bool RecoveryExhausted;
+        }
+
+        private sealed class DispatchPursuitAssignment
+        {
+            internal Ped Suspect;
+            internal Vehicle Vehicle;
+            internal bool SceneSupport;
+            internal int SlotIndex;
         }
 
         internal LSPDBackUp(
@@ -360,7 +393,7 @@ namespace LSImmersiveLife
             if (_incident == null)
                 return "Backup could not prepare the configured Police vehicle or officer model.";
             Report("lsimmersivelife.police.backup_reply.acknowledged", "requested");
-            if (_incident.State == LSPDDispatchState.SuspectFleeing)
+            if (_incident.CurrentPursuitTarget != null)
             {
                 LogRuntime("POLICE_BACKUP_INTERCEPTION_STARTED",
                     "Backup interception started; Incident=" + _incident.Id
@@ -767,7 +800,8 @@ namespace LSImmersiveLife
 
             bool pursuitRequested = !convoyAssignment && !crimeActivityAssignment
                 && !npcAssignment && !gangAssignment
-                && dispatch.State == LSPDDispatchState.SuspectFleeing;
+                && dispatch.Current != null
+                && dispatch.Current.CurrentPursuitTarget != null;
             Ped pursuitTarget = pursuitRequested
                 ? ResolveDispatchPursuitTarget(dispatch) : null;
             bool pursuit = pursuitRequested && pursuitTarget != null;
@@ -814,7 +848,7 @@ namespace LSImmersiveLife
                 if (vehiclePursuitTargets != null
                     && vehiclePursuitTargets.Count > 0
                     && MaintainDispatchVehicleInterceptions(
-                        vehiclePursuitTargets, now))
+                        dispatch, vehiclePursuitTargets, now))
                     return;
                 if (pursuitVehicle == null
                     && MaintainDispatchFootPursuitApproach(
@@ -1222,9 +1256,7 @@ namespace LSImmersiveLife
                 return false;
             Ped currentDispatchPursuitTarget = _incident == null
                 ? null : _incident.CurrentPursuitTarget;
-            bool dispatchPursuit = _incident != null
-                && _incident.State == LSPDDispatchState.SuspectFleeing
-                && currentDispatchPursuitTarget != null;
+            bool dispatchPursuit = currentDispatchPursuitTarget != null;
             List<Ped> dispatchVehicleTargets = dispatchPursuit
                 ? _incident.CurrentVehiclePursuitTargets.ToList()
                 : new List<Ped>();
@@ -1240,8 +1272,10 @@ namespace LSImmersiveLife
                     ? ResolvePursuitVehicle(movingTarget, _npcResponse.ActiveSubjectVehicle)
                     : null;
             List<Ped> dispatchFootTargets = dispatchPursuit
-                && dispatchVehicleTargets.Count == 0
                 ? ActiveFootPursuitTargets(null)
+                : new List<Ped>();
+            List<Ped> dispatchSceneSupportTargets = dispatchPursuit
+                ? DispatchGroupSceneTargets(_incident)
                 : new List<Ped>();
             Vector3 destination = _convoy != null && _convoy.Active
                 ? ResolveConvoyDestination(_convoy, player)
@@ -1261,6 +1295,8 @@ namespace LSImmersiveLife
             int requestedUnits = _npcResponse == null ? _settings.UnitsPerRequest : 1;
             if (_gangResponse != null)
                 requestedUnits = Math.Min(3, Math.Max(2, _settings.UnitsPerRequest));
+            List<DispatchPursuitAssignment> dispatchPursuitPlan =
+                new List<DispatchPursuitAssignment>();
             if (dispatchPursuit)
             {
                 int fleeingCount = CountActiveDispatchFleeingSuspects(_incident);
@@ -1270,8 +1306,16 @@ namespace LSImmersiveLife
                     : vehicleTeamCount == 1
                     ? 3
                     : Math.Min(3, Math.Max(2, fleeingCount));
+                bool reserveSceneUnit = dispatchSceneSupportTargets.Count > 0;
                 requestedUnits = Math.Min(4,
-                    Math.Max(requestedUnits, branchUnits));
+                    Math.Max(requestedUnits, branchUnits + (reserveSceneUnit ? 1 : 0)));
+                dispatchPursuitPlan = BuildDispatchPursuitPlan(
+                    requestedUnits,
+                    _incident,
+                    dispatchVehicleTargets,
+                    dispatchFootTargets,
+                    dispatchSceneSupportTargets);
+                requestedUnits = dispatchPursuitPlan.Count;
                 LogRuntime("POLICE_BACKUP_DISPATCH_PURSUIT_SUPPORT_SELECTED",
                     "Incident=" + _incident.Id
                     + "; SuspectsFleeing=" + fleeingCount
@@ -1279,37 +1323,50 @@ namespace LSImmersiveLife
                     + "; Mode=" + (movingTargetVehicle == null ? "Foot" : "Vehicle")
                     + "; Units=" + requestedUnits
                     + "; VehicleTargets=" + vehicleTeamCount
+                    + "; FootTargets=" + dispatchFootTargets.Count
+                    + "; SceneCover=" + reserveSceneUnit
                     + "; BranchPlan=" + (vehicleTeamCount > 1
                         ? "TwoVehicleTeamsOneAheadOnePursuitEach"
                         : movingTargetVehicle == null
-                            ? "FootPerRunnerUpToThree" : "OneAheadTwoBehind"));
+                            ? "FootPerRunnerUpToThree" : "OneAheadTwoBehind")
+                    + (reserveSceneUnit ? "; OriginalSceneUnitReserved=true" : string.Empty));
             }
             int officersPerUnit = _gangResponse == null
                 ? _settings.OfficersPerUnit
                 : Math.Max(2, _settings.OfficersPerUnit);
+            if (!dispatchPursuit)
+                dispatchPursuitPlan = new List<DispatchPursuitAssignment>();
             for (int index = 0; index < requestedUnits; index++)
             {
                 Ped unitPursuitTarget = movingTarget;
                 Vehicle unitPursuitVehicle = movingTargetVehicle;
                 int pursuitSlotIndex = index;
-                if (dispatchPursuit && dispatchVehicleTargets.Count > 1)
+                DispatchPursuitAssignment dispatchAssignment = dispatchPursuit
+                    && index < dispatchPursuitPlan.Count
+                    ? dispatchPursuitPlan[index] : null;
+                bool dispatchGroupSceneSupport = dispatchAssignment != null
+                    && dispatchAssignment.SceneSupport;
+                if (dispatchAssignment != null)
                 {
-                    int targetIndex = Math.Min(
-                        dispatchVehicleTargets.Count - 1, index / 2);
-                    unitPursuitTarget = dispatchVehicleTargets[targetIndex];
-                    unitPursuitVehicle = ResolvePursuitVehicle(
-                        _incident, unitPursuitTarget);
-                    pursuitSlotIndex = index % 2;
-                }
-                else if (dispatchPursuit && dispatchFootTargets.Count > 1)
-                {
-                    int targetIndex = index % dispatchFootTargets.Count;
-                    unitPursuitTarget = dispatchFootTargets[targetIndex];
-                    unitPursuitVehicle = null;
-                    pursuitSlotIndex = index / dispatchFootTargets.Count;
+                    unitPursuitTarget = dispatchAssignment.Suspect;
+                    unitPursuitVehicle = dispatchAssignment.Vehicle;
+                    pursuitSlotIndex = dispatchAssignment.SlotIndex;
                 }
                 Vector3 spawn;
-                if (movingPursuit)
+                if (dispatchGroupSceneSupport)
+                {
+                    if (!TryFindDispatchGroupSceneSupportStagingPosition(
+                        unitPursuitTarget, player, out spawn))
+                    {
+                        LogRuntime("POLICE_BACKUP_GROUP_SCENE_STAGING_REJECTED",
+                            "UnitIndex=" + index
+                            + "; Target=" + (unitPursuitTarget == null
+                                ? 0 : unitPursuitTarget.Handle)
+                            + "; Reason=NO_VALID_NEARBY_SCENE_ROAD_NODE");
+                        continue;
+                    }
+                }
+                else if (movingPursuit)
                 {
                     bool pursuitStaged = TryFindPursuitStagingPosition(
                         player, pursuitSlotIndex, unitPursuitTarget,
@@ -1400,7 +1457,8 @@ namespace LSImmersiveLife
                     ? NormalizeHeading(vehicleNodeHeading)
                     : AlignRoadHeadingToTarget(
                         spawn,
-                        destination,
+                        dispatchGroupSceneSupport && unitPursuitTarget != null
+                            ? unitPursuitTarget.Position : destination,
                         vehicleNodeHeading,
                         player.Heading);
                 Vehicle vehicle = null;
@@ -1473,7 +1531,10 @@ namespace LSImmersiveLife
                             && pursuitSlotIndex == 0,
                         VehiclePursuitLead = unitPursuitVehicle != null
                             && pursuitSlotIndex == 1,
+                        DispatchGroupSceneSupport = dispatchGroupSceneSupport,
+                        DispatchGroupSceneSupportTargetHandle = 0,
                         DispatchFootPursuitSuspectHandle = dispatchPursuit
+                            && !dispatchGroupSceneSupport
                             && unitPursuitVehicle == null && unitPursuitTarget != null
                                 ? unitPursuitTarget.Handle : 0,
                         DispatchVehiclePursuitSuspectHandle = unitPursuitVehicle != null
@@ -1484,7 +1545,7 @@ namespace LSImmersiveLife
                             ? float.MaxValue
                             : spawn.DistanceTo(unitPursuitVehicle != null
                                 ? unitPursuitVehicle.Position : unitPursuitTarget.Position),
-                        Destination = destination,
+                        Destination = dispatchGroupSceneSupport ? spawn : destination,
                         ReturnDestination = spawn,
                         LastDriveTaskAt = DateTime.MinValue,
                         LastProgressPosition = spawn,
@@ -1517,8 +1578,10 @@ namespace LSImmersiveLife
                     }
                     catch (Exception ex) { LogException("POLICE_BACKUP_BLIP_FAILED", ex); }
                     _units.Add(unit);
-                    Vector3 unitDestination = destination;
-                    if (movingPursuit && unitPursuitTarget != null)
+                    Vector3 unitDestination = dispatchGroupSceneSupport
+                        ? spawn : destination;
+                    if (movingPursuit && !dispatchGroupSceneSupport
+                        && unitPursuitTarget != null)
                     {
                         Vector3 targetRoad = ResolveInterceptionRoadPosition(
                             unitPursuitTarget, unitPursuitVehicle);
@@ -1545,7 +1608,24 @@ namespace LSImmersiveLife
                         unit.LastPursuitGoalDistance = vehicle.Position.DistanceTo(
                             unitDestination);
                     }
-                    SendTo(unit, unitDestination, true);
+                    if (dispatchGroupSceneSupport)
+                    {
+                        unit.Arrived = true;
+                        unit.LastProgressAt = DateTime.UtcNow;
+                        SetEmergencySignals(unit.Vehicle, false);
+                        try
+                        {
+                            Function.Call(Hash.SET_VEHICLE_HANDBRAKE,
+                                unit.Vehicle, true);
+                            unit.Driver.Task.ClearAll();
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_BACKUP_GROUP_SCENE_STAGE_HOLD_FAILED", ex);
+                        }
+                    }
+                    else
+                        SendTo(unit, unitDestination, true);
                     if (movingPursuit && unitPursuitTarget != null
                         && pursuitSlotIndex > 0)
                         unit.LastDriveTaskAt = DateTime.MinValue;
@@ -1553,6 +1633,9 @@ namespace LSImmersiveLife
                         "Vehicle=" + vehicle.Handle + "; Driver=" + driver.Handle
                         + "; Spawn=" + spawn + "; Destination=" + unitDestination
                         + "; RoadHeading=" + spawnHeading.ToString("0.0")
+                        + (dispatchGroupSceneSupport
+                            ? "; Assignment=OriginalSceneGroupCover"
+                            : string.Empty)
                         + (movingPursuit && unitPursuitTarget != null
                             ? "; Suspect=" + unitPursuitTarget.Handle
                                 + "; SpawnTargetDistance="
@@ -1566,6 +1649,162 @@ namespace LSImmersiveLife
                 }
             }
             return _units.Count > 0;
+        }
+
+        private static List<Ped> DispatchGroupSceneTargets(LSPDDispatchEvent incident)
+        {
+            if (incident == null || incident.Suspects == null
+                || incident.Suspects.Count < 2)
+                return new List<Ped>();
+
+            return incident.Suspects
+                .Where(suspect => suspect != null && suspect.Exists()
+                    && !suspect.IsDead && suspect.Health > 0
+                    && !incident.BackupArrestInProgressSuspectHandles.Contains(
+                        suspect.Handle)
+                    && !incident.ArrestedSuspects.Any(value => value != null
+                        && value.Exists() && value.Handle == suspect.Handle)
+                    && suspect.Position.DistanceTo(incident.Origin) <= 100f)
+                .Where(suspect =>
+                {
+                    bool contained = incident.PursuitContainedSuspectHandles
+                            .Contains(suspect.Handle)
+                        || incident.CompliantSuspects.Any(value => value != null
+                            && value.Exists() && value.Handle == suspect.Handle);
+                    string response;
+                    bool fleeing = incident.SuspectResponses.TryGetValue(
+                        suspect.Handle, out response)
+                        && string.Equals(response, "flee",
+                            StringComparison.OrdinalIgnoreCase);
+                    return contained || !fleeing;
+                })
+                .OrderByDescending(suspect => suspect.IsShooting || suspect.IsInCombat)
+                .ThenBy(suspect => suspect.Position.DistanceTo(incident.Origin))
+                .ToList();
+        }
+
+        private static List<DispatchPursuitAssignment> BuildDispatchPursuitPlan(
+            int unitLimit,
+            LSPDDispatchEvent incident,
+            IList<Ped> vehicleTargets,
+            IList<Ped> footTargets,
+            IList<Ped> sceneTargets)
+        {
+            var plan = new List<DispatchPursuitAssignment>();
+            int maximum = Math.Min(4, Math.Max(0, unitLimit));
+            if (maximum == 0)
+                return plan;
+
+            if (sceneTargets != null && sceneTargets.Count > 0)
+                plan.Add(new DispatchPursuitAssignment
+                {
+                    Suspect = sceneTargets[0],
+                    SceneSupport = true,
+                    SlotIndex = 0
+                });
+
+            var uniqueVehicles = new List<Ped>();
+            var seenVehicles = new HashSet<int>();
+            if (vehicleTargets != null)
+                foreach (Ped suspect in vehicleTargets)
+                {
+                    Vehicle vehicle = ResolvePursuitVehicle(incident, suspect);
+                    if (suspect != null && suspect.Exists() && !suspect.IsDead
+                        && vehicle != null && vehicle.Exists()
+                        && seenVehicles.Add(vehicle.Handle))
+                        uniqueVehicles.Add(suspect);
+                }
+
+            var uniqueFoot = new List<Ped>();
+            var seenSuspects = new HashSet<int>(
+                uniqueVehicles.Select(suspect => suspect.Handle));
+            if (footTargets != null)
+                foreach (Ped suspect in footTargets)
+                    if (suspect != null && suspect.Exists() && !suspect.IsDead
+                        && seenSuspects.Add(suspect.Handle))
+                        uniqueFoot.Add(suspect);
+
+            foreach (Ped suspect in uniqueVehicles)
+            {
+                if (plan.Count >= maximum)
+                    break;
+                Vehicle vehicle = ResolvePursuitVehicle(incident, suspect);
+                if (vehicle == null || !vehicle.Exists())
+                    continue;
+                plan.Add(new DispatchPursuitAssignment
+                {
+                    Suspect = suspect,
+                    Vehicle = vehicle,
+                    SlotIndex = 0
+                });
+            }
+
+            foreach (Ped suspect in uniqueFoot)
+            {
+                if (plan.Count >= maximum)
+                    break;
+                plan.Add(new DispatchPursuitAssignment
+                {
+                    Suspect = suspect,
+                    SlotIndex = 0
+                });
+            }
+
+            while (plan.Count < maximum)
+            {
+                Ped nextVehicleTarget = uniqueVehicles
+                    .Select(suspect => new
+                    {
+                        Suspect = suspect,
+                        Count = plan.Count(assignment => !assignment.SceneSupport
+                            && assignment.Vehicle != null
+                            && assignment.Suspect.Handle == suspect.Handle)
+                    })
+                    .Where(value => value.Count < 3)
+                    .OrderBy(value => value.Count)
+                    .Select(value => value.Suspect)
+                    .FirstOrDefault();
+                if (nextVehicleTarget != null)
+                {
+                    Vehicle vehicle = ResolvePursuitVehicle(incident, nextVehicleTarget);
+                    if (vehicle == null || !vehicle.Exists())
+                        break;
+                    int slot = plan.Count(assignment => !assignment.SceneSupport
+                        && assignment.Vehicle != null
+                        && assignment.Suspect.Handle == nextVehicleTarget.Handle);
+                    plan.Add(new DispatchPursuitAssignment
+                    {
+                        Suspect = nextVehicleTarget,
+                        Vehicle = vehicle,
+                        SlotIndex = slot
+                    });
+                    continue;
+                }
+
+                Ped nextFootTarget = uniqueFoot
+                    .Select(suspect => new
+                    {
+                        Suspect = suspect,
+                        Count = plan.Count(assignment => !assignment.SceneSupport
+                            && assignment.Vehicle == null
+                            && assignment.Suspect.Handle == suspect.Handle)
+                    })
+                    .OrderBy(value => value.Count)
+                    .Select(value => value.Suspect)
+                    .FirstOrDefault();
+                if (nextFootTarget == null)
+                    break;
+                int footSlot = plan.Count(assignment => !assignment.SceneSupport
+                    && assignment.Vehicle == null
+                    && assignment.Suspect.Handle == nextFootTarget.Handle);
+                plan.Add(new DispatchPursuitAssignment
+                {
+                    Suspect = nextFootTarget,
+                    SlotIndex = footSlot
+                });
+            }
+
+            return plan;
         }
 
         private void SupportScene(LSPDDispatch dispatch, Ped player)
@@ -3480,11 +3719,16 @@ namespace LSImmersiveLife
             Ped player,
             DateTime now)
         {
+            MaintainDispatchGroupSceneSupport(dispatch, now);
             List<Ped> targets = _dispatchFootPursuitTargetCache;
             if (targets.Count == 0)
                 return false;
 
-            List<BackupUnit> usableUnits = _units.Where(IsUsable).ToList();
+            List<BackupUnit> usableUnits = _units
+                .Where(unit => IsUsable(unit) && !unit.DispatchGroupSceneSupport
+                    && (_dispatchVehiclePursuitTargetCache.Count == 0
+                        || unit.DispatchVehiclePursuitVehicleHandle == 0))
+                .ToList();
             if (usableUnits.Count == 0)
                 return false;
 
@@ -3721,6 +3965,7 @@ namespace LSImmersiveLife
         }
 
         private bool MaintainDispatchVehicleInterceptions(
+            LSPDDispatch dispatch,
             IReadOnlyList<Ped> pursuitTargets,
             DateTime now)
         {
@@ -3739,12 +3984,32 @@ namespace LSImmersiveLife
                 targets.Add(new KeyValuePair<Ped, Vehicle>(suspect, suspectVehicle));
                 LogDispatchInterceptionTracking(suspect, suspectVehicle, now);
             }
+            bool sceneSupportActive = MaintainDispatchGroupSceneSupport(
+                dispatch, now);
             if (targets.Count == 0)
-                return false;
+            {
+                bool remainingFootSupport = _dispatchFootPursuitTargetCache.Count > 0
+                    && MaintainDispatchFootPursuitApproach(
+                        dispatch, Game.Player.Character, now);
+                return sceneSupportActive || remainingFootSupport;
+            }
 
-            List<BackupUnit> usableUnits = _units.Where(IsUsable).ToList();
+            HashSet<int> activeFootTargetHandles = new HashSet<int>(
+                _dispatchFootPursuitTargetCache
+                    .Where(ped => ped != null && ped.Exists())
+                    .Select(ped => ped.Handle));
+            foreach (BackupUnit unit in _units.Where(value => value != null
+                && value.DispatchFootPursuitSuspectHandle > 0
+                && !activeFootTargetHandles.Contains(
+                    value.DispatchFootPursuitSuspectHandle)))
+                unit.DispatchFootPursuitSuspectHandle = 0;
+
+            List<BackupUnit> usableUnits = _units
+                .Where(unit => IsUsable(unit) && !unit.DispatchGroupSceneSupport
+                    && unit.DispatchFootPursuitSuspectHandle == 0)
+                .ToList();
             if (usableUnits.Count == 0)
-                return false;
+                return sceneSupportActive;
 
             var groups = targets.ToDictionary(
                 target => target.Key.Handle,
@@ -3806,8 +4071,10 @@ namespace LSImmersiveLife
                             != target.Key.Handle
                         || unit.DispatchVehiclePursuitVehicleHandle
                             != target.Value.Handle;
-                    bool roleChanged = unit.VehiclePursuitBlocker != (unitIndex == 0)
-                        || unit.VehiclePursuitLead != (unitIndex == 1);
+                    bool blockerRole = group.Count > 1 && unitIndex == 0;
+                    bool leadRole = group.Count == 1 || unitIndex == 1;
+                    bool roleChanged = unit.VehiclePursuitBlocker != blockerRole
+                        || unit.VehiclePursuitLead != leadRole;
                     if (targetChanged)
                     {
                         unit.DispatchVehiclePursuitSuspectHandle = target.Key.Handle;
@@ -3832,8 +4099,8 @@ namespace LSImmersiveLife
                         unit.Destination = Vector3.Zero;
                         unit.LastDriveTaskAt = DateTime.MinValue;
                     }
-                    unit.VehiclePursuitBlocker = unitIndex == 0;
-                    unit.VehiclePursuitLead = unitIndex == 1;
+                    unit.VehiclePursuitBlocker = blockerRole;
+                    unit.VehiclePursuitLead = leadRole;
                     if (targetChanged || roleChanged)
                     {
                         Vector3 targetRoad;
@@ -3863,7 +4130,10 @@ namespace LSImmersiveLife
                     || hasAssignment;
             }
 
-            return hasAssignment;
+            bool footSupportActive = _dispatchFootPursuitTargetCache.Count > 0
+                && MaintainDispatchFootPursuitApproach(
+                    dispatch, Game.Player.Character, now);
+            return hasAssignment || sceneSupportActive || footSupportActive;
         }
 
         private bool MaintainDispatchVehicleInterception(
@@ -4509,7 +4779,7 @@ namespace LSImmersiveLife
             _dispatchVehiclePursuitTargetCache.Clear();
             _dispatchFootPursuitTargetCache.Clear();
             _nextDispatchFootSupportAt = DateTime.MinValue;
-            _nextDispatchInterceptionApproachTaskAt = DateTime.MinValue;
+            _nextDispatchGroupSceneSupportAt = DateTime.MinValue;
             _dispatchVehicleRouteFailureNotified = false;
             foreach (BackupUnit unit in _units)
                 if (unit != null)
@@ -4531,6 +4801,10 @@ namespace LSImmersiveLife
                     unit.VehiclePursuitLead = false;
                     unit.VehiclePursuitBlocker = false;
                     unit.VehicleContainmentStopRequested = false;
+                    unit.DispatchGroupSceneSupport = false;
+                    unit.DispatchGroupSceneExitRequested = false;
+                    unit.DispatchGroupSceneSupportTargetHandle = 0;
+                    unit.NextDispatchGroupSceneExitTaskAt = DateTime.MinValue;
                 }
             _dispatchContainmentStartedLogged = false;
             _dispatchComplianceRequestedLogged = false;
@@ -4541,7 +4815,8 @@ namespace LSImmersiveLife
             _dispatchPlayerFinalArrestCompletedLogged = false;
             _dispatchFootInterceptorBySuspect.Clear();
             _dispatchFootLeadBySuspect.Clear();
-            _dispatchFootApproachTaskAt.Clear();
+            _dispatchGroupSceneOfficerBySuspect.Clear();
+            _dispatchFootApproachTaskStates.Clear();
             _dispatchFootComplianceLogged.Clear();
             _dispatchFootSpeedTargetHandle = 0;
             _dispatchFootTargetSpeed = float.MaxValue;
@@ -4557,9 +4832,14 @@ namespace LSImmersiveLife
 
         private void ReleaseDispatchArrestCombat(LSPDDispatchEvent incident)
         {
-            if (incident == null || !incident.PlayerHandcuffInProgress
-                || incident.PlayerHandcuffTargetHandle <= 0)
+            if (incident == null)
                 return;
+            if (!incident.PlayerHandcuffInProgress
+                || incident.PlayerHandcuffTargetHandle <= 0)
+            {
+                _dispatchArrestCombatReleasedPairs.Clear();
+                return;
+            }
 
             DateTime now = DateTime.UtcNow;
             if (now < _nextDispatchArrestCombatCheckAt)
@@ -4582,16 +4862,29 @@ namespace LSImmersiveLife
             {
                 long pairKey = ((long)officer.Handle << 32)
                     | (uint)suspect.Handle;
+                int sceneOfficerHandle;
+                bool assignedToSuspect = _dispatchGroupSceneOfficerBySuspect.TryGetValue(
+                        suspect.Handle, out sceneOfficerHandle)
+                    && sceneOfficerHandle == officer.Handle;
+                if (!assignedToSuspect)
+                    assignedToSuspect = _units.Any(unit => unit != null
+                        && unit.Officers != null
+                        && unit.Officers.Any(value => value != null
+                            && value.Exists() && value.Handle == officer.Handle)
+                        && (unit.DispatchFootPursuitSuspectHandle == suspect.Handle
+                            || unit.DispatchVehiclePursuitSuspectHandle == suspect.Handle));
                 if (_dispatchArrestCombatReleasedPairs.Contains(pairKey)
-                    || !officer.IsInCombat
-                    || !IsOfficerEngagedWithTarget(officer, suspect))
+                    || (!assignedToSuspect
+                        && !IsOfficerEngagedWithTarget(officer, suspect)))
                     continue;
 
                 try
                 {
                     // Backup owns only its officer task. Dispatch keeps the
                     // suspect and the physical handcuff animation remains the
-                    // arrest owner while the Player completes it.
+                    // arrest owner while the Player completes it. Clear the
+                    // assigned officer even if GTA has already dropped the
+                    // combat flag while a fired round is still in flight.
                     officer.Task.ClearAll();
                     _dispatchArrestCombatReleasedPairs.Add(pairKey);
                     LogRuntime("POLICE_BACKUP_DISPATCH_ARREST_COMBAT_RELEASED",
@@ -4599,6 +4892,7 @@ namespace LSImmersiveLife
                         + "; Officer=" + officer.Handle
                         + "; Suspect=" + suspect.Handle
                         + "; Reason=PlayerHandcuffInProgress"
+                        + "; AssignedToTarget=" + assignedToSuspect
                         + "; Owner=BackupOfficerTask");
                 }
                 catch (Exception ex)
@@ -4678,6 +4972,308 @@ namespace LSImmersiveLife
                 && interiorId != 0;
         }
 
+        private bool MaintainDispatchGroupSceneSupport(
+            LSPDDispatch dispatch,
+            DateTime now)
+        {
+            List<BackupUnit> sceneUnits = _units
+                .Where(unit => IsUsable(unit) && unit.DispatchGroupSceneSupport)
+                .ToList();
+            if (sceneUnits.Count == 0)
+                return false;
+            if (now < _nextDispatchGroupSceneSupportAt)
+                return true;
+            _nextDispatchGroupSceneSupportAt = now.AddSeconds(1);
+
+            LSPDDispatchEvent incident = dispatch == null ? _incident : dispatch.Current;
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff)
+            {
+                foreach (BackupUnit unit in sceneUnits)
+                {
+                    unit.DispatchGroupSceneSupport = false;
+                    unit.DispatchGroupSceneExitRequested = false;
+                    unit.DispatchGroupSceneSupportTargetHandle = 0;
+                    unit.NextDispatchGroupSceneExitTaskAt = DateTime.MinValue;
+                }
+                _dispatchGroupSceneOfficerBySuspect.Clear();
+                return false;
+            }
+
+            List<Ped> sceneSuspects = DispatchGroupSceneTargets(incident);
+            var activePursuitHandles = new HashSet<int>(
+                _dispatchVehiclePursuitTargetCache
+                    .Concat(_dispatchFootPursuitTargetCache)
+                    .Where(ped => ped != null && ped.Exists())
+                    .Select(ped => ped.Handle));
+            var sceneOfficers = new List<Ped>();
+            foreach (BackupUnit unit in sceneUnits)
+            {
+                Ped assignedTarget = sceneSuspects.FirstOrDefault(suspect =>
+                    suspect.Handle == unit.DispatchGroupSceneSupportTargetHandle)
+                    ?? sceneSuspects.FirstOrDefault();
+                if (assignedTarget != null
+                    && unit.DispatchGroupSceneSupportTargetHandle != assignedTarget.Handle)
+                {
+                    unit.DispatchGroupSceneSupportTargetHandle = assignedTarget.Handle;
+                    Vector3 roadNode;
+                    float roadHeading;
+                    if (TryGetNearbyVehicleRoadNode(
+                        assignedTarget.Position, incident.Origin, 75f,
+                        out roadNode, out roadHeading)
+                        && (unit.Destination == Vector3.Zero
+                            || unit.Destination.DistanceTo(roadNode) >= 16f))
+                    {
+                        unit.Destination = roadNode;
+                        unit.Arrived = false;
+                        unit.LastProgressAt = now;
+                        unit.LastProgressPosition = unit.Vehicle.Position;
+                        unit.RouteRecoveryCount = 0;
+                        unit.LastDriveTaskAt = DateTime.MinValue;
+                        if (!SendTo(unit, roadNode, true))
+                            unit.LastDriveTaskAt = now;
+                    }
+                    LogRuntime("POLICE_BACKUP_GROUP_SCENE_ROUTE_ASSIGNED",
+                        "Incident=" + incident.Id
+                        + "; Suspect=" + assignedTarget.Handle
+                        + "; Vehicle=" + unit.Vehicle.Handle
+                        + "; RoadNode=" + unit.Destination
+                        + "; PhysicalRoadNodeValidated=true");
+                }
+
+                if (!unit.Arrived)
+                {
+                    Vector3 position = unit.Vehicle.Position;
+                    if (position.DistanceTo(unit.LastProgressPosition) >= 5f)
+                    {
+                        unit.LastProgressPosition = position;
+                        unit.LastProgressAt = now;
+                        unit.RouteRecoveryCount = 0;
+                    }
+                    else if (now >= unit.LastProgressAt.AddSeconds(RouteStallTimeoutSeconds)
+                        && unit.RouteRecoveryCount < MaximumRouteRecoveries
+                        && assignedTarget != null)
+                    {
+                        Vector3 recoveryRoad;
+                        float recoveryHeading;
+                        if (TryGetNearbyVehicleRoadNode(
+                            assignedTarget.Position, incident.Origin, 75f,
+                            out recoveryRoad, out recoveryHeading)
+                            && (unit.Destination == Vector3.Zero
+                                || unit.Destination.DistanceTo(recoveryRoad) >= 12f))
+                        {
+                            unit.Destination = recoveryRoad;
+                            unit.RouteRecoveryCount++;
+                            unit.LastProgressAt = now;
+                            unit.LastProgressPosition = position;
+                            unit.LastDriveTaskAt = DateTime.MinValue;
+                            if (!SendTo(unit, recoveryRoad, true))
+                                unit.LastDriveTaskAt = now;
+                            LogRuntime("POLICE_BACKUP_GROUP_SCENE_ROUTE_RECOVERY",
+                                "Incident=" + incident.Id
+                                + "; Vehicle=" + unit.Vehicle.Handle
+                                + "; Suspect=" + assignedTarget.Handle
+                                + "; Recovery=" + unit.RouteRecoveryCount
+                                + "; RoadNode=" + recoveryRoad);
+                        }
+                        else
+                            unit.LastProgressAt = now;
+                    }
+
+                    float arrivalRadius = Math.Max(14f, _settings.ArrivalRadius);
+                    if (unit.Destination != Vector3.Zero
+                        && position.DistanceTo(unit.Destination) <= arrivalRadius)
+                    {
+                        unit.Arrived = true;
+                        SetEmergencySignals(unit.Vehicle, false);
+                        try
+                        {
+                            Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, true);
+                            unit.Driver.Task.ClearAll();
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_BACKUP_GROUP_SCENE_HOLD_FAILED", ex);
+                        }
+                        LogRuntime("POLICE_BACKUP_GROUP_SCENE_UNIT_ARRIVED",
+                            "Incident=" + incident.Id
+                            + "; Vehicle=" + unit.Vehicle.Handle
+                            + "; Suspect=" + unit.DispatchGroupSceneSupportTargetHandle
+                            + "; RoadPosition=" + unit.Vehicle.Position
+                            + "; OfficersDeploy=true");
+                    }
+                    if (!unit.Arrived)
+                        continue;
+                }
+
+                if (unit.NextDispatchGroupSceneExitTaskAt == DateTime.MinValue
+                    || now >= unit.NextDispatchGroupSceneExitTaskAt)
+                {
+                    foreach (Ped officer in SupportOfficers(unit))
+                    {
+                        if (officer == null || !officer.Exists() || officer.IsDead
+                            || !officer.IsInVehicle())
+                            continue;
+                        try { Function.Call(Hash.TASK_LEAVE_VEHICLE, officer, unit.Vehicle, 0); }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_BACKUP_GROUP_SCENE_EXIT_FAILED", ex);
+                        }
+                    }
+                    unit.DispatchGroupSceneExitRequested = true;
+                    unit.NextDispatchGroupSceneExitTaskAt = now.AddSeconds(2);
+                }
+
+                sceneOfficers.AddRange(SupportOfficers(unit)
+                    .Where(officer => officer != null && officer.Exists()
+                        && !officer.IsDead && !officer.IsInVehicle()));
+            }
+
+            if (sceneOfficers.Count > 0 && sceneSuspects.Count > 0)
+            {
+                HashSet<int> assigned = SupportDispatchGroupAtScene(
+                    dispatch,
+                    sceneOfficers,
+                    new HashSet<int>(),
+                    activePursuitHandles,
+                    now);
+                if (assigned.Count > 0)
+                    SetState(LSPDBackupAssignmentState.Supporting);
+                else
+                    SetState(LSPDBackupAssignmentState.Intercepting);
+            }
+            return true;
+        }
+
+        private HashSet<int> SupportDispatchGroupAtScene(
+            LSPDDispatch dispatch,
+            List<Ped> officers,
+            HashSet<int> alreadyAssignedOfficerHandles,
+            HashSet<int> activePursuitHandles,
+            DateTime now)
+        {
+            var assigned = new HashSet<int>();
+            LSPDDispatchEvent incident = dispatch == null ? _incident : dispatch.Current;
+            if (incident == null)
+                return assigned;
+
+            if (incident.BackupArrestInProgressOfficerHandles != null)
+                assigned.UnionWith(
+                    incident.BackupArrestInProgressOfficerHandles);
+            if (incident.Suspects == null || incident.Suspects.Count < 2
+                || officers == null || officers.Count == 0)
+                return assigned;
+
+            List<Ped> sceneSuspects = incident.Suspects
+                .Where(suspect => suspect != null && suspect.Exists()
+                    && !suspect.IsDead && suspect.Health > 0
+                    && !incident.BackupArrestInProgressSuspectHandles.Contains(
+                        suspect.Handle)
+                    && !incident.ArrestedSuspects.Any(value => value != null
+                        && value.Exists() && value.Handle == suspect.Handle)
+                    && suspect.Position.DistanceTo(incident.Origin) <= 100f)
+                .Where(suspect =>
+                {
+                    bool alreadyContained = incident.PursuitContainedSuspectHandles
+                            .Contains(suspect.Handle)
+                        || incident.CompliantSuspects.Any(value => value != null
+                            && value.Exists() && value.Handle == suspect.Handle);
+                    string response;
+                    bool fleeing = incident.SuspectResponses.TryGetValue(
+                        suspect.Handle, out response)
+                        && string.Equals(response, "flee",
+                            StringComparison.OrdinalIgnoreCase);
+                    return alreadyContained || (!fleeing
+                        && (activePursuitHandles == null
+                            || !activePursuitHandles.Contains(suspect.Handle)));
+                })
+                .OrderByDescending(suspect => suspect.IsShooting
+                    || suspect.IsInCombat)
+                .ThenByDescending(suspect =>
+                {
+                    string response;
+                    return incident.SuspectResponses.TryGetValue(
+                            suspect.Handle, out response)
+                        && string.Equals(response, "resist",
+                            StringComparison.OrdinalIgnoreCase);
+                })
+                .ThenBy(suspect => suspect.Position.DistanceTo(incident.Origin))
+                .ToList();
+            if (sceneSuspects.Count == 0)
+            {
+                _dispatchGroupSceneOfficerBySuspect.Clear();
+                return assigned;
+            }
+
+            HashSet<int> sceneSuspectHandles = new HashSet<int>(
+                sceneSuspects.Select(suspect => suspect.Handle));
+            foreach (int stale in _dispatchGroupSceneOfficerBySuspect.Keys
+                .Where(handle => !sceneSuspectHandles.Contains(handle)).ToList())
+                _dispatchGroupSceneOfficerBySuspect.Remove(stale);
+
+            bool canIssueSupportTask = CanIssueSupportTasks();
+            foreach (Ped suspect in sceneSuspects)
+            {
+                int existingOfficerHandle;
+                Ped officer = _dispatchGroupSceneOfficerBySuspect.TryGetValue(
+                        suspect.Handle, out existingOfficerHandle)
+                    ? officers.FirstOrDefault(value => value != null
+                        && value.Exists() && !value.IsDead
+                        && value.Handle == existingOfficerHandle
+                        && (alreadyAssignedOfficerHandles == null
+                            || !alreadyAssignedOfficerHandles.Contains(value.Handle))
+                        && !assigned.Contains(value.Handle))
+                    : null;
+                if (officer == null)
+                {
+                    officer = officers.Where(value => value != null
+                            && value.Exists() && !value.IsDead
+                            && (alreadyAssignedOfficerHandles == null
+                                || !alreadyAssignedOfficerHandles.Contains(value.Handle))
+                            && !assigned.Contains(value.Handle))
+                        .OrderBy(value => value.Position.DistanceTo(suspect.Position))
+                        .FirstOrDefault();
+                }
+                if (officer == null)
+                    break;
+
+                assigned.Add(officer.Handle);
+                int previousOfficerHandle;
+                bool assignmentChanged = !_dispatchGroupSceneOfficerBySuspect.TryGetValue(
+                    suspect.Handle, out previousOfficerHandle)
+                    || previousOfficerHandle != officer.Handle;
+                _dispatchGroupSceneOfficerBySuspect[suspect.Handle] = officer.Handle;
+                if (assignmentChanged)
+                    LogRuntime("POLICE_BACKUP_GROUP_SCENE_OFFICER_ASSIGNED",
+                        "Incident=" + incident.Id + "; Suspect=" + suspect.Handle
+                        + "; Officer=" + officer.Handle
+                        + "; PlayerPursuingOtherSuspect=true"
+                        + "; SceneDistance=" + suspect.Position
+                            .DistanceTo(incident.Origin).ToString("0.0"));
+
+                if (officer.Position.DistanceTo(suspect.Position)
+                    > DispatchOfficerContainmentStartDistance)
+                {
+                    MaintainDispatchFootApproachTask(officer, suspect, now, false);
+                    continue;
+                }
+
+                if (dispatch != null
+                    && incident.SceneArrivalReported
+                    && dispatch.RequestBackupSuspectArrest(officer, suspect))
+                    continue;
+
+                if (!canIssueSupportTask)
+                    continue;
+                if (suspect.IsShooting || suspect.IsInCombat)
+                    AssignCombat(officer, suspect);
+                else
+                    AimAt(officer, suspect);
+            }
+
+            return assigned;
+        }
+
         private void SupportMultipleFootPursuits(
             LSPDDispatch dispatch,
             Ped player,
@@ -4702,17 +5298,25 @@ namespace LSImmersiveLife
 
             HashSet<int> activeTargetHandles = new HashSet<int>(
                 targets.Select(value => value.Handle));
+            var assignedOfficerHandles = new HashSet<int>();
+            HashSet<int> sceneOfficerHandles = SupportDispatchGroupAtScene(
+                dispatch, officers, assignedOfficerHandles,
+                activeTargetHandles, now);
+            assignedOfficerHandles.UnionWith(sceneOfficerHandles);
+            HashSet<int> activeSceneTargetHandles = new HashSet<int>(
+                _dispatchGroupSceneOfficerBySuspect.Keys);
             foreach (int stale in _dispatchFootInterceptorBySuspect.Keys
                 .Where(handle => !activeTargetHandles.Contains(handle)).ToList())
-            {
                 _dispatchFootInterceptorBySuspect.Remove(stale);
-                _dispatchFootApproachTaskAt.Remove(stale);
-            }
+            foreach (int staleOfficer in _dispatchFootApproachTaskStates
+                .Where(pair => !activeTargetHandles.Contains(pair.Value.TargetHandle)
+                    && !activeSceneTargetHandles.Contains(pair.Value.TargetHandle))
+                .Select(pair => pair.Key).ToList())
+                _dispatchFootApproachTaskStates.Remove(staleOfficer);
             foreach (int stale in _dispatchFootLeadBySuspect.Keys
                 .Where(handle => !activeTargetHandles.Contains(handle)).ToList())
                 _dispatchFootLeadBySuspect.Remove(stale);
 
-            var assignedOfficerHandles = new HashSet<int>();
             bool anyContained = false;
             foreach (Ped target in targets)
             {
@@ -4768,23 +5372,8 @@ namespace LSImmersiveLife
                     continue;
                 }
 
-                DateTime nextTaskAt;
-                if (!_dispatchFootApproachTaskAt.TryGetValue(
-                        target.Handle, out nextTaskAt) || now >= nextTaskAt)
-                {
-                    try
-                    {
-                        Function.Call(Hash.TASK_GO_TO_ENTITY,
-                            interceptor, target, -1, 1.5f,
-                            DispatchFootPursuitTaskSpeed, 1073741824, 0);
-                        _dispatchFootApproachTaskAt[target.Handle] = now.AddSeconds(3);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogException("POLICE_BACKUP_GROUP_FOOT_APPROACH_FAILED", ex);
-                        _dispatchFootApproachTaskAt[target.Handle] = now.AddSeconds(3);
-                    }
-                }
+                MaintainDispatchFootApproachTask(
+                    interceptor, target, now, false);
             }
 
             if (CanIssueSupportTasks())
@@ -4851,6 +5440,21 @@ namespace LSImmersiveLife
             }
 
             DateTime now = DateTime.UtcNow;
+            HashSet<int> sceneOfficerHandles = SupportDispatchGroupAtScene(
+                dispatch,
+                officers,
+                new HashSet<int>(),
+                new HashSet<int>(footTargets.Select(value => value.Handle)),
+                now);
+            if (sceneOfficerHandles.Count > 0)
+                officers = officers.Where(officer =>
+                    !sceneOfficerHandles.Contains(officer.Handle)).ToList();
+            if (officers.Count == 0)
+            {
+                SetState(LSPDBackupAssignmentState.Intercepting);
+                return;
+            }
+
             int previousRearHandle;
             Ped interceptor = _dispatchFootInterceptorBySuspect.TryGetValue(
                     target.Handle, out previousRearHandle)
@@ -4955,53 +5559,38 @@ namespace LSImmersiveLife
 
             if (!interceptionReady)
             {
-                if (now >= _nextDispatchInterceptionApproachTaskAt)
+                bool interceptorBusy = interceptor.IsInCombat
+                    || interceptor.IsShooting;
+                bool leadBusy = leadOfficer != null
+                    && (leadOfficer.IsInCombat || leadOfficer.IsShooting);
+                if (interceptorBusy && !leadBusy)
                 {
-                    try
-                    {
-                        bool interceptorBusy = interceptor.IsInCombat
-                            || interceptor.IsShooting;
-                        bool leadBusy = leadOfficer != null
-                            && (leadOfficer.IsInCombat || leadOfficer.IsShooting);
-                        if (interceptorBusy && !leadBusy)
-                        {
-                            interceptor = leadOfficer;
-                            leadOfficer = null;
-                            _dispatchFootInterceptorBySuspect[target.Handle] =
-                                interceptor.Handle;
-                            _dispatchFootLeadBySuspect[target.Handle] = 0;
-                            _dispatchFootFormationSampleAt = DateTime.MinValue;
-                            LogRuntime("POLICE_BACKUP_SINGLE_FOOT_FORMATION_ASSIGNED",
-                                "Suspect=" + target.Handle
-                                + "; RearOfficer=" + interceptor.Handle
-                                + "; LeadOfficer=0; Formation=RearPursuitOnly"
-                                + "; Reason=PreviousRearOfficerDefending");
-                        }
-                        else if (leadBusy)
-                        {
-                            leadOfficer = null;
-                            _dispatchFootLeadBySuspect[target.Handle] = 0;
-                            _dispatchFootFormationSampleAt = DateTime.MinValue;
-                        }
-
-                        if (!interceptor.IsInCombat && !interceptor.IsShooting)
-                            Function.Call(Hash.TASK_GO_TO_ENTITY,
-                                interceptor, target, -1, 1.5f,
-                                DispatchFootPursuitTaskSpeed, 1073741824, 0);
-                        if (leadOfficer != null
-                            && !leadOfficer.IsInCombat && !leadOfficer.IsShooting)
-                            Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
-                                leadOfficer, target,
-                                0f, DispatchFootLeadOffsetY, 0f,
-                                DispatchFootPursuitTaskSpeed, -1, 0.3f, false);
-                        _nextDispatchInterceptionApproachTaskAt = now.AddSeconds(3);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogException("POLICE_BACKUP_INTERCEPTOR_APPROACH_FAILED", ex);
-                        _nextDispatchInterceptionApproachTaskAt = now.AddSeconds(3);
-                    }
+                    interceptor = leadOfficer;
+                    leadOfficer = null;
+                    _dispatchFootInterceptorBySuspect[target.Handle] =
+                        interceptor.Handle;
+                    _dispatchFootLeadBySuspect[target.Handle] = 0;
+                    _dispatchFootFormationSampleAt = DateTime.MinValue;
+                    LogRuntime("POLICE_BACKUP_SINGLE_FOOT_FORMATION_ASSIGNED",
+                        "Suspect=" + target.Handle
+                        + "; RearOfficer=" + interceptor.Handle
+                        + "; LeadOfficer=0; Formation=RearPursuitOnly"
+                        + "; Reason=PreviousRearOfficerDefending");
                 }
+                else if (leadBusy)
+                {
+                    leadOfficer = null;
+                    _dispatchFootLeadBySuspect[target.Handle] = 0;
+                    _dispatchFootFormationSampleAt = DateTime.MinValue;
+                }
+
+                if (!interceptor.IsInCombat && !interceptor.IsShooting)
+                    MaintainDispatchFootApproachTask(
+                        interceptor, target, now, false);
+                if (leadOfficer != null
+                    && !leadOfficer.IsInCombat && !leadOfficer.IsShooting)
+                    MaintainDispatchFootApproachTask(
+                        leadOfficer, target, now, true);
                 SetState(LSPDBackupAssignmentState.Intercepting);
                 return;
             }
@@ -5038,8 +5627,118 @@ namespace LSImmersiveLife
             else
             {
                 _dispatchComplianceRequestedLogged = false;
-                _nextDispatchInterceptionApproachTaskAt = DateTime.UtcNow.AddSeconds(2);
                 SetState(LSPDBackupAssignmentState.Supporting);
+            }
+        }
+
+        private void MaintainDispatchFootApproachTask(
+            Ped officer,
+            Ped target,
+            DateTime now,
+            bool lead)
+        {
+            if (officer == null || !officer.Exists() || officer.IsDead
+                || target == null || !target.Exists() || target.IsDead)
+                return;
+
+            DispatchFootApproachTaskState state;
+            if (!_dispatchFootApproachTaskStates.TryGetValue(
+                    officer.Handle, out state)
+                || state.TargetHandle != target.Handle
+                || state.LeadRole != lead)
+            {
+                float initialDistance = officer.Position.DistanceTo(target.Position);
+                state = new DispatchFootApproachTaskState
+                {
+                    TargetHandle = target.Handle,
+                    LeadRole = lead,
+                    NextProgressSampleAt = now.AddMilliseconds(
+                        DispatchFootApproachProgressSampleMilliseconds),
+                    LastProgressAt = now,
+                    LastTargetDistance = initialDistance
+                };
+                _dispatchFootApproachTaskStates[officer.Handle] = state;
+                IssueDispatchFootApproachTask(
+                    officer, target, lead, 0, "POLICE_BACKUP_FOOT_APPROACH_FAILED");
+                return;
+            }
+
+            if (state.RecoveryExhausted || now < state.NextProgressSampleAt)
+                return;
+
+            state.NextProgressSampleAt = now.AddMilliseconds(
+                DispatchFootApproachProgressSampleMilliseconds);
+            float distance = officer.Position.DistanceTo(target.Position);
+            if (distance <= state.LastTargetDistance
+                - DispatchFootApproachProgressDistance)
+            {
+                state.LastTargetDistance = distance;
+                state.LastProgressAt = now;
+                state.RecoveryCount = 0;
+                return;
+            }
+
+            state.LastTargetDistance = distance;
+            if (now < state.LastProgressAt.AddSeconds(
+                DispatchFootApproachStallTimeoutSeconds))
+                return;
+
+            if (state.RecoveryCount >= MaximumDispatchFootApproachRecoveries)
+            {
+                state.RecoveryExhausted = true;
+                LogRuntime("POLICE_BACKUP_FOOT_APPROACH_RECOVERY_EXHAUSTED",
+                    "Officer=" + officer.Handle
+                    + "; Suspect=" + target.Handle
+                    + "; Recoveries=" + state.RecoveryCount
+                    + "; OtherBackupAndPlayerContinue=true");
+                return;
+            }
+
+            state.RecoveryCount++;
+            state.LastProgressAt = now;
+            LogRuntime("POLICE_BACKUP_FOOT_APPROACH_REPOSITIONED",
+                "Officer=" + officer.Handle
+                + "; Suspect=" + target.Handle
+                + "; Attempt=" + state.RecoveryCount
+                + "; Role=" + (lead ? "ForwardContainment" : "RearPursuit"));
+            IssueDispatchFootApproachTask(
+                officer, target, lead, state.RecoveryCount,
+                "POLICE_BACKUP_FOOT_APPROACH_RECOVERY_FAILED");
+        }
+
+        private void IssueDispatchFootApproachTask(
+            Ped officer,
+            Ped target,
+            bool lead,
+            int recoveryCount,
+            string errorCategory)
+        {
+            try
+            {
+                if (recoveryCount > 0)
+                {
+                    float lateral = recoveryCount % 2 == 1 ? 2.5f : -2.5f;
+                    Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
+                        officer, target, lateral,
+                        lead ? DispatchFootLeadOffsetY : -1.5f,
+                        0f, DispatchFootPursuitTaskSpeed, -1, 0.3f, false);
+                }
+                else if (lead)
+                {
+                    Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
+                        officer, target, 0f, DispatchFootLeadOffsetY, 0f,
+                        DispatchFootPursuitTaskSpeed, -1, 0.3f, false);
+                }
+                else
+                {
+                    Function.Call(Hash.TASK_GO_TO_ENTITY,
+                        officer, target, -1, 1.5f,
+                        DispatchFootPursuitTaskSpeed, 1073741824, 0);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogException(errorCategory, ex);
             }
         }
 
@@ -5162,11 +5861,23 @@ namespace LSImmersiveLife
 
             if (_dispatchInteriorPhase == 0)
             {
+                if (_incident == null
+                    || _incident.SceneResolution == null
+                    || !_incident.SceneResolution.IsInteriorScene
+                    || _incident.SceneResolution.LiveInteriorId != targetInteriorId)
+                {
+                    FailDispatchInteriorAccess(interceptor, target,
+                        "Backup target no longer matches the active Dispatch scene's live interior identity.");
+                    return true;
+                }
+
                 AmbientInteriorAccessRoute route;
                 string routeFailure;
                 if (!_ambientWorld.TryResolveInteriorAccessRouteForInterior(
                     interceptor,
                     targetInteriorId,
+                    _incident.SceneResolution.LocationId,
+                    _incident.SceneResolution.CatalogInteriorId,
                     true,
                     out route,
                     out routeFailure))
@@ -5182,7 +5893,9 @@ namespace LSImmersiveLife
                     "POLICE_BACKUP_INTERIOR_ROUTE_RESOLVED",
                     "Officer=" + interceptor.Handle
                     + "; Suspect=" + target.Handle
-                    + "; InteriorId=" + targetInteriorId
+                    + "; Location=" + route.LocationId
+                    + "; CatalogInteriorId=" + route.CatalogInteriorId
+                    + "; LiveInteriorId=" + route.TargetLiveInteriorId
                     + "; DoorPair=" + route.Pair.InsidePoint.SourceRecord
                     + "; Entry=" + route.EntryPosition
                     + "; Destination=" + route.DestinationPosition);
@@ -5319,7 +6032,9 @@ namespace LSImmersiveLife
                         "POLICE_BACKUP_INTERIOR_CROSSING_CONFIRMED",
                         "Officer=" + interceptor.Handle
                         + "; Suspect=" + target.Handle
-                        + "; InteriorId=" + targetInteriorId
+                        + "; Location=" + activeRoute.LocationId
+                        + "; CatalogInteriorId=" + activeRoute.CatalogInteriorId
+                        + "; LiveInteriorId=" + activeRoute.TargetLiveInteriorId
                         + "; DoorPair=" + activeRoute.Pair.InsidePoint.SourceRecord);
                     ResetDispatchInteriorAccess("BackupOfficerCrossedDoor");
                     return false;
@@ -5489,7 +6204,8 @@ namespace LSImmersiveLife
             ResetDispatchInterceptionTracking();
             _arrivalReported = false;
             _lastSupportTaskAt = DateTime.MinValue;
-            bool pursuit = dispatch.State == LSPDDispatchState.SuspectFleeing;
+            bool pursuit = dispatch.Current != null
+                && dispatch.Current.CurrentPursuitTarget != null;
             Vector3 destination = ResolveDestination(dispatch, player, pursuit);
             foreach (BackupUnit unit in _units)
             {
@@ -6330,6 +7046,130 @@ namespace LSImmersiveLife
                 }
             }
 
+            // Formation probes can miss road lanes near tight blocks or mapped
+            // foot paths. Try a small local cardinal ring around the assigned
+            // target before dropping this unit. Every accepted point must still
+            // resolve to a live, same-level vehicle road node and preserve the
+            // target-specific ahead/behind role and spacing from other units.
+            return TryFindPursuitNearRoadStagingPosition(
+                index,
+                origin,
+                directionX,
+                directionY,
+                vehicleTarget,
+                minimumDistance,
+                maximumDistance,
+                out stagingPosition);
+        }
+
+        private bool TryFindDispatchGroupSceneSupportStagingPosition(
+            Ped target,
+            Ped player,
+            out Vector3 stagingPosition)
+        {
+            stagingPosition = Vector3.Zero;
+            if (_incident == null || target == null || !target.Exists()
+                || target.IsDead || target.Health <= 0)
+                return false;
+
+            Vector3 center = target.Position;
+            Vector2[] directions =
+            {
+                new Vector2(1f, 0f),
+                new Vector2(-1f, 0f),
+                new Vector2(0f, 1f),
+                new Vector2(0f, -1f),
+                new Vector2(0.707f, 0.707f),
+                new Vector2(-0.707f, 0.707f),
+                new Vector2(0.707f, -0.707f),
+                new Vector2(-0.707f, -0.707f)
+            };
+            float[] radii = { 28f, 42f, 58f, 72f };
+            foreach (float radius in radii)
+                foreach (Vector2 direction in directions)
+                {
+                    Vector3 candidate = new Vector3(
+                        center.X + direction.X * radius,
+                        center.Y + direction.Y * radius,
+                        center.Z);
+                    Vector3 roadNode;
+                    float roadHeading;
+                    if (!TryGetNearbyVehicleRoadNode(
+                        candidate, center, 24f, out roadNode, out roadHeading))
+                        continue;
+                    float sceneDistance = roadNode.DistanceTo(_incident.Origin);
+                    if (roadNode.DistanceTo(center) < 16f
+                        || sceneDistance > 90f
+                        || Math.Abs(roadNode.Z - center.Z)
+                            > MaximumRoadElevationDifference
+                        || (player != null && player.Exists()
+                            && roadNode.DistanceTo(player.Position) < 14f)
+                        || _units.Any(unit => IsUsable(unit)
+                            && unit.Vehicle.Position.DistanceTo(roadNode) < 18f))
+                        continue;
+
+                    stagingPosition = roadNode;
+                    return true;
+                }
+            return false;
+        }
+
+        private bool TryFindPursuitNearRoadStagingPosition(
+            int index,
+            Vector3 targetPosition,
+            float directionX,
+            float directionY,
+            bool vehicleTarget,
+            float minimumDistance,
+            float maximumDistance,
+            out Vector3 stagingPosition)
+        {
+            stagingPosition = Vector3.Zero;
+            Vector2[] offsets =
+            {
+                new Vector2(1f, 0f),
+                new Vector2(-1f, 0f),
+                new Vector2(0f, 1f),
+                new Vector2(0f, -1f)
+            };
+            for (int ring = 0; ring < 3; ring++)
+            {
+                float distance = minimumDistance + 18f + ring * 24f;
+                foreach (Vector2 offset in offsets)
+                {
+                    Vector3 candidate = new Vector3(
+                        targetPosition.X + offset.X * distance,
+                        targetPosition.Y + offset.Y * distance,
+                        targetPosition.Z);
+                    Vector3 road;
+                    float heading;
+                    if (!TryGetNearbyVehicleRoadNode(
+                        candidate, targetPosition, 20f, out road, out heading))
+                        continue;
+
+                    float roadDistance = road.DistanceTo(targetPosition);
+                    if (roadDistance < minimumDistance
+                        || roadDistance > maximumDistance
+                        || _units.Any(unit => IsUsable(unit)
+                            && unit.Vehicle.Position.DistanceTo(road) < 18f))
+                        continue;
+
+                    float alongRoute = (road.X - targetPosition.X) * directionX
+                        + (road.Y - targetPosition.Y) * directionY;
+                    float roleClearance = minimumDistance * 0.25f;
+                    bool stageAhead = index == 0;
+                    if ((stageAhead && alongRoute < roleClearance)
+                        || (!stageAhead && alongRoute > -roleClearance))
+                        continue;
+                    if (vehicleTarget && Math.Abs(road.Z - targetPosition.Z)
+                        > MaximumRoadElevationDifference)
+                        continue;
+
+                    stagingPosition = road;
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -6931,7 +7771,7 @@ namespace LSImmersiveLife
                 bool gangRoadRoute = _gangResponse != null
                     && _gangResponse.HasActiveIncident;
                 bool dispatchPursuitRoadRoute = _incident != null
-                    && _incident.State == LSPDDispatchState.SuspectFleeing
+                    && _incident.CurrentPursuitTarget != null
                     && _convoy == null && _npcResponse == null
                     && _gangResponse == null;
                 if (npcCustodyRoadRoute || gangRoadRoute || dispatchPursuitRoadRoute)

@@ -341,7 +341,7 @@ namespace LSImmersiveLife
                     && incident.OwnedByDispatch
                     && incident.SceneResolution != null
                     && incident.SceneResolution.IsInteriorScene
-                    && incident.SceneResolution.InteriorId != 0
+                    && incident.SceneResolution.LiveInteriorId != 0
                     && string.Equals(unit.IncidentId, incident.Id, StringComparison.Ordinal);
                 int playerInteriorId = 0;
                 bool hasPlayerInterior = interiorAssignment
@@ -349,7 +349,7 @@ namespace LSImmersiveLife
                     && _ambientWorld != null
                     && _ambientWorld.TryGetActorInteriorId(player, out playerInteriorId);
                 bool playerInsideIncident = hasPlayerInterior
-                    && playerInteriorId == incident.SceneResolution.InteriorId;
+                    && playerInteriorId == incident.SceneResolution.LiveInteriorId;
                 bool responseAlreadyOnFoot = unit.InteriorFollowPhase >= InteriorPhaseLeaveVehicle
                     && unit.InteriorFollowPhase <= InteriorPhaseEnterVehicle;
                 if (interiorAssignment
@@ -359,7 +359,7 @@ namespace LSImmersiveLife
                 {
                     unit.InteriorFollowPhase = unit.Driver.IsInVehicle()
                         ? InteriorPhaseLeaveVehicle : InteriorPhaseApproachEntry;
-                    unit.InteriorTargetId = incident.SceneResolution.InteriorId;
+                    unit.InteriorTargetId = incident.SceneResolution.LiveInteriorId;
                     unit.InteriorFollowStartedAt = DateTime.UtcNow;
                     unit.InteriorFollowNextTaskAt = DateTime.MinValue;
                 }
@@ -403,7 +403,7 @@ namespace LSImmersiveLife
                     if (interiorAssignment && playerInsideIncident
                         && unit.InteriorFollowPhase != InteriorPhaseOutdoorResponse)
                     {
-                        unit.InteriorTargetId = incident.SceneResolution.InteriorId;
+                        unit.InteriorTargetId = incident.SceneResolution.LiveInteriorId;
                         unit.InteriorFollowPhase = InteriorPhaseLeaveVehicle;
                         unit.InteriorFollowStartedAt = DateTime.UtcNow;
                         unit.InteriorFollowNextTaskAt = DateTime.MinValue;
@@ -434,7 +434,7 @@ namespace LSImmersiveLife
                 return;
 
             Ped officer = unit.Driver;
-            int interiorId = incident.SceneResolution.InteriorId;
+            int interiorId = incident.SceneResolution.LiveInteriorId;
             if (interiorId == 0)
                 return;
             unit.InteriorTargetId = interiorId;
@@ -538,7 +538,13 @@ namespace LSImmersiveLife
                         AmbientInteriorAccessRoute resolvedRoute;
                         string routeFailure;
                         if (!_ambientWorld.TryResolveInteriorAccessRouteForInterior(
-                            officer, interiorId, true, out resolvedRoute, out routeFailure))
+                            officer,
+                            interiorId,
+                            incident.SceneResolution.LocationId,
+                            incident.SceneResolution.CatalogInteriorId,
+                            true,
+                            out resolvedRoute,
+                            out routeFailure))
                         {
                             RecoverInteriorFollow(unit, true, routeFailure);
                             return;
@@ -548,7 +554,9 @@ namespace LSImmersiveLife
                             "POLICE_RESPONSE_INTERIOR_ROUTE_RESOLVED",
                             "Incident=" + incident.Id
                             + "; Officer=" + officer.Handle
-                            + "; InteriorId=" + interiorId
+                        + "; Location=" + resolvedRoute.LocationId
+                        + "; CatalogInteriorId=" + resolvedRoute.CatalogInteriorId
+                        + "; LiveInteriorId=" + resolvedRoute.TargetLiveInteriorId
                             + "; Outside=" + resolvedRoute.Pair.OutsidePoint.SourceRecord
                             + "; Inside=" + resolvedRoute.Pair.InsidePoint.SourceRecord
                             + "; Entry=" + resolvedRoute.EntryPosition
@@ -792,7 +800,13 @@ namespace LSImmersiveLife
                     AmbientInteriorAccessRoute route;
                     string routeFailure;
                     if (!_ambientWorld.TryResolveInteriorAccessRouteForInterior(
-                        officer, interiorId, false, out route, out routeFailure))
+                        officer,
+                        interiorId,
+                        incident.SceneResolution.LocationId,
+                        incident.SceneResolution.CatalogInteriorId,
+                        false,
+                        out route,
+                        out routeFailure))
                     {
                         RecoverInteriorFollow(unit, false, routeFailure);
                         return;
@@ -802,7 +816,9 @@ namespace LSImmersiveLife
                         "POLICE_RESPONSE_INTERIOR_EXIT_ROUTE_RESOLVED",
                         "Incident=" + incident.Id
                         + "; Officer=" + officer.Handle
-                        + "; InteriorId=" + interiorId
+                        + "; Location=" + route.LocationId
+                        + "; CatalogInteriorId=" + route.CatalogInteriorId
+                        + "; LiveInteriorId=" + route.TargetLiveInteriorId
                         + "; Inside=" + route.Pair.InsidePoint.SourceRecord
                         + "; Outside=" + route.Pair.OutsidePoint.SourceRecord);
                 }

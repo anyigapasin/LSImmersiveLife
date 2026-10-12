@@ -2357,6 +2357,16 @@
       <Ped model="s_f_y_shop_mid" />
       <Ped model="s_m_y_ammucity_01" />
     </Pool>
+    <Pool id="gun_store_clerk" requireCitizenEligible="true">
+      <Ped model="s_m_y_ammucity_01" />
+    </Pool>
+    <Pool id="tattoo_store_clerk" requireCitizenEligible="true">
+      <Ped model="s_m_m_tattoo_01" />
+    </Pool>
+    <Pool id="bank_clerk" requireCitizenEligible="true">
+      <Ped model="u_m_m_bankman" />
+    </Pool>
+    <Pool id="shop_customer" sourceRole="ambient_civilian" requireCitizenEligible="true" />
   </DispatchPedPools>
   <ConsistencyRules>
     <Rule id="clean_no_warrant" whenFamily="clean" allowedWarrants="none" text="Clean usually means none, except witness, victim, welfare, or administrative branches." />

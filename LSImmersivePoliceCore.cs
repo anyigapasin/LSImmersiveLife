@@ -1502,7 +1502,11 @@ namespace LSImmersiveLife
             }
 
             List<Ped> arrestedSuspects = Dispatch.CurrentArrestedSuspects.ToList();
-            Ped pickupPrisoner = arrestedSuspects.FirstOrDefault();
+            Ped player = Game.Player.Character;
+            Ped pickupPrisoner = player != null && player.Exists()
+                ? arrestedSuspects.OrderBy(suspect =>
+                    suspect.Position.DistanceTo(player.Position)).FirstOrDefault()
+                : arrestedSuspects.FirstOrDefault();
             if (arrestedSuspects.Count == 0 || pickupPrisoner == null)
             {
                 LastOperationMessage = "No living secured Dispatch suspect is ready for transport.";
@@ -1513,7 +1517,6 @@ namespace LSImmersiveLife
                 : Dispatch.Current == null
                     ? Game.Player.Character.Position
                     : Dispatch.Current.Origin;
-            Ped player = Game.Player.Character;
             Vehicle playerVehicle = player == null ? null : player.CurrentVehicle;
             bool usingManagedPreferredUtilityOnFoot = false;
             if ((playerVehicle == null || !playerVehicle.Exists())
@@ -1737,9 +1740,10 @@ namespace LSImmersiveLife
             if (clearChoiceBeforeStart)
                 ClearPendingPreferredUtilityTransportChoice();
 
-            string custody = Convoy.Start(
+            string custody = Convoy.StartDispatchGroupTransport(
                 arrestedSuspects,
                 pickupPosition,
+                Dispatch.Current == null ? Vector3.Zero : Dispatch.Current.Origin,
                 reportTransportRequest);
             if (!Convoy.Active)
             {

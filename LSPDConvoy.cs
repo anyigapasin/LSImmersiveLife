@@ -121,6 +121,8 @@ namespace LSImmersiveLife
         private const int DispatchCrewDepartureConfirmationMinimumSeconds = 2;
         private const int DispatchCrewDepartureConfirmationMaximumSeconds = 45;
         private const float MaximumRoadElevationDifference = 8f;
+        private const float DispatchPickupClusterRadius = 35.0f;
+        private const float DispatchPickupSceneClusterRadius = 75.0f;
 
         private enum CustodyPhase
         {
@@ -129,6 +131,8 @@ namespace LSImmersiveLife
             PreparingSceneTransport,
             SceneTransportEnRoute,
             SceneLoading,
+            DispatchPickupDriverBoarding,
+            DispatchCrewDriveToPickup,
             DispatchStationTransportDecision,
             DispatchCrewDriverBoarding,
             DispatchCrewDriveToStation,
@@ -173,6 +177,13 @@ namespace LSImmersiveLife
             internal DateTime Expires;
         }
 
+        private sealed class DispatchPickupStop
+        {
+            internal Vector3 SceneTarget;
+            internal Vector3 RoadTarget;
+            internal readonly HashSet<int> PrisonerHandles = new HashSet<int>();
+        }
+
         private readonly LSPDAudioDispatch _audio;
         private readonly LSPDProfile _profile;
         private readonly LSImmersiveLog _log;
@@ -181,6 +192,8 @@ namespace LSImmersiveLife
         private readonly LSPoliceCleanupSettings _cleanupSettings;
         private readonly LSUniversalUiSettings _uiSettings;
         private readonly List<Ped> _prisoners = new List<Ped>();
+        private readonly List<DispatchPickupStop> _dispatchPickupStops =
+            new List<DispatchPickupStop>();
         private readonly List<Ped> _sceneEscortOfficers = new List<Ped>();
         private readonly List<Ped> _stationHandoffOfficers = new List<Ped>();
         private readonly List<Ped> _prisonHandoffOfficers = new List<Ped>();
@@ -295,6 +308,11 @@ namespace LSImmersiveLife
         private Vector3 _dispatchCrewDepartureOrigin = Vector3.Zero;
         private DateTime _dispatchCrewDepartureStartedAt = DateTime.MinValue;
         private int _dispatchCrewDriverSeatOccupantHandle;
+        private int _activeDispatchPickupStopIndex = -1;
+        private DateTime _lastDispatchPickupDriverEntryTaskAt = DateTime.MinValue;
+        private DateTime _dispatchPickupDriverEntryStartedAt = DateTime.MinValue;
+        private DateTime _lastDispatchPickupArrivalCheckAt = DateTime.MinValue;
+        private bool _dispatchPickupDriverConflictLogged;
         private bool _dispatchCrewStationTransport;
         private bool _dispatchCrewCustodyHandoffReady;
         private bool _dispatchClosedAfterCrewCustodyHandoff;
@@ -721,6 +739,166 @@ namespace LSImmersiveLife
             return valid.Count == 1
                 ? "Prisoner secured. A transport unit is staging and will drive to the scene."
                 : valid.Count + " prisoners secured. A group transport unit is staging and will drive to the scene.";
+        }
+
+        internal string StartDispatchGroupTransport(
+            IEnumerable<Ped> prisoners,
+            Vector3 preferredPickup,
+            Vector3 incidentOrigin,
+            bool reportTransportRequest)
+        {
+            List<Ped> valid = prisoners == null
+                ? new List<Ped>()
+                : prisoners.Where(ped => ped != null && ped.Exists() && !ped.IsDead
+                    && ped.Health > 0)
+                    .GroupBy(ped => ped.Handle)
+                    .Select(group => group.First())
+                    .ToList();
+            if (valid.Count < 2)
+                return Start(valid, preferredPickup, reportTransportRequest);
+
+            Ped primaryPickup = valid
+                .OrderBy(ped => preferredPickup == Vector3.Zero
+                    ? 0f : ped.Position.DistanceTo(preferredPickup))
+                .First();
+            List<DispatchPickupStop> stops = BuildDispatchPickupStops(
+                valid, primaryPickup, incidentOrigin);
+            if (stops.Count <= 1)
+                return Start(valid,
+                    stops.Count == 0 ? preferredPickup : stops[0].SceneTarget,
+                    reportTransportRequest);
+
+            for (int index = 0; index < stops.Count; index++)
+            {
+                DispatchPickupStop stop = stops[index];
+                float distance;
+                if (!TryGetDispatchSceneVehicleRoadNode(
+                        stop.SceneTarget,
+                        MaximumDispatchSceneVehicleDistance,
+                        out stop.RoadTarget,
+                        out distance))
+                {
+                    LogRuntime("POLICE_CONVOY_DISPATCH_GROUP_PICKUP_UNAVAILABLE",
+                        "Stop=" + (index + 1) + "; ScenePickup=" + stop.SceneTarget
+                        + "; MaximumVehicleDistance=" + MaximumDispatchSceneVehicleDistance
+                        + "; Reason=NoVerifiedVehicleRoadNodeWithinBound"
+                        + "; CustodyOwnershipTransferred=false");
+                    return "No drivable road access was found for pickup " + (index + 1)
+                        + ". Dispatch custody is unchanged; move the secured group to an accessible roadside location and request transport again.";
+                }
+            }
+
+            // Start the existing Dispatch-owned Convoy operation only after
+            // every physical pickup stop has a verified nearby road node.
+            // Custody transfer remains the caller's existing atomic handoff.
+            string result = Start(valid, stops[0].SceneTarget,
+                reportTransportRequest);
+            if (!Active)
+                return result;
+
+            _dispatchPickupStops.AddRange(stops);
+            _activeDispatchPickupStopIndex = 0;
+            _dispatchSceneVehicleAccessTarget = stops[0].RoadTarget;
+            LogRuntime("POLICE_CONVOY_DISPATCH_GROUP_PICKUP_PLAN_READY",
+                "Operation=" + _operationId
+                + "; Stops=" + stops.Count
+                + "; PrimaryPickup=" + stops[0].SceneTarget
+                + "; IncidentOrigin=" + incidentOrigin
+                + "; Plan=" + DescribeDispatchPickupStops()
+                + "; AllRoadNodesValidated=true"
+                + "; CustodyOwner=ConvoyAfterAtomicHandoff");
+            return result + " The transport will collect the secured suspect near you, then return to the incident scene for the remaining suspects before offering the station route.";
+        }
+
+        private List<DispatchPickupStop> BuildDispatchPickupStops(
+            IList<Ped> prisoners,
+            Ped primaryPickup,
+            Vector3 incidentOrigin)
+        {
+            List<DispatchPickupStop> stops = new List<DispatchPickupStop>();
+            Dictionary<int, Ped> remaining = prisoners
+                .Where(ped => ped != null && ped.Exists())
+                .GroupBy(ped => ped.Handle)
+                .ToDictionary(group => group.Key, group => group.First());
+            if (remaining.Count == 0 || primaryPickup == null
+                || !primaryPickup.Exists())
+                return stops;
+
+            bool primaryAtIncident = incidentOrigin != Vector3.Zero
+                && primaryPickup.Position.DistanceTo(incidentOrigin)
+                    <= DispatchPickupSceneClusterRadius;
+            if (primaryAtIncident)
+            {
+                List<Ped> incidentGroup = remaining.Values
+                    .Where(ped => ped.Position.DistanceTo(incidentOrigin)
+                        <= DispatchPickupSceneClusterRadius)
+                    .ToList();
+                AddDispatchPickupStop(stops, incidentOrigin, incidentGroup);
+                foreach (Ped prisoner in incidentGroup)
+                    remaining.Remove(prisoner.Handle);
+            }
+            else
+            {
+                List<Ped> primaryGroup = remaining.Values
+                    .Where(ped => ped.Position.DistanceTo(primaryPickup.Position)
+                        <= DispatchPickupClusterRadius)
+                    .ToList();
+                AddDispatchPickupStop(stops, primaryPickup.Position, primaryGroup);
+                foreach (Ped prisoner in primaryGroup)
+                    remaining.Remove(prisoner.Handle);
+
+                if (incidentOrigin != Vector3.Zero)
+                {
+                    List<Ped> incidentGroup = remaining.Values
+                        .Where(ped => ped.Position.DistanceTo(incidentOrigin)
+                            <= DispatchPickupSceneClusterRadius)
+                        .ToList();
+                    AddDispatchPickupStop(stops, incidentOrigin, incidentGroup);
+                    foreach (Ped prisoner in incidentGroup)
+                        remaining.Remove(prisoner.Handle);
+                }
+            }
+
+            while (remaining.Count > 0)
+            {
+                Ped representative = remaining.Values.First();
+                List<Ped> nearby = remaining.Values
+                    .Where(ped => ped.Position.DistanceTo(representative.Position)
+                        <= DispatchPickupClusterRadius)
+                    .ToList();
+                AddDispatchPickupStop(stops, representative.Position, nearby);
+                foreach (Ped prisoner in nearby)
+                    remaining.Remove(prisoner.Handle);
+            }
+            return stops;
+        }
+
+        private static void AddDispatchPickupStop(
+            IList<DispatchPickupStop> stops,
+            Vector3 sceneTarget,
+            IEnumerable<Ped> prisoners)
+        {
+            List<Ped> valid = prisoners == null
+                ? new List<Ped>()
+                : prisoners.Where(ped => ped != null && ped.Exists()).ToList();
+            if (sceneTarget == Vector3.Zero || valid.Count == 0)
+                return;
+
+            DispatchPickupStop stop = new DispatchPickupStop
+            {
+                SceneTarget = sceneTarget
+            };
+            foreach (Ped prisoner in valid)
+                stop.PrisonerHandles.Add(prisoner.Handle);
+            stops.Add(stop);
+        }
+
+        private string DescribeDispatchPickupStops()
+        {
+            return string.Join(" | ", _dispatchPickupStops.Select((stop, index) =>
+                (index + 1) + ":" + stop.SceneTarget + ":peds="
+                + string.Join(",", stop.PrisonerHandles.Select(handle =>
+                    handle.ToString()).ToArray())).ToArray());
         }
 
         /// <summary>
@@ -1690,6 +1868,9 @@ namespace LSImmersiveLife
                     return ProcessTransportArrival(now, true);
                 case CustodyPhase.SceneLoading:
                     return ProcessLoading(now, false);
+                case CustodyPhase.DispatchPickupDriverBoarding:
+                case CustodyPhase.DispatchCrewDriveToPickup:
+                    return ProcessDispatchPickupRoute(now);
                 case CustodyPhase.DispatchStationTransportDecision:
                     return string.Empty;
                 case CustodyPhase.DispatchCrewDriverBoarding:
@@ -2850,7 +3031,8 @@ namespace LSImmersiveLife
             // arrival method and incorrectly treats Driver=null as a lost
             // transport.
             SetPhase(prisonTrip ? CustodyPhase.PrisonLoading : CustodyPhase.SceneLoading);
-            foreach (Ped prisoner in ValidPrisoners().Where(ped => !IsInTransport(ped)))
+            foreach (Ped prisoner in CurrentDispatchPickupPrisoners(
+                ValidPrisoners().ToList()).Where(ped => !IsInTransport(ped)))
             {
                 int prisonerHandle = prisoner.Handle;
                 Ped previousEscort;
@@ -2900,6 +3082,263 @@ namespace LSImmersiveLife
                 : "Police transport arrived at the scene. Prisoner loading is in progress.";
         }
 
+        private List<Ped> CurrentDispatchPickupPrisoners(IList<Ped> prisoners)
+        {
+            List<Ped> valid = prisoners == null
+                ? new List<Ped>()
+                : prisoners.Where(ped => ped != null && ped.Exists()).ToList();
+            if (!_dispatchCustodyOperation || _dispatchPickupStops.Count == 0
+                || _activeDispatchPickupStopIndex < 0
+                || _activeDispatchPickupStopIndex >= _dispatchPickupStops.Count)
+                return valid;
+
+            HashSet<int> handles = _dispatchPickupStops[
+                _activeDispatchPickupStopIndex].PrisonerHandles;
+            return valid.Where(ped => handles.Contains(ped.Handle)).ToList();
+        }
+
+        private bool HasNextDispatchPickupStop()
+        {
+            return _dispatchCustodyOperation
+                && _dispatchPickupStops.Count > 1
+                && _activeDispatchPickupStopIndex >= 0
+                && _activeDispatchPickupStopIndex + 1 < _dispatchPickupStops.Count;
+        }
+
+        private string BeginNextDispatchPickupStop(
+            DateTime now,
+            IList<Ped> completedStopPrisoners)
+        {
+            if (!HasNextDispatchPickupStop()
+                || completedStopPrisoners == null
+                || completedStopPrisoners.Count == 0
+                || completedStopPrisoners.Any(prisoner =>
+                    !IsPrisonerInAssignedTransportSeat(prisoner,
+                        PrisonerSeat(prisoner, ValidPrisoners().ToList()))))
+                return Fail("The previous pickup stop cannot be left until its suspects are physically confirmed in the van.", true);
+
+            _activeDispatchPickupStopIndex++;
+            DispatchPickupStop next = _dispatchPickupStops[
+                _activeDispatchPickupStopIndex];
+            if (next.SceneTarget == Vector3.Zero || next.RoadTarget == Vector3.Zero)
+                return Fail("The next Dispatch pickup stop lost its validated road access. Convoy custody remains active.", true);
+
+            _pickupTarget = next.SceneTarget;
+            _dispatchSceneVehicleAccessTarget = next.RoadTarget;
+            _dispatchSceneWalkInDistanceMeters = 0f;
+            _transportRouteRecoveryCount = 0;
+            _lastTransportProgressPosition = _transport.Position;
+            _lastTransportProgressAt = now;
+            _lastDispatchPickupArrivalCheckAt = DateTime.MinValue;
+            _lastDispatchPickupDriverEntryTaskAt = DateTime.MinValue;
+            _dispatchPickupDriverEntryStartedAt = now;
+            _dispatchCrewDriverSeatOccupantHandle = 0;
+            _lastDispatchCrewDriverSeatCheckAt = DateTime.MinValue;
+            _dispatchPickupDriverConflictLogged = false;
+            _driverReleaseRequested = false;
+            _driverReleaseRequestedAt = DateTime.MinValue;
+            _transportOfficerReleaseRequested = false;
+            _transportOfficerReleaseRequestedAt = DateTime.MinValue;
+            _nextTransportOfficerReleaseTaskAt = DateTime.MinValue;
+            _transportOfficerReleaseRecoveryLogged = false;
+            _transportNearCustodyFallback = false;
+
+            Ped driver = _dispatchSceneTransportDriver;
+            if (driver == null || !driver.Exists() || driver.IsDead)
+                driver = TryReassignDispatchCrewDriver(
+                    "ReturningForRemainingDispatchSuspects");
+            if (driver == null || !driver.Exists() || driver.IsDead
+                || _transport == null || !_transport.Exists()
+                || driver.Position.DistanceTo(_transport.Position)
+                    > MaximumDispatchSceneVehicleDistance)
+                return Fail("The transport crew could not verify a nearby driver for the next pickup stop. Convoy custody remains active for recovery.", true);
+
+            _dispatchSceneTransportDriver = driver;
+            _transportDriver = driver;
+            SetEmergencySignals(_transport, true);
+            try { Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _transport, false); }
+            catch (Exception ex)
+            {
+                LogException("POLICE_CONVOY_DISPATCH_PICKUP_BRAKE_RELEASE_FAILED", ex);
+            }
+            SetPhase(CustodyPhase.DispatchPickupDriverBoarding);
+            LogRuntime("POLICE_CONVOY_DISPATCH_GROUP_PICKUP_RETURN_STARTED",
+                "Operation=" + _operationId
+                + "; Stop=" + (_activeDispatchPickupStopIndex + 1)
+                + "; Stops=" + _dispatchPickupStops.Count
+                + "; SceneTarget=" + _pickupTarget
+                + "; RoadTarget=" + _dispatchSceneVehicleAccessTarget
+                + "; RemainingSuspects=" + string.Join(",",
+                    next.PrisonerHandles.Select(handle => handle.ToString()).ToArray())
+                + "; Driver=" + driver.Handle
+                + "; PreviousStopPhysicallyLoaded=true");
+            Notify("~b~POLICE CUSTODY~s~\nThe transport has secured the suspect near you and is returning to the incident scene for the remaining suspects.");
+            return "The first suspect is physically secured in the van. Transport is returning to the incident scene for the remaining suspects.";
+        }
+
+        private string ProcessDispatchPickupRoute(DateTime now)
+        {
+            if (!_dispatchCustodyOperation || _isRequestedConvoyActivity
+                || _playerOwnedTransport || _dispatchPickupStops.Count <= 1
+                || _activeDispatchPickupStopIndex <= 0
+                || _activeDispatchPickupStopIndex >= _dispatchPickupStops.Count)
+                return Fail("The Dispatch group-pickup route lost its custody operation. Convoy custody remains available for recovery.", true);
+            if (_transport == null || !_transport.Exists() || _transport.IsDead)
+                return Fail("The Dispatch transport became unavailable before reaching the remaining suspects.", true);
+
+            DispatchPickupStop stop = _dispatchPickupStops[
+                _activeDispatchPickupStopIndex];
+            Ped driver = _dispatchSceneTransportDriver;
+            if (driver == null || !driver.Exists() || driver.IsDead)
+                driver = TryReassignDispatchCrewDriver(
+                    "DriverUnavailableDuringGroupPickup");
+            if (driver == null || !driver.Exists() || driver.IsDead
+                || driver.Position.DistanceTo(_transport.Position)
+                    > MaximumDispatchSceneVehicleDistance)
+                return Fail("No nearby transport officer can drive to the remaining suspects. Convoy custody remains active for recovery.", true);
+
+            _dispatchSceneTransportDriver = driver;
+            _transportDriver = driver;
+            int driverSeatOccupant = DispatchCrewDriverSeatOccupant(now);
+            if (driverSeatOccupant == driver.Handle)
+            {
+                if (_phase == CustodyPhase.DispatchPickupDriverBoarding)
+                {
+                    _dispatchPickupDriverEntryStartedAt = DateTime.MinValue;
+                    _lastDispatchPickupDriverEntryTaskAt = DateTime.MinValue;
+                    _transportRouteRecoveryCount = 0;
+                    _lastTransportProgressPosition = _transport.Position;
+                    _lastTransportProgressAt = now;
+                    _lastDispatchPickupArrivalCheckAt = DateTime.MinValue;
+                    SetPhase(CustodyPhase.DispatchCrewDriveToPickup);
+                    try
+                    {
+                        Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
+                            driver,
+                            _transport,
+                            stop.RoadTarget.X,
+                            stop.RoadTarget.Y,
+                            stop.RoadTarget.Z,
+                            22.0f,
+                            (int)EmergencyDrivingFlags,
+                            10.0f);
+                        _lastDriverTaskAt = now;
+                        LogRuntime("POLICE_CONVOY_DISPATCH_GROUP_PICKUP_ROUTE_TASK",
+                            "Operation=" + _operationId
+                            + "; Stop=" + (_activeDispatchPickupStopIndex + 1)
+                            + "; Driver=" + driver.Handle
+                            + "; Vehicle=" + _transport.Handle
+                            + "; RoadTarget=" + stop.RoadTarget
+                            + "; PhysicalDriverSeatConfirmed=true");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_CONVOY_DISPATCH_GROUP_PICKUP_ROUTE_TASK_FAILED", ex);
+                        return Fail("The transport officer could not start the route to the remaining suspects.", true);
+                    }
+                    return string.Empty;
+                }
+
+                if (now >= _lastDispatchPickupArrivalCheckAt.AddMilliseconds(
+                    DispatchCrewArrivalCheckMilliseconds))
+                {
+                    _lastDispatchPickupArrivalCheckAt = now;
+                    float distance = _transport.Position.DistanceTo(stop.RoadTarget);
+                    if (distance <= DispatchSceneVehicleArrivalRadius
+                        && Math.Abs(_transport.Speed) <= 2.5f)
+                    {
+                        SetEmergencySignals(_transport, false);
+                        LogRuntime("POLICE_CONVOY_DISPATCH_GROUP_PICKUP_ARRIVED",
+                            "Operation=" + _operationId
+                            + "; Stop=" + (_activeDispatchPickupStopIndex + 1)
+                            + "; SceneTarget=" + stop.SceneTarget
+                            + "; RoadTarget=" + stop.RoadTarget
+                            + "; Vehicle=" + _transport.Handle
+                            + "; Distance=" + distance.ToString("0.0")
+                            + "; Speed=" + Math.Abs(_transport.Speed).ToString("0.0")
+                            + "; PhysicalArrivalConfirmed=true");
+                        return BeginTransportLoading(now, false);
+                    }
+                    TryRecoverStalledTransport(stop.RoadTarget, now);
+                    if (_transportRouteRecoveryCount >= MaximumTransportRouteRecoveries
+                        && now >= _lastTransportProgressAt.AddSeconds(
+                            TransportRouteStallTimeoutSeconds))
+                        return Fail("The transport could not reach the validated incident road node after bounded route recovery. Convoy custody remains available for recovery.", true);
+                }
+                return string.Empty;
+            }
+
+            if (driverSeatOccupant > 0 && driverSeatOccupant != driver.Handle)
+            {
+                Ped seatedOfficer = _sceneEscortOfficers.FirstOrDefault(officer =>
+                    officer != null && officer.Exists()
+                    && officer.Handle == driverSeatOccupant);
+                if (seatedOfficer != null && IsOfficerInTransport(seatedOfficer)
+                    && now >= _lastDispatchPickupDriverEntryTaskAt.AddMilliseconds(
+                        DispatchCrewDriverEntryTaskRefreshMilliseconds))
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_LEAVE_VEHICLE,
+                            seatedOfficer, _transport, 0);
+                        _lastDispatchPickupDriverEntryTaskAt = now;
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_CONVOY_DISPATCH_PICKUP_PASSENGER_EXIT_FAILED", ex);
+                    }
+                }
+                else if (!_dispatchPickupDriverConflictLogged)
+                {
+                    _dispatchPickupDriverConflictLogged = true;
+                    LogRuntime("POLICE_CONVOY_DISPATCH_PICKUP_DRIVER_SEAT_OCCUPIED",
+                        "Operation=" + _operationId
+                        + "; Driver=" + driver.Handle
+                        + "; Occupant=" + driverSeatOccupant
+                        + "; CustodyRetained=true");
+                }
+                return string.Empty;
+            }
+
+            if (_dispatchPickupDriverEntryStartedAt == DateTime.MinValue)
+                _dispatchPickupDriverEntryStartedAt = now;
+            if (now >= _dispatchPickupDriverEntryStartedAt.AddSeconds(
+                DispatchCrewDriverEntryTimeoutSeconds))
+                return Fail("The transport officer could not physically enter the van for the return to the incident scene.", true);
+            if (_lastDispatchPickupDriverEntryTaskAt == DateTime.MinValue
+                || now >= _lastDispatchPickupDriverEntryTaskAt.AddMilliseconds(
+                    DispatchCrewDriverEntryTaskRefreshMilliseconds))
+            {
+                try
+                {
+                    driver.Task.EnterVehicle(_transport, VehicleSeat.Driver,
+                        10000, 1.0f);
+                    _lastDispatchPickupDriverEntryTaskAt = now;
+                    LogRuntime("POLICE_CONVOY_DISPATCH_PICKUP_DRIVER_ENTRY_TASK",
+                        "Operation=" + _operationId
+                        + "; Driver=" + driver.Handle
+                        + "; Vehicle=" + _transport.Handle
+                        + "; Seat=Driver; PhysicalEntryRequired=true");
+                }
+                catch (Exception ex)
+                {
+                    _lastDispatchPickupDriverEntryTaskAt = now;
+                    LogException("POLICE_CONVOY_DISPATCH_PICKUP_DRIVER_ENTRY_FAILED", ex);
+                }
+            }
+            return string.Empty;
+        }
+
+        private void ClearDispatchPickupPlan()
+        {
+            _dispatchPickupStops.Clear();
+            _activeDispatchPickupStopIndex = -1;
+            _lastDispatchPickupDriverEntryTaskAt = DateTime.MinValue;
+            _dispatchPickupDriverEntryStartedAt = DateTime.MinValue;
+            _lastDispatchPickupArrivalCheckAt = DateTime.MinValue;
+            _dispatchPickupDriverConflictLogged = false;
+        }
+
         private string ProcessLoading(DateTime now, bool prisonTrip)
         {
             if (!HasTransportVehicle())
@@ -2911,6 +3350,9 @@ namespace LSImmersiveLife
             if (!ReleaseTransportOfficersForLoading(now))
                 return string.Empty;
             List<Ped> prisoners = ValidPrisoners().ToList();
+            List<Ped> pickupPrisoners = CurrentDispatchPickupPrisoners(prisoners);
+            if (pickupPrisoners.Count == 0)
+                return Fail("No secured suspect is assigned to this physical pickup stop.", true);
             HashSet<int> activePrisonerHandles = new HashSet<int>(
                 prisoners.Select(prisoner => prisoner.Handle));
             foreach (int staleHandle in _prisonerLoadingTimeoutStartedAt.Keys
@@ -2923,7 +3365,7 @@ namespace LSImmersiveLife
                 _lastAssignedSeatCheckResult.Remove(staleHandle);
                 _lastPrisonerVehicleExitAt.Remove(staleHandle);
             }
-            foreach (Ped prisoner in prisoners)
+            foreach (Ped prisoner in pickupPrisoners)
             {
                 if (_prisonerLoadedLogIssued.Contains(prisoner.Handle)
                     && IsInTransport(prisoner))
@@ -3065,9 +3507,19 @@ namespace LSImmersiveLife
                     continue;
             }
 
-            if (prisoners.All(prisoner => IsPrisonerInAssignedTransportSeat(
+            if (pickupPrisoners.All(prisoner => IsPrisonerInAssignedTransportSeat(
                 prisoner, PrisonerSeat(prisoner, prisoners))))
             {
+                if (!prisonTrip && HasNextDispatchPickupStop())
+                    return BeginNextDispatchPickupStop(now, pickupPrisoners);
+
+                if (!prisoners.All(prisoner => IsPrisonerInAssignedTransportSeat(
+                    prisoner, PrisonerSeat(prisoner, prisoners))))
+                    return Fail("A later pickup stop still has secured suspects waiting. Convoy custody remains active until every required suspect is physically loaded.", true);
+
+                if (!prisonTrip)
+                    ClearDispatchPickupPlan();
+
                 bool crewOwnsDispatchTransport = !prisonTrip
                     && _dispatchCustodyOperation
                     && !_isRequestedConvoyActivity
@@ -5987,6 +6439,10 @@ namespace LSImmersiveLife
             assigned = _sceneEscortOfficers
                 .Where(officer => officer != null && officer.Exists() && !officer.IsDead
                     && !IsOfficerInTransport(officer)
+                    && (_dispatchPickupStops.Count == 0
+                        || _transport == null || !_transport.Exists()
+                        || officer.Position.DistanceTo(_transport.Position)
+                            <= MaximumDispatchSceneVehicleDistance)
                     && !IsLoadingEscortBusy(officer, prisoner.Handle))
                 .OrderBy(officer => officer.Position.DistanceTo(prisoner.Position))
                 .FirstOrDefault();
@@ -6417,13 +6873,19 @@ namespace LSImmersiveLife
 
         private void OrderSceneEscortGuard()
         {
-            Ped target = ValidPrisoners()
+            Ped target = CurrentDispatchPickupPrisoners(
+                    ValidPrisoners().ToList())
                 .OrderBy(prisoner => _transport == null || !_transport.Exists()
                     ? 0f : prisoner.Position.DistanceTo(_transport.Position))
                 .FirstOrDefault();
             if (target == null)
                 return;
-            foreach (Ped officer in _sceneEscortOfficers.Where(ped => ped != null && ped.Exists()))
+            foreach (Ped officer in _sceneEscortOfficers.Where(ped =>
+                ped != null && ped.Exists()
+                && (_dispatchPickupStops.Count == 0
+                    || _transport == null || !_transport.Exists()
+                    || ped.Position.DistanceTo(_transport.Position)
+                        <= MaximumDispatchSceneVehicleDistance)))
             {
                 try
                 {
@@ -7342,6 +7804,7 @@ namespace LSImmersiveLife
         private void ResetOperationFields()
         {
             RestoreDispatchCustodyMovementStyles();
+            ClearDispatchPickupPlan();
             _pickupTarget = Vector3.Zero;
             _dispatchSceneVehicleAccessTarget = Vector3.Zero;
             _dispatchSceneWalkInDistanceMeters = 0f;
