@@ -114,7 +114,10 @@ namespace LSImmersiveLife
             // AmbientWorld is the shared location/scene-preparation owner. It
             // receives the same parsed location catalog as Dispatch; no second
             // XML database or independent coordinate list is created.
-            AmbientWorld = new LSWorldAmbientBehavior(Dispatch.LocationCatalog, _log);
+            AmbientWorld = new LSWorldAmbientBehavior(
+                Dispatch.LocationCatalog,
+                _log,
+                dispatchSettings: _config.Police.Dispatch);
             Dispatch.AttachAmbientWorld(AmbientWorld);
             Response = new LSPDPoliceResponse(
                 Audio,

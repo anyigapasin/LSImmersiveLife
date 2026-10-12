@@ -86,13 +86,6 @@ namespace LSImmersiveLife
         private const float MovingRoadVehicleOccupancyRadius = 3.5f;
         private const float MovingRoadPedOccupancyRadius = 2.5f;
         private const float MovingRoadElevationTolerance = 8f;
-        private const float PlayerRadiusOutdoorFootMinimumDistance = 20f;
-        private const float PlayerRadiusOutdoorFootMaximumDistance = 90f;
-        private static readonly float[] PlayerRadiusOutdoorFootProbeDistances =
-        {
-            32f,
-            52f
-        };
         private static readonly float[] PlayerRadiusRoadsideLateralOffsets =
         {
             4f,
@@ -188,6 +181,7 @@ namespace LSImmersiveLife
         private Dictionary<LSImmersiveLocationCatalog.LSImmersiveLocationPoint, int>
             _mappedInteriorLiveIdsByPoint;
         private LSImmersiveLog _log;
+        private LSPoliceDispatchSettings _dispatchDistanceSettings;
 
         internal LSWorldAmbientBehavior(
             int maintenanceIntervalMilliseconds = 750,
@@ -195,17 +189,63 @@ namespace LSImmersiveLife
         {
             _maintenanceIntervalMilliseconds = Math.Max(100, maintenanceIntervalMilliseconds);
             _minimumEvaluationIntervalMilliseconds = Math.Max(250, minimumEvaluationIntervalMilliseconds);
+            _dispatchDistanceSettings = LSPoliceDispatchSettings.Default();
         }
 
         internal LSWorldAmbientBehavior(
             LSImmersiveLocationCatalog locationCatalog,
             LSImmersiveLog log,
             int maintenanceIntervalMilliseconds = 750,
-            int minimumEvaluationIntervalMilliseconds = 1000)
+            int minimumEvaluationIntervalMilliseconds = 1000,
+            LSPoliceDispatchSettings dispatchSettings = null)
             : this(maintenanceIntervalMilliseconds, minimumEvaluationIntervalMilliseconds)
         {
             _locationCatalog = locationCatalog;
             _log = log;
+            if (dispatchSettings != null)
+                _dispatchDistanceSettings = dispatchSettings;
+        }
+
+        private void GetPlayerRadiusFallbackDistanceRange(
+            out float minimumDistance,
+            out float maximumDistance)
+        {
+            LSPoliceDispatchSettings settings = _dispatchDistanceSettings
+                ?? LSPoliceDispatchSettings.Default();
+            minimumDistance = Math.Max(20, Math.Min(250,
+                settings.PlayerRadiusFallbackMinimumDistanceMeters));
+            maximumDistance = Math.Max((int)minimumDistance, Math.Min(250,
+                settings.PlayerRadiusFallbackMaximumDistanceMeters));
+        }
+
+        private static float[] BuildPlayerRadiusFallbackRoadOffsets(
+            float minimumDistance,
+            float maximumDistance)
+        {
+            float span = Math.Max(0f, maximumDistance - minimumDistance);
+            float inset = Math.Min(10f, span / 4f);
+            float nearerTarget = minimumDistance + inset;
+            float fartherTarget = maximumDistance - inset;
+            if (Math.Abs(fartherTarget - nearerTarget) < 0.1f)
+                return new[] { nearerTarget, -nearerTarget };
+            return new[] { nearerTarget, -nearerTarget, fartherTarget, -fartherTarget };
+        }
+
+        private static float[] BuildPlayerRadiusOutdoorFootProbeDistances(
+            float minimumDistance,
+            float maximumDistance)
+        {
+            float span = Math.Max(0f, maximumDistance - minimumDistance);
+            if (span < 0.1f)
+                return new[] { minimumDistance };
+
+            float inset = Math.Min(10f, span / 4f);
+            return new[]
+            {
+                minimumDistance + inset,
+                minimumDistance + (span / 2f),
+                maximumDistance - inset
+            };
         }
 
         internal void AttachNpcDatabase(LSNPCDatabase npcDatabase)
@@ -2977,13 +3017,23 @@ namespace LSImmersiveLife
             }
 
             float playerDistance = Distance2D(previous.SceneCenter, playerPosition);
-            if (playerDistance < PlayerRadiusOutdoorFootMinimumDistance
-                || playerDistance > PlayerRadiusOutdoorFootMaximumDistance)
+            Vector3 selectionAnchor = previous.AreaAnchorPosition == Vector3.Zero
+                ? playerPosition : previous.AreaAnchorPosition;
+            float selectionDistance = Distance2D(previous.SceneCenter, selectionAnchor);
+            float minimumPlayerDistance;
+            float maximumPlayerDistance;
+            GetPlayerRadiusFallbackDistanceRange(
+                out minimumPlayerDistance, out maximumPlayerDistance);
+            if (selectionDistance < minimumPlayerDistance
+                || selectionDistance > maximumPlayerDistance
+                || playerDistance > maximumPlayerDistance)
             {
                 reason = "Stage=PlayerRadiusOutdoorFootRevalidationRange; PlayerDistance="
                     + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; RequiredRange=" + PlayerRadiusOutdoorFootMinimumDistance + "-"
-                    + PlayerRadiusOutdoorFootMaximumDistance + "; Result=Rejected";
+                    + "; SelectionDistance=" + selectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
                 return false;
             }
 
@@ -3003,6 +3053,21 @@ namespace LSImmersiveLife
                 reason = string.IsNullOrWhiteSpace(placementFailure)
                     ? "Stage=PlayerRadiusOutdoorFootRevalidationSnap; Native=GET_SAFE_COORD_FOR_PED; Result=Rejected"
                     : placementFailure;
+                return false;
+            }
+
+            float refreshedPlayerDistance = Distance2D(safePosition, playerPosition);
+            float refreshedSelectionDistance = Distance2D(safePosition, selectionAnchor);
+            if (refreshedSelectionDistance < minimumPlayerDistance
+                || refreshedSelectionDistance > maximumPlayerDistance
+                || refreshedPlayerDistance > maximumPlayerDistance)
+            {
+                reason = "Stage=PlayerRadiusOutdoorFootRevalidationResolvedRange; PlayerDistance="
+                    + refreshedPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; SelectionDistance=" + refreshedSelectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
                 return false;
             }
 
@@ -3050,11 +3115,22 @@ namespace LSImmersiveLife
             }
 
             float playerDistance = Distance2D(previous.SceneCenter, playerPosition);
-            if (playerDistance > MovingRoadMaximumPlayerDistance)
+            Vector3 selectionAnchor = previous.AreaAnchorPosition == Vector3.Zero
+                ? playerPosition : previous.AreaAnchorPosition;
+            float selectionDistance = Distance2D(previous.SceneCenter, selectionAnchor);
+            float minimumPlayerDistance;
+            float maximumPlayerDistance;
+            GetPlayerRadiusFallbackDistanceRange(
+                out minimumPlayerDistance, out maximumPlayerDistance);
+            if (selectionDistance < minimumPlayerDistance
+                || selectionDistance > maximumPlayerDistance
+                || playerDistance > maximumPlayerDistance)
             {
                 reason = "Stage=PlayerRadiusRoadFootRevalidationRange; PlayerDistance="
                     + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; Maximum=" + MovingRoadMaximumPlayerDistance
+                    + "; SelectionDistance=" + selectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; Result=Rejected";
                 return false;
             }
@@ -3077,6 +3153,20 @@ namespace LSImmersiveLife
             if (Distance2D(safePedPosition, previous.SceneCenter) > 10f)
             {
                 reason = "Stage=PlayerRadiusRoadFootRevalidationSnap; Native=GET_SAFE_COORD_FOR_PED; Result=Rejected";
+                return false;
+            }
+            float refreshedPlayerDistance = Distance2D(safePedPosition, playerPosition);
+            float refreshedSelectionDistance = Distance2D(safePedPosition, selectionAnchor);
+            if (refreshedSelectionDistance < minimumPlayerDistance
+                || refreshedSelectionDistance > maximumPlayerDistance
+                || refreshedPlayerDistance > maximumPlayerDistance)
+            {
+                reason = "Stage=PlayerRadiusRoadFootRevalidationResolvedRange; PlayerDistance="
+                    + refreshedPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; SelectionDistance=" + refreshedSelectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
                 return false;
             }
 
@@ -5392,6 +5482,12 @@ namespace LSImmersiveLife
         {
             scene = null;
             reason = string.Empty;
+            float fallbackMinimumDistance;
+            float fallbackMaximumDistance;
+            GetPlayerRadiusFallbackDistanceRange(
+                out fallbackMinimumDistance, out fallbackMaximumDistance);
+            float[] fallbackRoadOffsets = BuildPlayerRadiusFallbackRoadOffsets(
+                fallbackMinimumDistance, fallbackMaximumDistance);
             LSPDDispatchLocationDefinition runtimeArea =
                 LSPDDispatchLocationDefinition.ForPlayerRadiusVehicleScene(playerPosition);
             Vector3 vehiclePosition;
@@ -5415,7 +5511,10 @@ namespace LSImmersiveLife
                     out routePosition,
                     out routeHeading,
                     out reason,
-                    true))
+                    true,
+                    fallbackMinimumDistance,
+                    fallbackMaximumDistance,
+                    fallbackRoadOffsets))
                     return false;
                 actorPosition = vehiclePosition;
             }
@@ -5489,6 +5588,8 @@ namespace LSImmersiveLife
                 + "; RoutePosition=" + (movingRoad ? routePosition.ToString() : "NotRequired")
                 + "; PlayerDistance=" + Distance2D(vehiclePosition, playerPosition)
                     .ToString("0.0", CultureInfo.InvariantCulture)
+                + "; RequiredPlayerDistance=" + fallbackMinimumDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "-" + fallbackMaximumDistance.ToString("0.0", CultureInfo.InvariantCulture)
                 + "; Validation=" + scene.ValidationStatus);
             LogLocationResolution(scene, true);
             return true;
@@ -5510,10 +5611,16 @@ namespace LSImmersiveLife
 
             LSPDDispatchLocationDefinition runtimeArea =
                 LSPDDispatchLocationDefinition.ForPlayerRadiusOutdoorFootScene(playerPosition);
+            float minimumPlayerDistance;
+            float maximumPlayerDistance;
+            GetPlayerRadiusFallbackDistanceRange(
+                out minimumPlayerDistance, out maximumPlayerDistance);
+            float[] probeDistances = BuildPlayerRadiusOutdoorFootProbeDistances(
+                minimumPlayerDistance, maximumPlayerDistance);
             List<Vector2> directions = PlayerRadiusOutdoorFootProbeDirections.ToList();
             Shuffle(directions);
             string lastFailure = reason;
-            foreach (float distance in PlayerRadiusOutdoorFootProbeDistances)
+            foreach (float distance in probeDistances)
             {
                 foreach (Vector2 direction in directions)
                 {
@@ -5533,13 +5640,14 @@ namespace LSImmersiveLife
                     }
 
                     float playerDistance = Distance2D(safePosition, playerPosition);
-                    if (playerDistance < PlayerRadiusOutdoorFootMinimumDistance
-                        || playerDistance > PlayerRadiusOutdoorFootMaximumDistance)
+                    if (playerDistance < minimumPlayerDistance
+                        || playerDistance > maximumPlayerDistance)
                     {
                         lastFailure = "Stage=PlayerRadiusOutdoorFootRange; PlayerDistance="
                             + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                            + "; RequiredRange=" + PlayerRadiusOutdoorFootMinimumDistance + "-"
-                            + PlayerRadiusOutdoorFootMaximumDistance + "; Result=Rejected";
+                            + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Result=Rejected";
                         continue;
                     }
 
@@ -5583,6 +5691,8 @@ namespace LSImmersiveLife
                         + "; PlayerPosition=" + playerPosition
                         + "; ScenePosition=" + safePosition
                         + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; RequiredPlayerDistance=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                         + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/"
                             + "GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/GET_NEXT_POSITION_ON_STREET"
                         + "; Validation=" + scene.ValidationStatus);
@@ -5596,7 +5706,7 @@ namespace LSImmersiveLife
             Log("AMBIENT_WORLD_PLAYER_RADIUS_OUTDOOR_FOOT_SCENE_REJECTED",
                 "IncidentType=" + (incidentType ?? string.Empty)
                 + "; PlayerPosition=" + playerPosition
-                + "; ProbeCount=" + (PlayerRadiusOutdoorFootProbeDistances.Length
+                + "; ProbeCount=" + (probeDistances.Length
                     * PlayerRadiusOutdoorFootProbeDirections.Length)
                 + "; FirstRejectedStage=" + reason);
             return false;
@@ -5667,8 +5777,14 @@ namespace LSImmersiveLife
             float radians = referenceHeading * (float)Math.PI / 180f;
             Vector3 forward = new Vector3(
                 (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+            float minimumPlayerDistance;
+            float maximumPlayerDistance;
+            GetPlayerRadiusFallbackDistanceRange(
+                out minimumPlayerDistance, out maximumPlayerDistance);
+            float[] fallbackRoadOffsets = BuildPlayerRadiusFallbackRoadOffsets(
+                minimumPlayerDistance, maximumPlayerDistance);
             string lastFailure = reason;
-            foreach (float offset in DispatchMovingRoadSceneOffsets)
+            foreach (float offset in fallbackRoadOffsets)
             {
                 Vector3 query = roadReference + (forward * offset);
                 List<Vector3> roadsideCandidates = BuildPlayerRadiusRoadsideCandidates(
@@ -5684,13 +5800,14 @@ namespace LSImmersiveLife
                 Vector3 roadside = roadsideCandidate;
 
                 float playerDistance = Distance2D(roadside, playerPosition);
-                if (playerDistance < MovingRoadMinimumRouteDistance
-                    || playerDistance > MovingRoadMaximumPlayerDistance)
+                if (playerDistance < minimumPlayerDistance
+                    || playerDistance > maximumPlayerDistance)
                 {
                     lastFailure = "Stage=PlayerRadiusRoadFootRange; PlayerDistance="
                         + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                        + "; RequiredRange=" + MovingRoadMinimumRouteDistance + "-"
-                        + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                        + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Result=Rejected";
                     continue;
                 }
 
@@ -5789,6 +5906,17 @@ namespace LSImmersiveLife
                         + "; Maximum=10; Result=Rejected";
                     continue;
                 }
+                float resolvedPlayerDistance = Distance2D(safePedPosition, playerPosition);
+                if (resolvedPlayerDistance < minimumPlayerDistance
+                    || resolvedPlayerDistance > maximumPlayerDistance)
+                {
+                    lastFailure = "Stage=PlayerRadiusRoadFootResolvedRange; PlayerDistance="
+                        + resolvedPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Result=Rejected";
+                    continue;
+                }
 
                 scene = new AmbientDispatchSceneResolution
                 {
@@ -5830,6 +5958,8 @@ namespace LSImmersiveLife
                     + "; RoadSeparation=" + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; PlayerDistance=" + Distance2D(safePedPosition, playerPosition)
                         .ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredPlayerDistance=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; Validation=" + scene.ValidationStatus);
                 LogLocationResolution(scene, false);
                 reason = string.Empty;
@@ -5885,9 +6015,15 @@ namespace LSImmersiveLife
                 float radians = referenceHeading * (float)Math.PI / 180f;
                 Vector3 forward = new Vector3(
                     (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+                float minimumPlayerDistance;
+                float maximumPlayerDistance;
+                GetPlayerRadiusFallbackDistanceRange(
+                    out minimumPlayerDistance, out maximumPlayerDistance);
+                float[] fallbackRoadOffsets = BuildPlayerRadiusFallbackRoadOffsets(
+                    minimumPlayerDistance, maximumPlayerDistance);
                 string lastFailure = reason;
                 string pendingCollisionFailure = string.Empty;
-                foreach (float offset in DispatchMovingRoadSceneOffsets)
+                foreach (float offset in fallbackRoadOffsets)
                 {
                     Vector3 query = roadReference + (forward * offset);
                     List<Vector3> roadsideCandidates = BuildPlayerRadiusRoadsideCandidates(
@@ -5902,13 +6038,14 @@ namespace LSImmersiveLife
                     Vector3 roadside = roadsideCandidate;
 
                     float playerDistance = Distance2D(roadside, playerPosition);
-                    if (playerDistance < MovingRoadMinimumRouteDistance
-                        || playerDistance > MovingRoadMaximumPlayerDistance)
+                    if (playerDistance < minimumPlayerDistance
+                        || playerDistance > maximumPlayerDistance)
                     {
                         lastFailure = "Stage=PlayerRadiusRoadsideRange; PlayerDistance="
                             + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                            + "; RequiredRange=" + MovingRoadMinimumRouteDistance + "-"
-                            + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                            + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Result=Rejected";
                         continue;
                     }
 
@@ -6404,7 +6541,10 @@ namespace LSImmersiveLife
             out Vector3 routePosition,
             out float routeHeading,
             out string reason,
-            bool allowNativeRoadNodeWhenRoadFlagFails = false)
+            bool allowNativeRoadNodeWhenRoadFlagFails = false,
+            float minimumPlayerDistance = MovingRoadMinimumPlayerDistance,
+            float maximumPlayerDistance = MovingRoadMaximumPlayerDistance,
+            float[] sceneOffsets = null)
         {
             stagingPosition = Vector3.Zero;
             heading = 0f;
@@ -6464,7 +6604,7 @@ namespace LSImmersiveLife
                 Vector3 forward = new Vector3(
                     (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
                 string lastFailure = "Stage=MovingRoadNode; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
-                foreach (float offset in DispatchMovingRoadSceneOffsets)
+                foreach (float offset in sceneOffsets ?? DispatchMovingRoadSceneOffsets)
                 {
                     Vector3 query = validatedReference + (forward * offset);
                     Vector3 candidate;
@@ -6500,13 +6640,14 @@ namespace LSImmersiveLife
                     }
 
                     float playerDistance = Distance2D(validatedCandidate, playerPosition);
-                    if (playerDistance < MovingRoadMinimumPlayerDistance
-                        || playerDistance > MovingRoadMaximumPlayerDistance)
+                    if (playerDistance < minimumPlayerDistance
+                        || playerDistance > maximumPlayerDistance)
                     {
                         lastFailure = "Stage=MovingRoadPlayerRange; PlayerDistance="
                             + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                            + "; RequiredRange=" + MovingRoadMinimumPlayerDistance + "-"
-                            + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                            + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Result=Rejected";
                         continue;
                     }
                     if (enforcePlayerDistanceWindow
@@ -6797,14 +6938,25 @@ namespace LSImmersiveLife
 
             float playerDistance = Distance2D(
                 previous.VehicleStagingPosition, playerPosition);
+            Vector3 selectionAnchor = previous.AreaAnchorPosition == Vector3.Zero
+                ? playerPosition : previous.AreaAnchorPosition;
+            float selectionDistance = Distance2D(
+                previous.VehicleStagingPosition, selectionAnchor);
+            float minimumPlayerDistance;
+            float maximumPlayerDistance;
+            GetPlayerRadiusFallbackDistanceRange(
+                out minimumPlayerDistance, out maximumPlayerDistance);
             if (runtimePlayerRadiusScene
-                && (playerDistance < MovingRoadMinimumRouteDistance
-                    || playerDistance > MovingRoadMaximumPlayerDistance))
+                && (selectionDistance < minimumPlayerDistance
+                    || selectionDistance > maximumPlayerDistance
+                    || playerDistance > maximumPlayerDistance))
             {
                 reason = "Stage=PlayerRadiusVehicleRevalidationRange; PlayerDistance="
                     + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; RequiredRange=" + MovingRoadMinimumRouteDistance + "-"
-                    + MovingRoadMaximumPlayerDistance + "; Result=Rejected";
+                    + "; SelectionDistance=" + selectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
                 return false;
             }
 
@@ -6877,6 +7029,50 @@ namespace LSImmersiveLife
                     out roadSeparation,
                     out roadNodeFailure,
                     runtimePlayerRadiusScene);
+                bool parkedRoadClearanceConfirmed = roadNodeFound
+                    && roadNode != Vector3.Zero
+                    && !float.IsNaN(roadHeading)
+                    && !float.IsInfinity(roadHeading)
+                    && roadSeparation >= 1.25f
+                    && roadSeparation <= 14f
+                    && Distance2D(previous.SceneCenter, validatedVehicle) <= 12f;
+                if (runtimePlayerRadiusScene
+                    && vehicleInterior == 0
+                    && actorInterior == 0
+                    && !vehicleOnRoad
+                    && !vehicleGroundFound
+                    && parkedRoadClearanceConfirmed)
+                {
+                    try
+                    {
+                        Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                            validatedVehicle.X, validatedVehicle.Y, validatedVehicle.Z);
+                    }
+                    catch (Exception ex)
+                    {
+                        reason = "Stage=PlayerRadiusParkedRevalidationGround; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/"
+                            + "REQUEST_COLLISION_AT_COORD; Position=" + validatedVehicle
+                            + "; VehicleInterior=" + vehicleInterior
+                            + "; ActorInterior=" + actorInterior
+                            + "; VehicleOnRoad=" + vehicleOnRoad
+                            + "; GroundFound=false; RoadSeparation="
+                            + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; CollisionRequest=Exception:" + ex.GetType().Name
+                            + "; Result=Rejected";
+                        return false;
+                    }
+
+                    reason = "PENDING:Stage=PlayerRadiusParkedRevalidationGround; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/"
+                        + "REQUEST_COLLISION_AT_COORD; Position=" + validatedVehicle
+                        + "; VehicleInterior=" + vehicleInterior
+                        + "; ActorInterior=" + actorInterior
+                        + "; VehicleOnRoad=" + vehicleOnRoad
+                        + "; GroundFound=false; RoadSeparation="
+                        + roadSeparation.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; CollisionRequest=REQUEST_COLLISION_AT_COORD"
+                        + "; Result=CollisionPending";
+                    return false;
+                }
                 if (vehicleInterior != 0 || actorInterior != 0 || vehicleOnRoad
                     || !vehicleGroundFound || vehicleGroundNormal.Z < 0.65f
                     || Math.Abs(validatedVehicle.Z - vehicleGroundZ) > 3f
@@ -6994,6 +7190,11 @@ namespace LSImmersiveLife
             stagingPosition = Vector3.Zero;
             heading = 0f;
             reason = "Stage=AdditionalMovingRoadVehicle; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+            float minimumPlayerDistance = MovingRoadMinimumRouteDistance;
+            float maximumPlayerDistance = MovingRoadMaximumPlayerDistance;
+            if (allowNativeRoadNodeWhenRoadFlagFails)
+                GetPlayerRadiusFallbackDistanceRange(
+                    out minimumPlayerDistance, out maximumPlayerDistance);
             float radians = scene.VehicleHeading * (float)Math.PI / 180f;
             Vector3 forward = new Vector3(
                 (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
@@ -7036,14 +7237,16 @@ namespace LSImmersiveLife
                     scene.VehicleStagingPosition, candidate);
                 float playerDistance = Distance2D(scene.Area.Position, candidate);
                 if (vehicleSeparation < 18f || vehicleSeparation > 60f
-                    || playerDistance < MovingRoadMinimumRouteDistance
-                    || playerDistance > MovingRoadMaximumPlayerDistance
+                    || playerDistance < minimumPlayerDistance
+                    || playerDistance > maximumPlayerDistance
                     || Math.Abs(candidate.Z - scene.VehicleStagingPosition.Z)
                         > MovingRoadElevationTolerance)
                 {
                     lastFailure = "Stage=AdditionalMovingRoadVehicleSpacing; VehicleSeparation="
                         + vehicleSeparation.ToString("0.0", CultureInfo.InvariantCulture)
                         + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; RequiredPlayerRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                         + "; ElevationDelta=" + Math.Abs(candidate.Z - scene.VehicleStagingPosition.Z)
                             .ToString("0.0", CultureInfo.InvariantCulture)
                         + "; Result=Rejected";

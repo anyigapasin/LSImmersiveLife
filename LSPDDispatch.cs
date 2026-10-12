@@ -1285,6 +1285,24 @@ namespace LSImmersiveLife
                             StringComparison.OrdinalIgnoreCase)
                         && stageReason.IndexOf(
                             "Result=CollisionPending", StringComparison.OrdinalIgnoreCase) >= 0;
+                    boundedVehicleGroundPending = boundedVehicleGroundPending
+                        || (string.Equals(stage, "SceneRevalidation",
+                                StringComparison.OrdinalIgnoreCase)
+                            && incident.SceneResolution != null
+                            && string.Equals(
+                                incident.SceneResolution.LocationCategory,
+                                "PlayerRadiusRoadNode",
+                                StringComparison.OrdinalIgnoreCase)
+                            && !string.Equals(
+                                incident.SceneResolution.VehicleStagingMode,
+                                "moving_road",
+                                StringComparison.OrdinalIgnoreCase)
+                            && stageReason.StartsWith(
+                                "PENDING:Stage=PlayerRadiusParkedRevalidationGround;",
+                                StringComparison.OrdinalIgnoreCase)
+                            && stageReason.IndexOf(
+                                "CollisionRequest=REQUEST_COLLISION_AT_COORD",
+                                StringComparison.OrdinalIgnoreCase) >= 0);
 
                     if (modelStillStreaming
                         && DateTime.UtcNow < incident.ScenePreparationDeadline)
@@ -7450,7 +7468,11 @@ namespace LSImmersiveLife
                 SetScenePreparationFailure(
                     _incident, "SceneRevalidation", sceneValidationFailure);
                 LogDebug(
-                    "POLICE_DISPATCH_SCENE_REVALIDATION_FAILED",
+                    sceneValidationFailure != null
+                        && sceneValidationFailure.StartsWith(
+                            "PENDING:", StringComparison.OrdinalIgnoreCase)
+                        ? "POLICE_DISPATCH_SCENE_REVALIDATION_PENDING"
+                        : "POLICE_DISPATCH_SCENE_REVALIDATION_FAILED",
                     "Occurrence=" + _incident.Id
                     + "; CatalogInteriorId=" + (_incident.SceneResolution == null
                         ? string.Empty : _incident.SceneResolution.CatalogInteriorId)
