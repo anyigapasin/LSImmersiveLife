@@ -31,6 +31,7 @@ namespace LSImmersiveLife
         private const float FootTrafficContactSpeed = 7.5f;
         private const float CitizenDocumentHandoffDistance = 1.65f;
         private const float CitizenDocumentHandoffHeightDifference = 0.65f;
+        private const float TrafficAimSurrenderMaximumDistance = 35.0f;
         private const float DefaultLocalTrafficCautionRadius = 12.0f;
         private const float DefaultActiveSceneTrafficCautionRadius = 18.0f;
         // Eight metres is useful as a caution area, but was far too large for
@@ -42,7 +43,20 @@ namespace LSImmersiveLife
         private const float ActiveSceneTrafficCautionSpeed = 7.0f;
         private const float PredictedTrafficCautionSpeed = 2.0f;
         private const float TrafficWindowContactRadius = 5.5f;
-        private const float TrafficDriverWindowContactRadius = 4.25f;
+        private const float TrafficWindowGroundContactRadius = 2.75f;
+        private const float TrafficWindowGroundElevationTolerance = 1.25f;
+        private const float TrafficPullOverContactAreaRadius = 16.0f;
+        private const float TrafficPullOverContactAreaElevation = 4.5f;
+        private const float TrafficStopPositionDriftRadius = 4.0f;
+        private const float TrafficDriverFallbackElevationTolerance = 3.5f;
+        private const float TrafficWindowGeometryMoveInvalidation = 0.75f;
+        private const float TrafficWindowGeometryHeadingInvalidation = 8.0f;
+        private const int TrafficWindowGeometryRetryMilliseconds = 1500;
+        private const int TrafficSubjectLostRecoveryMilliseconds = 6000;
+        private const int TrafficVehicleTransitionRecoveryMilliseconds = 6000;
+        private const int TrafficBackupPursuitSampleMilliseconds = 500;
+        private const int TrafficPursuitExitRetryMilliseconds = 4000;
+        private const int TrafficPursuitExitMaximumAttempts = 2;
         private const float InteractionReleaseDistance = 32.0f;
         private const float MaximumPullOverTargetDistance = 12.0f;
         private const float MaximumPullOverElevationDifference = 8.0f;
@@ -98,6 +112,27 @@ namespace LSImmersiveLife
         private const int BackupMovementClipsetTimeoutSeconds = 8;
         private const int BackupEscortTaskRecoverySeconds = 12;
         private const string BackupPrisonerMovementClipset = "move_m@prisoner_cuffed";
+
+        private struct TrafficDriverWindowGeometry
+        {
+            internal int VehicleHandle;
+            internal Vector3 VehiclePosition;
+            internal float VehicleHeading;
+            internal Vector3 WindowPosition;
+            internal Vector3 OfficerGroundPosition;
+            internal float MaximumWindowSeparation;
+            internal DateTime LastAttemptAt;
+            internal bool Resolved;
+        }
+
+        private enum TrafficPursuitStage
+        {
+            None,
+            VehicleFlight,
+            VehicleStoppedAwaitingExit,
+            OnFootFlight,
+            Contained
+        }
 
         private enum InteractionStage
         {
@@ -164,11 +199,14 @@ namespace LSImmersiveLife
             internal int OriginalHealth;
             internal int OriginalMaximumHealth;
             internal int ManagedMaximumHealth;
+            internal int ManagedHealthAtProtectionStart;
             internal int OriginalSelectedWeaponHash;
             internal int LastHealth;
             internal int DamageTaken;
             internal int RegisteredHits;
+            internal int WeaponHits;
             internal int DownedHits;
+            internal int FatalDownedHits;
             internal int MeleeHits;
             internal int HeadHits;
             internal int ChestHits;
@@ -180,6 +218,11 @@ namespace LSImmersiveLife
             internal int LastDamageWeaponHash;
             internal int LastDamageAttackerHandle;
             internal int LastDamageGameTime;
+            internal bool HasLastProcessedDamageRecord;
+            internal int LastProcessedDamageWeaponHash;
+            internal int LastProcessedDamageAttackerHandle;
+            internal int LastProcessedDamageGameTime;
+            internal int LastProcessedDamageBone;
             internal bool OriginalCanSufferCriticalHits;
             internal bool OriginalCanSwitchWeapons;
             internal bool ControlledInjuryActive;
@@ -263,7 +306,12 @@ namespace LSImmersiveLife
             }
         }
         private Ped _subject;
+        // _subjectVehicle remains the original Vehicle Citizen contact record.
+        // Flight may move the same selected Citizen into a different vehicle;
+        // pursuit tasks use _trafficPursuitVehicle instead.
         private Vehicle _subjectVehicle;
+        private Vehicle _trafficPursuitVehicle;
+        private TrafficPursuitStage _trafficPursuitStage;
         // GTA ambient cleanup may remove an ordinary driver as soon as its
         // original traffic task is replaced.  A contact temporarily owns one
         // civilian and, where applicable, one vehicle, so preserve their
@@ -304,6 +352,15 @@ namespace LSImmersiveLife
         private DateTime _nextTrafficDriverExitCheckAt = DateTime.MinValue;
         private DateTime _nextTrafficDriverExitAttemptAt = DateTime.MinValue;
         private DateTime _trafficDriverExitDeadline = DateTime.MinValue;
+        private DateTime _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+        private DateTime _trafficSubjectLostSince = DateTime.MinValue;
+        private DateTime _nextTrafficBackupPursuitSampleAt = DateTime.MinValue;
+        private DateTime _nextTrafficPursuitExitAt = DateTime.MinValue;
+        private DateTime _trafficPlayerAimStartedAt = DateTime.MinValue;
+        private int _trafficPursuitExitAttempts;
+        private int _trafficPlayerAimSubjectHandle;
+        private bool _trafficPursuitExitFailureNotified;
+        private bool _trafficPlayerAimCheckFailureLogged;
         private DateTime _nextAnimationRequest = DateTime.MinValue;
         private DateTime _animationLoadDeadline = DateTime.MinValue;
         private DateTime _animationVerificationAt = DateTime.MinValue;
@@ -314,6 +371,11 @@ namespace LSImmersiveLife
         private DateTime _nextDeferredDeadSubjectScanAt = DateTime.MinValue;
         private Vector3 _fleeLastPosition = Vector3.Zero;
         private Vector3 _trafficPullOverPosition = Vector3.Zero;
+        private Vector3 _trafficContactVehiclePosition = Vector3.Zero;
+        private Vector3 _trafficContactPlayerPosition = Vector3.Zero;
+        private Vector3 _trafficStopConfirmedPosition = Vector3.Zero;
+        private TrafficDriverWindowGeometry _trafficDriverWindowGeometry;
+        private bool _trafficDirectFallbackLogged;
         private Vector3 _interactionAnchor = Vector3.Zero;
         private Vector3 _footStationDestination = Vector3.Zero;
         private Vector3 _trafficStationDestination = Vector3.Zero;
@@ -341,6 +403,8 @@ namespace LSImmersiveLife
         private bool _suspiciousTrafficContact;
         private bool _deferredDeadSubjectPersistenceCaptured;
         private bool _pullOverRecoveryIssued;
+        private bool _trafficPullOverFallbackTarget;
+        private bool _trafficStopConfirmedAtTarget;
         private bool _trafficStopConfirmed;
         private bool _trafficComplianceExitRequested;
         private bool _trafficDriverExitConfirmed;
@@ -625,6 +689,15 @@ namespace LSImmersiveLife
             }
         }
 
+        internal bool IsTrafficPursuitContained
+        {
+            get
+            {
+                return HasActiveInteraction && _trafficContactFled
+                    && _trafficPursuitStage == TrafficPursuitStage.Contained;
+            }
+        }
+
         internal bool WasFleeingFootContact
         {
             get
@@ -645,28 +718,50 @@ namespace LSImmersiveLife
         {
             get
             {
-                if (IsUsable(_subjectVehicle) && _stage == InteractionStage.TrafficFleeing)
-                    return _subjectVehicle.Position;
+                Vehicle pursuitVehicle = ActivePursuitVehicle;
+                if (IsUsable(pursuitVehicle)
+                    && (_stage == InteractionStage.TrafficFleeing
+                        || _stage == InteractionStage.TrafficAwaitingBackup
+                        || _stage == InteractionStage.TrafficBackupContained))
+                    return pursuitVehicle.Position;
                 return IsUsable(_subject) ? _subject.Position : Vector3.Zero;
             }
         }
 
         internal Ped ActiveSubject { get { return IsUsable(_subject) ? _subject : null; } }
         internal Ped CurrentSubject { get { return IsUsable(_subject) ? _subject : null; } }
+        internal Vehicle OriginalContactVehicle { get { return IsUsable(_subjectVehicle) ? _subjectVehicle : null; } }
         internal Vehicle ActiveSubjectVehicle { get { return IsUsable(_subjectVehicle) ? _subjectVehicle : null; } }
+        internal Vehicle ActivePursuitVehicle
+        {
+            get
+            {
+                if (_trafficPursuitStage == TrafficPursuitStage.None)
+                    return IsUsable(_subjectVehicle) ? _subjectVehicle : null;
+                if (!IsUsable(_subject) || !_subject.IsInVehicle())
+                    return null;
+                try
+                {
+                    Vehicle current = _subject.CurrentVehicle;
+                    return IsUsable(current) ? current : null;
+                }
+                catch { return null; }
+            }
+        }
 
         internal bool CanRequestCitizenDocuments
         {
             get
             {
                 bool backupInterceptionInvestigation = IsBackupInterceptionInvestigationActive;
+                bool trafficInterceptionInvestigation = IsTrafficOnFootInterceptionInvestigationActive;
                 if (!HasActiveInteraction || (_backupRequested && !backupInterceptionInvestigation)
                     || !IsUsable(_subject)
                     || _pendingAnimation != PendingAnimation.None)
                     return false;
 
                 DateTime now = DateTime.UtcNow;
-                Ped player = backupInterceptionInvestigation
+                Ped player = backupInterceptionInvestigation || trafficInterceptionInvestigation
                     ? Game.Player.Character : null;
                 bool greetingReady = _subjectVehicle == null
                     && _stage == InteractionStage.FootGreeting
@@ -714,9 +809,18 @@ namespace LSImmersiveLife
                     && !player.IsInVehicle()
                     && _subject.Position.DistanceTo(player.Position) <= BackupContainmentInteractionRadius
                     && now >= _animationHoldUntil;
+                bool trafficFootInvestigationReady = trafficInterceptionInvestigation
+                    && !_documentsProvided
+                    && !IsLivingDowned(_subject)
+                    && !IsLivingInWrithe(_subject)
+                    && IsUsable(player)
+                    && !player.IsInVehicle()
+                    && IsCitizenDocumentHandoffReady(player, _subject)
+                    && now >= _animationHoldUntil;
                 return greetingReady || trafficWindowReady
                     || canRetryFootHandoff || canRetryTrafficHandoff
-                    || backupFootInvestigationReady || backupTrafficInvestigationReady;
+                    || backupFootInvestigationReady || backupTrafficInvestigationReady
+                    || trafficFootInvestigationReady;
             }
         }
 
@@ -778,12 +882,18 @@ namespace LSImmersiveLife
                 if (!reviewedDecision)
                     return false;
 
+                bool trafficFlightContainedOnFoot = _subjectVehicle != null
+                    && _trafficContactFled
+                    && _trafficPursuitStage == TrafficPursuitStage.Contained
+                    && !_subject.IsInVehicle();
+
                 if (_stage == InteractionStage.FootAwaitingPlayerArrest)
                     return _subjectVehicle == null;
 
                 if (_subjectVehicle != null)
                 {
-                    if (!IsSelectedTrafficDriverOutside())
+                    if (!trafficFlightContainedOnFoot
+                        && !IsSelectedTrafficDriverOutside())
                         return false;
                     if (_stage == InteractionStage.TrafficAwaitingBackup
                         && IsTrafficStopAtSelectedRoadside()
@@ -801,8 +911,9 @@ namespace LSImmersiveLife
 
                 // A rejected document decision authorizes the response branch,
                 // not an arrest by itself. A pursuing/resisting subject becomes
-                // arrestable only after the game shows that same living Ped down.
-                return IsLivingDowned(_subject) || IsLivingInWrithe(_subject);
+                // arrestable only after the same living Ped is down or contained.
+                return IsLivingDowned(_subject) || IsLivingInWrithe(_subject)
+                    || trafficFlightContainedOnFoot;
             }
         }
 
@@ -849,10 +960,28 @@ namespace LSImmersiveLife
             }
         }
 
+        private bool IsTrafficOnFootInterceptionInvestigationActive
+        {
+            get
+            {
+                return !_backupRequested && HasActiveInteraction
+                    && _trafficContactFled
+                    && _trafficPursuitStage == TrafficPursuitStage.Contained
+                    && _stage == InteractionStage.TrafficRefused
+                    && IsUsable(_subject) && !_subject.IsInVehicle();
+            }
+        }
+
         private bool IsTrafficDocumentReviewReady()
         {
             if (_subjectVehicle == null)
                 return true;
+            if (IsTrafficOnFootInterceptionInvestigationActive)
+            {
+                Ped player = Game.Player.Character;
+                return IsUsable(player) && !player.IsInVehicle()
+                    && IsCitizenDocumentHandoffReady(player, _subject);
+            }
             if (IsBackupInterceptionInvestigationActive
                 && _stage == InteractionStage.TrafficBackupContained)
             {
@@ -1101,6 +1230,12 @@ namespace LSImmersiveLife
             bool subjectWasFleeing = IsFleeing
                 || WasFleeingFootContact
                 || _trafficContactFled;
+            bool custodyRiskBranch = subjectWasFleeing
+                || _suspiciousFootContact
+                || _stage == InteractionStage.FootAwaitingPlayerArrest
+                || _stage == InteractionStage.TrafficAwaitingBackup;
+            if (custodyRiskBranch)
+                EnableControlledCitizenInjury(_subject, "BackupContainment");
             RestoreBackupCustodyMovementStyle();
             _backupOfficer = officer;
             _backupVehicle = vehicle;
@@ -1146,9 +1281,21 @@ namespace LSImmersiveLife
                 if (IsUsable(occupiedVehicle)
                     && occupiedVehicle.Handle != vehicle.Handle)
                 {
-                    Function.Call(Hash.SET_VEHICLE_HANDBRAKE, occupiedVehicle, true);
-                    occupiedVehicle.Speed = 0.0f;
-                    Function.Call(Hash.TASK_LEAVE_VEHICLE, _subject, occupiedVehicle, 0);
+                    bool stopped = Math.Abs(occupiedVehicle.Speed) <= 0.65f;
+                    if (stopped)
+                    {
+                        Function.Call(Hash.SET_VEHICLE_HANDBRAKE, occupiedVehicle, true);
+                        Function.Call(Hash.TASK_LEAVE_VEHICLE,
+                            _subject, occupiedVehicle, 0);
+                    }
+                    else
+                    {
+                        Function.Call(Hash.SET_VEHICLE_BRAKE, occupiedVehicle, true);
+                        _log.Runtime("NPC_BACKUP_CONTAINMENT_WAITING_FOR_SUBJECT_VEHICLE_STOP",
+                            "Ped=" + _subject.Handle + "; Vehicle=" + occupiedVehicle.Handle
+                            + "; Speed=" + Math.Abs(occupiedVehicle.Speed).ToString("0.0")
+                            + "; CitizenVehicleNotFrozen=true");
+                    }
                 }
                 else if (!_subject.IsInVehicle() && !_footPlayerArrested
                     && !IsLivingDowned(_subject)
@@ -1239,16 +1386,25 @@ namespace LSImmersiveLife
                 return false;
             if (_stage == InteractionStage.TrafficBackupContained)
             {
-                if (_subject.CurrentVehicle != null && _subject.CurrentVehicle.Exists()
-                    && _subjectVehicle != null && _subjectVehicle.Exists()
-                    && _subject.CurrentVehicle.Handle == _subjectVehicle.Handle
+                Vehicle currentVehicle = null;
+                try { currentVehicle = _subject.CurrentVehicle; }
+                catch { }
+                if (IsUsable(currentVehicle) && currentVehicle.Handle != vehicle.Handle
                     && now >= _nextBackupSubjectTask)
                 {
-                    _nextBackupSubjectTask = now.AddSeconds(5);
+                    bool stopped = Math.Abs(currentVehicle.Speed) <= 0.65f;
+                    _nextBackupSubjectTask = now.AddSeconds(stopped ? 5 : 1);
                     try
                     {
-                        Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _subjectVehicle, true);
-                        Function.Call(Hash.TASK_LEAVE_VEHICLE, _subject, _subjectVehicle, 0);
+                        if (stopped)
+                        {
+                            HoldTrafficSubject(currentVehicle);
+                            Function.Call(Hash.TASK_LEAVE_VEHICLE,
+                                _subject, currentVehicle, 0);
+                        }
+                        else
+                            Function.Call(Hash.SET_VEHICLE_BRAKE,
+                                currentVehicle, true);
                     }
                     catch (Exception ex) { _log.Exception("NPC_BACKUP_TRAFFIC_SUBJECT_EXIT_FAILED", ex); }
                 }
@@ -2113,7 +2269,14 @@ namespace LSImmersiveLife
 
             DateTime now = DateTime.UtcNow;
 
-            MaintainSubjectInjury(_subject, now, player);
+            SuppressTrafficContactVehicleControls(player);
+
+            // Keep frame-scoped melee suppression ahead of the active Citizen
+            // injury sample. A hit from the interaction frame must not be
+            // observed before this owner masks the conflicting input.
+            bool deferInjurySampleUntilCitizenInputMask = HasActiveInteraction;
+            if (!deferInjurySampleUntilCitizenInputMask)
+                MaintainSubjectInjury(_subject, now, player);
             MaintainDeferredDeadSubject(player, now);
 
             // Once Backup owns a loaded prisoner, the player-facing contact
@@ -2122,6 +2285,8 @@ namespace LSImmersiveLife
             // scan reclaim that subject as a new ambient contact.
             if (_backupBackgroundTransport)
             {
+                if (deferInjurySampleUntilCitizenInputMask)
+                    MaintainSubjectInjury(_subject, now, player);
                 ApplyLocalTrafficCaution(player, now, false, false);
                 MaintainCollisionGuards(player, now);
                 ResetKeyStates();
@@ -2134,6 +2299,8 @@ namespace LSImmersiveLife
             // de-escalation before Patrol or between active incidents.
             if (!isPatrolling)
             {
+                if (deferInjurySampleUntilCitizenInputMask)
+                    MaintainSubjectInjury(_subject, now, player);
                 if (HasActiveInteraction)
                 {
                     ReleaseSubject(true);
@@ -2229,6 +2396,10 @@ namespace LSImmersiveLife
                     player.IsAiming || player.IsShooting);
             else if (citizenInputConsumed)
                 LSPDPlayerControlSuppression.SuppressMeleeThisFrame();
+
+            if (HasActiveInteraction)
+                MaintainSubjectInjury(_subject, now, player);
+
             if (_settings.InteractionsEnabled && allowGameplayInput && HasActiveInteraction
                 && secureKeyPressed && !beganContactThisFrame && CanArrestCitizen)
                 BeginFootPlayerArrest(player, now);
@@ -2361,7 +2532,8 @@ namespace LSImmersiveLife
 
             bool footHandoff = _subjectVehicle == null
                 || (IsBackupInterceptionInvestigationActive
-                    && !_subject.IsInVehicle());
+                    && !_subject.IsInVehicle())
+                || IsTrafficOnFootInterceptionInvestigationActive;
             Ped handoffPlayer = Game.Player.Character;
             if (footHandoff && !IsCitizenDocumentHandoffReady(
                     handoffPlayer, _subject))
@@ -2370,7 +2542,9 @@ namespace LSImmersiveLife
                 return "Move within arm's reach before requesting the citizen document handoff.";
             }
 
-            if (IsBackupInterceptionInvestigationActive)
+            bool backupInvestigation = IsBackupInterceptionInvestigationActive;
+            bool trafficInvestigation = IsTrafficOnFootInterceptionInvestigationActive;
+            if (backupInvestigation || trafficInvestigation)
             {
                 DateTime investigationNow = DateTime.UtcNow;
                 _documentsProvided = false;
@@ -2382,15 +2556,22 @@ namespace LSImmersiveLife
                 ReportCitizenDocumentRequestAudio();
                 BeginPendingAnimation(PendingAnimation.Documents,
                     DocumentPresentationMilliseconds, investigationNow);
-                _log.Runtime("NPC_BACKUP_INTERCEPTION_DOCUMENT_REQUESTED",
+                _log.Runtime(backupInvestigation
+                        ? "NPC_BACKUP_INTERCEPTION_DOCUMENT_REQUESTED"
+                        : "NPC_TRAFFIC_INTERCEPTION_DOCUMENT_REQUESTED",
                     "Ped=" + _subject.Handle
                     + "; SubjectType=" + (_subjectVehicle == null ? "SuspiciousFoot" : "Traffic")
                     + "; Vehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
-                    + "; IdentityPreserved=" + (_currentRecord != null));
-                Notify(_subjectVehicle == null
-                    ? "Rechecking the contained citizen's documents. Wait for the physical handoff before requesting Dispatcher validation."
-                    : "Rechecking the stopped driver's documents. Wait for the physical handoff before requesting Dispatcher validation.");
-                return "Citizen document handoff started after Backup interception.";
+                    + "; IdentityPreserved=" + (_currentRecord != null)
+                    + "; BackupAssigned=" + _backupRequested);
+                Notify(backupInvestigation
+                    ? (_subjectVehicle == null
+                        ? "Rechecking the contained citizen's documents. Wait for the physical handoff before requesting Dispatcher validation."
+                        : "Rechecking the stopped driver's documents. Wait for the physical handoff before requesting Dispatcher validation.")
+                    : "Rechecking the same fleeing Citizen's documents after containment. Wait for the physical handoff before requesting Dispatcher validation.");
+                return backupInvestigation
+                    ? "Citizen document handoff started after Backup interception."
+                    : "Citizen document handoff started after flight containment.";
             }
 
             if (IsUsable(_subjectVehicle))
@@ -2884,6 +3065,24 @@ namespace LSImmersiveLife
             _subject = driver;
             CaptureSubjectInjuryState(driver);
             _subjectVehicle = vehicle;
+            _trafficContactVehiclePosition = vehicle.Position;
+            _trafficContactPlayerPosition = player.Position;
+            _trafficStopConfirmedPosition = Vector3.Zero;
+            _trafficPullOverFallbackTarget = false;
+            _trafficStopConfirmedAtTarget = false;
+            _trafficPursuitVehicle = null;
+            _trafficPursuitStage = TrafficPursuitStage.None;
+            _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+            _trafficSubjectLostSince = DateTime.MinValue;
+            _nextTrafficBackupPursuitSampleAt = DateTime.MinValue;
+            _nextTrafficPursuitExitAt = DateTime.MinValue;
+            _trafficPursuitExitAttempts = 0;
+            _trafficPursuitExitFailureNotified = false;
+            _trafficPlayerAimStartedAt = DateTime.MinValue;
+            _trafficPlayerAimSubjectHandle = 0;
+            _trafficPlayerAimCheckFailureLogged = false;
+            _trafficDriverWindowGeometry = default(TrafficDriverWindowGeometry);
+            _trafficDirectFallbackLogged = false;
             BeginInteractionAudioOccurrence(driver);
             _currentRecord = null;
             _dispatcherValidationReceived = false;
@@ -2966,16 +3165,45 @@ namespace LSImmersiveLife
                 || !IsDriver(_subject, _subjectVehicle))
                 return false;
 
+            _stage = InteractionStage.TrafficPullingOver;
+            _pullOverDeadline = now.AddSeconds(_settings.PullOverTimeoutSeconds);
+            _pullOverRecoveryIssued = false;
+
+            // A real stop beside the officer/contact area is already the
+            // requested pull-over. Do not make that driver move to a generated
+            // road node merely to satisfy an invisible coordinate gate.
+            if (Math.Abs(_subjectVehicle.Speed) <= 0.45f
+                && IsTrafficVehicleNearContactArea(_subjectVehicle))
+            {
+                _trafficPullOverPosition = _subjectVehicle.Position;
+                _trafficPullOverFallbackTarget = true;
+                _trafficStoppedSince = now;
+                _log.Runtime("NPC_TRAFFIC_PULL_OVER_EXISTING_STOP",
+                    "Driver=" + _subject.Handle + "; Vehicle=" + _subjectVehicle.Handle
+                    + "; StopBasis=ExistingContactArea; TaskIssued=false");
+                return true;
+            }
+
             Vector3 roadside;
             try
             {
-                if (!TryGetValidatedPullOverPosition(out roadside))
-                    return false;
-
-                _stage = InteractionStage.TrafficPullingOver;
-                _trafficPullOverPosition = roadside;
-                _pullOverDeadline = now.AddSeconds(_settings.PullOverTimeoutSeconds);
-                _pullOverRecoveryIssued = false;
+                if (TryGetValidatedPullOverPosition(out roadside))
+                    _trafficPullOverPosition = roadside;
+                else
+                {
+                    // Street-node lookup is a parking guide, not a Citizen
+                    // eligibility test. Keep the same contact and make one
+                    // bounded stop request at the selected vehicle's current
+                    // position when no local node can be resolved.
+                    roadside = _subjectVehicle.Position;
+                    if (!HasFiniteComponents(roadside))
+                        return false;
+                    _trafficPullOverPosition = roadside;
+                    _trafficPullOverFallbackTarget = true;
+                    _log.Runtime("NPC_TRAFFIC_PULL_OVER_TARGET_FALLBACK",
+                        "Driver=" + _subject.Handle + "; Vehicle=" + _subjectVehicle.Handle
+                        + "; Target=SelectedVehiclePosition; ContactPreserved=true");
+                }
                 IssueTrafficPullOverTask(now);
                 return true;
             }
@@ -3076,6 +3304,33 @@ namespace LSImmersiveLife
             return false;
         }
 
+        private bool IsTrafficVehicleNearContactArea(Vehicle vehicle)
+        {
+            if (!IsUsable(vehicle))
+                return false;
+
+            Vector3 vehiclePosition;
+            try { vehiclePosition = vehicle.Position; }
+            catch { return false; }
+            if (!HasFiniteComponents(vehiclePosition))
+                return false;
+
+            if (IsNearTrafficContactAnchor(vehiclePosition, _trafficContactVehiclePosition)
+                || IsNearTrafficContactAnchor(vehiclePosition, _trafficContactPlayerPosition))
+                return true;
+
+            Ped player = Game.Player == null ? null : Game.Player.Character;
+            return IsUsable(player)
+                && IsNearTrafficContactAnchor(vehiclePosition, player.Position);
+        }
+
+        private static bool IsNearTrafficContactAnchor(Vector3 position, Vector3 anchor)
+        {
+            return HasFiniteComponents(position) && HasFiniteComponents(anchor)
+                && HorizontalDistance(position, anchor) <= TrafficPullOverContactAreaRadius
+                && Math.Abs(position.Z - anchor.Z) <= TrafficPullOverContactAreaElevation;
+        }
+
         private static bool TryAcceptPullOverCandidate(
             Vector3 origin,
             Vector3 candidate,
@@ -3098,48 +3353,568 @@ namespace LSImmersiveLife
             if (!IsUsable(player) || !IsUsable(_subjectVehicle) || !IsUsable(_subject))
                 return false;
 
-            Vector3 windowPosition;
-            try
-            {
-                if (_subjectVehicle.Bones != null
-                    && _subjectVehicle.Bones.Contains("door_dside_f"))
-                {
-                    EntityBone driverDoor = _subjectVehicle.Bones["door_dside_f"];
-                    if (driverDoor != null && driverDoor.IsValid)
-                    {
-                        windowPosition = driverDoor.Position;
-                        return player.Position.DistanceTo(windowPosition)
-                            <= TrafficDriverWindowContactRadius;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Exception("NPC_TRAFFIC_DRIVER_WINDOW_QUERY_FAILED", ex);
-            }
+            DateTime now = DateTime.UtcNow;
+            if (player.IsInVehicle() || !IsSelectedTrafficDriverStillSeated())
+                return false;
 
-            // Addon vehicles do not always expose the standard driver-door
-            // bone. The local left-side offset is the bounded compatibility
-            // fallback for those models.
-            try
+            if (EnsureTrafficDriverWindowGeometry(now))
             {
-                windowPosition = _subjectVehicle.GetOffsetPosition(
-                    new Vector3(-1.35f, 0.2f, 0.65f));
-                if (IsFiniteWorldPosition(windowPosition)
-                    && player.Position.DistanceTo(windowPosition)
-                        <= TrafficDriverWindowContactRadius)
+                TrafficDriverWindowGeometry geometry = _trafficDriverWindowGeometry;
+                Vector3 playerPosition = player.Position;
+                float horizontalToDoor = HorizontalDistance(
+                    playerPosition, geometry.WindowPosition);
+                float horizontalToGroundAnchor = HorizontalDistance(
+                    playerPosition, geometry.OfficerGroundPosition);
+                float playerGroundDifference = Math.Abs(
+                    playerPosition.Z - geometry.OfficerGroundPosition.Z);
+                float playerWindowDifference = Math.Abs(
+                    playerPosition.Z - geometry.WindowPosition.Z);
+
+                // Ground and safe-position probes improve the anchor, but the
+                // selected driver/window and direct driver-side relationship
+                // remain authoritative when either optional probe is absent.
+                if (horizontalToDoor <= TrafficWindowContactRadius
+                    && horizontalToGroundAnchor <= TrafficWindowGroundContactRadius + 1.0f
+                    && playerGroundDifference <= TrafficWindowGroundElevationTolerance + 1.0f
+                    && playerWindowDifference <= geometry.MaximumWindowSeparation)
                     return true;
             }
-            catch (Exception ex)
+
+            // Last-resort contact uses only the already selected seated Driver,
+            // vehicle transform, and Player position. It performs no model,
+            // bone, ground, or safe-position lookup and cannot accept the
+            // passenger side or a Player across the road.
+            bool directFallback = IsPlayerAtDirectTrafficDriverSide(
+                player, _subjectVehicle, _subject, TrafficWindowContactRadius, true);
+            if (directFallback && !_trafficDirectFallbackLogged)
             {
-                _log.Exception("NPC_TRAFFIC_DRIVER_WINDOW_FALLBACK_FAILED", ex);
+                _trafficDirectFallbackLogged = true;
+                if (_log != null)
+                    _log.Runtime("NPC_TRAFFIC_DRIVER_WINDOW_DIRECT_FALLBACK",
+                        "Driver=" + _subject.Handle + "; Vehicle=" + _subjectVehicle.Handle
+                        + "; Source=SelectedDriverAndVehicleTransform; ContactPreserved=true");
+            }
+            return directFallback;
+        }
+
+        private bool EnsureTrafficDriverWindowGeometry(DateTime now)
+        {
+            if (!IsUsable(_subjectVehicle) || !IsUsable(_subject)
+                || !IsDriver(_subject, _subjectVehicle))
+                return false;
+
+            Vehicle vehicle = _subjectVehicle;
+            TrafficDriverWindowGeometry geometry = _trafficDriverWindowGeometry;
+            bool vehicleChanged = geometry.VehicleHandle != vehicle.Handle;
+            bool vehicleMoved = !vehicleChanged
+                && geometry.VehiclePosition.DistanceTo(vehicle.Position)
+                    > TrafficWindowGeometryMoveInvalidation;
+            bool vehicleTurned = !vehicleChanged
+                && GetHeadingDifference(geometry.VehicleHeading, vehicle.Heading)
+                    > TrafficWindowGeometryHeadingInvalidation;
+            bool retryFailedResolution = !geometry.Resolved
+                && !vehicleChanged && !vehicleMoved && !vehicleTurned
+                && (geometry.LastAttemptAt == DateTime.MinValue
+                    || now >= geometry.LastAttemptAt.AddMilliseconds(
+                        TrafficWindowGeometryRetryMilliseconds));
+
+            if (!vehicleChanged && !vehicleMoved && !vehicleTurned
+                && !retryFailedResolution)
+                return geometry.Resolved;
+
+            if (vehicleChanged || vehicleMoved || vehicleTurned)
+                _trafficDirectFallbackLogged = false;
+
+            geometry = new TrafficDriverWindowGeometry
+            {
+                VehicleHandle = vehicle.Handle,
+                VehiclePosition = vehicle.Position,
+                VehicleHeading = vehicle.Heading,
+                LastAttemptAt = now
+            };
+
+            string geometrySource;
+            float vehicleHeight;
+            Vector3 windowPosition;
+            Vector3 officerGroundPosition;
+            float maximumWindowSeparation;
+            if (!TryResolveTrafficDriverWindowGeometry(
+                vehicle,
+                _subject,
+                out windowPosition,
+                out officerGroundPosition,
+                out maximumWindowSeparation,
+                out vehicleHeight,
+                out geometrySource))
+            {
+                _trafficDriverWindowGeometry = geometry;
+                return false;
             }
 
-            // Keep the existing close-driver tolerance for unusual custom
-            // models whose door geometry is unavailable, but do not accept a
-            // front-bumper interaction when the driver-side point is known.
-            return player.Position.DistanceTo(_subject.Position)
-                <= TrafficWindowContactRadius;
+            geometry.WindowPosition = windowPosition;
+            geometry.OfficerGroundPosition = officerGroundPosition;
+            geometry.MaximumWindowSeparation = maximumWindowSeparation;
+            geometry.Resolved = true;
+            _trafficDriverWindowGeometry = geometry;
+            _trafficDirectFallbackLogged = false;
+            if (_log != null)
+            {
+                _log.Runtime("NPC_TRAFFIC_DRIVER_WINDOW_GEOMETRY_RESOLVED",
+                    "Driver=" + _subject.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Source=" + geometrySource
+                    + "; WindowElevation=" + Math.Abs(
+                        windowPosition.Z - officerGroundPosition.Z).ToString("0.0"));
+                if (Math.Abs(windowPosition.Z - officerGroundPosition.Z) > 2.25f)
+                    _log.Runtime("NPC_TRAFFIC_ELEVATED_CONTACT_ANCHOR_RESOLVED",
+                        "Driver=" + _subject.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Source=" + geometrySource
+                        + "; ModelHeight=" + vehicleHeight.ToString("0.0"));
+            }
+            return true;
+        }
+
+        private bool TryResolveTrafficDriverWindowGeometry(
+            Vehicle vehicle,
+            Ped driver,
+            out Vector3 windowPosition,
+            out Vector3 officerGroundPosition,
+            out float maximumWindowSeparation,
+            out float vehicleHeight,
+            out string geometrySource)
+        {
+            windowPosition = Vector3.Zero;
+            officerGroundPosition = Vector3.Zero;
+            maximumWindowSeparation = 0f;
+            vehicleHeight = 0f;
+            geometrySource = string.Empty;
+
+            try
+            {
+                if (!IsUsable(vehicle) || !IsUsable(driver)
+                    || !IsDriver(driver, vehicle))
+                    return false;
+
+                Vector3 right;
+                Vector3 forward;
+                Vector3 up;
+                if (!TryGetTrafficVehicleAxes(vehicle, out right, out forward, out up))
+                    return false;
+
+                Vector3 vehiclePosition = vehicle.Position;
+                Vector3 seatRelative = driver.Position - vehiclePosition;
+                Vector3 driverLocal = new Vector3(
+                    DotProduct(seatRelative, right),
+                    DotProduct(seatRelative, forward),
+                    DotProduct(seatRelative, up));
+                if (!HasFiniteComponents(driverLocal))
+                    return false;
+
+                float driverSide = Math.Abs(driverLocal.X) >= 0.20f
+                    ? (driverLocal.X < 0f ? -1f : 1f)
+                    : -1f;
+                Vector3 doorLocal = Vector3.Zero;
+                Vector3 doorWorld = Vector3.Zero;
+                bool doorBoneFound = false;
+
+                // Prefer the model's actual driver door before asking for
+                // dimensions. A valid door is sufficient for the window point;
+                // dimension lookup belongs only to the transform fallback.
+                try
+                {
+                    if (vehicle.Bones != null
+                        && vehicle.Bones.Contains("door_dside_f"))
+                    {
+                        EntityBone driverDoor = vehicle.Bones["door_dside_f"];
+                        if (driverDoor != null && driverDoor.IsValid)
+                        {
+                            Vector3 candidateDoorWorld = driverDoor.Position;
+                            Vector3 doorRelative = candidateDoorWorld - vehicle.Position;
+                            Vector3 candidate = new Vector3(
+                                DotProduct(doorRelative, right),
+                                DotProduct(doorRelative, forward),
+                                DotProduct(doorRelative, up));
+                            bool onDriverSide = HasFiniteComponents(candidate)
+                                && Math.Abs(candidate.X) >= 0.25f
+                                && (Math.Abs(driverLocal.X) < 0.20f
+                                    || Math.Sign(candidate.X) == Math.Sign(driverSide));
+                            bool boundedDoor = Math.Abs(candidate.X) <= 4.5f
+                                && Math.Abs(candidate.Y) <= 14.0f
+                                && Math.Abs(candidate.Z) <= 8.0f;
+                            if (HasFiniteComponents(candidate)
+                                && boundedDoor && onDriverSide
+                                && HasFiniteComponents(candidateDoorWorld))
+                            {
+                                doorLocal = candidate;
+                                doorWorld = candidateDoorWorld;
+                                driverSide = candidate.X < 0f ? -1f : 1f;
+                                doorBoneFound = true;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // A missing or invalid optional bone falls through to the
+                    // bounded transform/seat estimate below.
+                }
+
+                Vector3 modelMinimum = new Vector3(-1.0f, -2.2f, -0.5f);
+                Vector3 modelMaximum = new Vector3(1.0f, 2.2f, 2.5f);
+                bool dimensionsAvailable = false;
+                float width = 2.0f;
+                float length = 4.4f;
+                float minX = -1.0f;
+                float maxX = 1.0f;
+                float minY = -2.2f;
+                float maxY = 2.2f;
+                float minZ = -0.5f;
+                float maxZ = 2.5f;
+                vehicleHeight = 3.0f;
+
+                if (!doorBoneFound)
+                {
+                    try
+                    {
+                        Vector3 candidateMinimum;
+                        Vector3 candidateMaximum;
+                        vehicle.Model.GetDimensions(out candidateMinimum, out candidateMaximum);
+                        float candidateWidth = candidateMaximum.X - candidateMinimum.X;
+                        float candidateLength = candidateMaximum.Y - candidateMinimum.Y;
+                        float candidateHeight = candidateMaximum.Z - candidateMinimum.Z;
+                        if (HasFiniteComponents(candidateMinimum)
+                            && HasFiniteComponents(candidateMaximum)
+                            && candidateWidth > 0.4f && candidateLength > 0.8f
+                            && candidateHeight > 0.6f)
+                        {
+                            modelMinimum = candidateMinimum;
+                            modelMaximum = candidateMaximum;
+                            dimensionsAvailable = true;
+                        }
+                    }
+                    catch
+                    {
+                        // Some addon/streaming models do not expose dimensions.
+                        // The selected seated Driver and transform remain usable.
+                    }
+
+                    if (dimensionsAvailable)
+                    {
+                        float rawWidth = modelMaximum.X - modelMinimum.X;
+                        float rawLength = modelMaximum.Y - modelMinimum.Y;
+                        float rawHeight = modelMaximum.Z - modelMinimum.Z;
+                        width = ClampTrafficGeometry(rawWidth, 1.4f, 6.0f);
+                        length = ClampTrafficGeometry(rawLength, 2.2f, 24.0f);
+                        vehicleHeight = ClampTrafficGeometry(rawHeight, 1.2f, 7.0f);
+                        minX = ClampTrafficGeometry(modelMinimum.X, -3.5f, 3.5f);
+                        maxX = ClampTrafficGeometry(modelMaximum.X, -3.5f, 3.5f);
+                        minY = ClampTrafficGeometry(modelMinimum.Y, -12.0f, 12.0f);
+                        maxY = ClampTrafficGeometry(modelMaximum.Y, -12.0f, 12.0f);
+                        minZ = ClampTrafficGeometry(modelMinimum.Z, -1.5f, 4.0f);
+                        maxZ = ClampTrafficGeometry(modelMaximum.Z, 0.5f, 7.0f);
+                        if (maxX <= minX || maxY <= minY || maxZ <= minZ + 0.8f)
+                        {
+                            minX = -1.0f;
+                            maxX = 1.0f;
+                            minY = -2.2f;
+                            maxY = 2.2f;
+                            minZ = -0.5f;
+                            maxZ = 2.5f;
+                            width = 2.0f;
+                            length = 4.4f;
+                            vehicleHeight = 3.0f;
+                            dimensionsAvailable = false;
+                        }
+                    }
+
+                    float sideX = driverSide < 0f ? minX : maxX;
+                    if (Math.Abs(sideX) < 0.35f)
+                        sideX = driverSide * width * 0.5f;
+
+                    float frontStart = minY + (maxY - minY) * 0.55f;
+                    float frontEnd = maxY - Math.Min(0.25f, length * 0.03f);
+                    if (frontEnd < frontStart)
+                        frontStart = minY;
+                    float seatY = ClampTrafficGeometry(driverLocal.Y, minY, maxY);
+                    float seatZ = ClampTrafficGeometry(driverLocal.Z, minZ, maxZ);
+                    float localY = ClampTrafficGeometry(seatY, frontStart, frontEnd);
+                    float localZ = ClampTrafficGeometry(
+                        seatZ + 0.35f, minZ + 0.25f, maxZ - 0.10f);
+                    doorLocal = new Vector3(sideX, localY, localZ);
+                }
+
+                Vector3 window;
+                if (doorBoneFound)
+                    window = doorWorld + up * 0.25f;
+                else
+                {
+                    float driverSeatZ = ClampTrafficGeometry(
+                        driverLocal.Z, minZ, maxZ);
+                    float windowZ = ClampTrafficGeometry(
+                        Math.Max(driverSeatZ + 0.35f, doorLocal.Z + 0.25f),
+                        minZ + 0.55f,
+                        maxZ - 0.15f);
+                    Vector3 windowLocal = new Vector3(
+                        doorLocal.X, doorLocal.Y, windowZ);
+                    window = GetTrafficVehicleOffsetPosition(
+                        vehicle, windowLocal, vehiclePosition, right, forward, up);
+                }
+
+                if (doorBoneFound)
+                {
+                    width = ClampTrafficGeometry(
+                        Math.Abs(doorLocal.X) * 2.0f, 1.4f, 6.0f);
+                    vehicleHeight = ClampTrafficGeometry(
+                        Math.Abs(doorLocal.Z) + 1.5f, 1.8f, 7.0f);
+                }
+                float sideOffset = ClampTrafficGeometry(width * 0.12f, 0.45f, 0.90f);
+                Vector3 groundLocal = new Vector3(
+                    doorLocal.X + driverSide * sideOffset,
+                    doorLocal.Y,
+                    0f);
+                Vector3 groundProbe = GetTrafficVehicleOffsetPosition(
+                    vehicle, groundLocal, vehiclePosition, right, forward, up);
+                groundProbe.Z = vehiclePosition.Z;
+                Vector3 groundPosition = groundProbe;
+
+                // Ground and safe-ped lookups are best-effort refinements. A
+                // nearby occupied vehicle can make either native reject a
+                // perfectly usable driver-side point, so retain the bounded
+                // vehicle-transform anchor when they do.
+                try
+                {
+                    float groundHeight;
+                    Vector3 groundNormal;
+                    if (World.GetGroundHeightAndNormal(
+                        groundProbe, out groundHeight, out groundNormal)
+                        && HasFiniteComponents(groundNormal)
+                        && !float.IsNaN(groundHeight) && !float.IsInfinity(groundHeight))
+                    {
+                        groundPosition.Z = groundHeight;
+                        Vector3 groundedPoint = new Vector3(
+                            groundProbe.X, groundProbe.Y, groundHeight);
+                        Vector3 safePoint;
+                        GetSafePositionFlags safeFlags = GetSafePositionFlags.NotWater
+                            | GetSafePositionFlags.NotInterior;
+                        if (World.GetSafePositionForPed(
+                            groundedPoint, out safePoint, safeFlags)
+                            && HasFiniteComponents(safePoint)
+                            && HorizontalDistance(safePoint, groundedPoint) <= 1.75f
+                            && Math.Abs(safePoint.Z - groundHeight) <= 1.75f)
+                            groundPosition = safePoint;
+                    }
+                }
+                catch
+                {
+                    // Keep the selected vehicle's ground-level side estimate.
+                }
+
+                if (doorBoneFound && !dimensionsAvailable)
+                    vehicleHeight = ClampTrafficGeometry(
+                        Math.Max(vehicleHeight,
+                            Math.Abs(window.Z - groundPosition.Z) + 0.75f),
+                        1.8f, 7.0f);
+                maximumWindowSeparation = ClampTrafficGeometry(
+                    vehicleHeight * 0.95f + 0.5f, 2.25f, 5.5f);
+                if (!HasFiniteComponents(window) || !HasFiniteComponents(groundPosition))
+                    return false;
+
+                windowPosition = window;
+                officerGroundPosition = groundPosition;
+                geometrySource = doorBoneFound
+                    ? "DriverDoorBone"
+                    : dimensionsAvailable
+                        ? "DriverSeatAndClampedModelDimensions"
+                        : "DriverSeatTransformFallback";
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetTrafficVehicleAxes(
+            Vehicle vehicle,
+            out Vector3 right,
+            out Vector3 forward,
+            out Vector3 up)
+        {
+            right = Vector3.Zero;
+            forward = Vector3.Zero;
+            up = new Vector3(0f, 0f, 1f);
+            if (!IsUsable(vehicle))
+                return false;
+
+            bool nativeAxesValid = false;
+            try
+            {
+                right = vehicle.RightVector;
+                forward = vehicle.ForwardVector;
+                up = vehicle.UpVector;
+                nativeAxesValid = TryNormalize(ref right)
+                    && TryNormalize(ref forward);
+                if (!TryNormalize(ref up))
+                    up = new Vector3(0f, 0f, 1f);
+            }
+            catch
+            {
+                nativeAxesValid = false;
+            }
+
+            if (nativeAxesValid)
+                return true;
+
+            try
+            {
+                double radians = vehicle.Heading * Math.PI / 180.0;
+                float cosine = (float)Math.Cos(radians);
+                float sine = (float)Math.Sin(radians);
+                right = new Vector3(cosine, sine, 0f);
+                forward = new Vector3(-sine, cosine, 0f);
+                up = new Vector3(0f, 0f, 1f);
+                return TryNormalize(ref right) && TryNormalize(ref forward);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static Vector3 GetTrafficVehicleOffsetPosition(
+            Vehicle vehicle,
+            Vector3 localOffset,
+            Vector3 vehiclePosition,
+            Vector3 right,
+            Vector3 forward,
+            Vector3 up)
+        {
+            try
+            {
+                Vector3 offsetPosition = vehicle.GetOffsetPosition(localOffset);
+                if (HasFiniteComponents(offsetPosition))
+                    return offsetPosition;
+            }
+            catch
+            {
+                // Use the already resolved bounded transform below.
+            }
+
+            return vehiclePosition
+                + right * localOffset.X
+                + forward * localOffset.Y
+                + up * localOffset.Z;
+        }
+
+        private bool IsPlayerAtDirectTrafficDriverSide(
+            Ped player,
+            Vehicle vehicle,
+            Ped driver,
+            float maximumDistance,
+            bool requireGroundLevel)
+        {
+            if (!IsUsable(player) || !IsUsable(vehicle) || !IsUsable(driver)
+                || player.IsInVehicle() || !IsDriver(driver, vehicle))
+                return false;
+
+            Vector3 right;
+            Vector3 forward;
+            Vector3 up;
+            if (!TryGetTrafficVehicleAxes(vehicle, out right, out forward, out up))
+                return false;
+
+            Vector3 vehiclePosition = vehicle.Position;
+            Vector3 driverPosition = driver.Position;
+            Vector3 playerPosition = player.Position;
+            Vector3 driverRelative = driverPosition - vehiclePosition;
+            float driverSideCoordinate = DotProduct(driverRelative, right);
+            float driverSide = Math.Abs(driverSideCoordinate) >= 0.20f
+                ? (driverSideCoordinate < 0f ? -1f : 1f)
+                : -1f;
+            Vector3 officerRelative = playerPosition - driverPosition;
+            float lateralFromDriver = DotProduct(officerRelative, right) * driverSide;
+            float longitudinalFromDriver = Math.Abs(DotProduct(officerRelative, forward));
+            float horizontalFromDriver = HorizontalDistance(playerPosition, driverPosition);
+            float groundElevation = Math.Abs(playerPosition.Z - vehiclePosition.Z);
+
+            return HasFiniteComponents(playerPosition)
+                && lateralFromDriver >= -0.75f
+                && lateralFromDriver <= maximumDistance
+                && longitudinalFromDriver <= 3.75f
+                && horizontalFromDriver <= maximumDistance + 1.75f
+                && (!requireGroundLevel
+                    || groundElevation <= TrafficDriverFallbackElevationTolerance);
+        }
+
+        private void SuppressTrafficContactVehicleControls(Ped player)
+        {
+            if (!_settings.InteractionsEnabled || !HasActiveInteraction
+                || !IsUsable(player) || player.IsInVehicle()
+                || !IsUsable(_subjectVehicle) || !IsUsable(_subject)
+                || (_stage != InteractionStage.TrafficPullingOver
+                    && _stage != InteractionStage.TrafficPreparing
+                    && _stage != InteractionStage.TrafficDocuments)
+                || !IsSelectedTrafficDriverStillSeated())
+                return;
+
+            bool besideSelectedDriver = IsAtTrafficDriverWindow(player)
+                || IsPlayerAtDirectTrafficDriverSide(
+                    player, _subjectVehicle, _subject, TrafficWindowContactRadius, true);
+            if (!besideSelectedDriver)
+                return;
+
+            // These controls are masked only at this selected driver's
+            // ground-side contact point. The configured Citizen key is read
+            // separately with GetAsyncKeyState, so the request remains usable.
+            Game.DisableControlThisFrame(GTA.Control.Context);
+            Game.DisableControlThisFrame(GTA.Control.Enter);
+            Game.DisableControlThisFrame(GTA.Control.Jump);
+        }
+
+        private static float HorizontalDistance(Vector3 first, Vector3 second)
+        {
+            float x = first.X - second.X;
+            float y = first.Y - second.Y;
+            return (float)Math.Sqrt(x * x + y * y);
+        }
+
+        private static float DotProduct(Vector3 first, Vector3 second)
+        {
+            return first.X * second.X + first.Y * second.Y + first.Z * second.Z;
+        }
+
+        private static bool TryNormalize(ref Vector3 vector)
+        {
+            if (!HasFiniteComponents(vector))
+                return false;
+            float length = (float)Math.Sqrt(
+                vector.X * vector.X + vector.Y * vector.Y + vector.Z * vector.Z);
+            if (length <= 0.001f)
+                return false;
+            vector = new Vector3(
+                vector.X / length, vector.Y / length, vector.Z / length);
+            return true;
+        }
+
+        private static bool HasFiniteComponents(Vector3 value)
+        {
+            return !float.IsNaN(value.X) && !float.IsInfinity(value.X)
+                && !float.IsNaN(value.Y) && !float.IsInfinity(value.Y)
+                && !float.IsNaN(value.Z) && !float.IsInfinity(value.Z);
+        }
+
+        private static float ClampTrafficGeometry(float value, float minimum, float maximum)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value))
+                return minimum;
+            return Math.Max(minimum, Math.Min(maximum, value));
+        }
+
+        private static float GetHeadingDifference(float first, float second)
+        {
+            float difference = Math.Abs(first - second) % 360f;
+            return difference > 180f ? 360f - difference : difference;
         }
 
         private static bool IsFiniteWorldPosition(Vector3 position)
@@ -3163,15 +3938,19 @@ namespace LSImmersiveLife
 
             float distanceToRoadside = _subjectVehicle.Position.DistanceTo(_trafficPullOverPosition);
             float speed = Math.Abs(_subjectVehicle.Speed);
-            bool atSelectedRoadside = distanceToRoadside <= 6.0f;
+            bool atSelectedRoadside = !_trafficPullOverFallbackTarget
+                && distanceToRoadside <= 6.0f;
+            bool nearContactArea = IsTrafficVehicleNearContactArea(_subjectVehicle);
             bool physicallyStopped = speed <= 0.45f;
-            if (atSelectedRoadside && physicallyStopped)
+            if ((atSelectedRoadside || nearContactArea) && physicallyStopped)
             {
                 if (_trafficStoppedSince == DateTime.MinValue)
                     _trafficStoppedSince = now;
                 else if (now - _trafficStoppedSince >= TimeSpan.FromSeconds(1.0))
                 {
                     _trafficStopConfirmed = true;
+                    _trafficStopConfirmedPosition = _subjectVehicle.Position;
+                    _trafficStopConfirmedAtTarget = atSelectedRoadside;
                     _stage = InteractionStage.TrafficPreparing;
                     _readyAt = now.AddMilliseconds(ContactPreparationMilliseconds);
                     _nextSubjectHold = DateTime.MinValue;
@@ -3180,8 +3959,10 @@ namespace LSImmersiveLife
                         "Driver=" + _subject.Handle + "; Vehicle=" + _subjectVehicle.Handle
                         + "; RoadsideDistance=" + distanceToRoadside.ToString("0.0")
                         + "; Speed=" + speed.ToString("0.00")
+                        + "; StopBasis=" + (atSelectedRoadside
+                            ? "GeneratedTarget" : "ExistingContactArea")
                         + "; SameDriver=true; ContinuousStoppedMilliseconds=1000");
-                    Notify("Driver stopped at the selected roadside position. Walk to the window to investigate.");
+                    Notify("Driver stopped near the contact area. Walk to the window to investigate.");
                     return;
                 }
             }
@@ -3375,6 +4156,13 @@ namespace LSImmersiveLife
 
             MaintainPendingAnimation(now);
 
+            if (TryCompleteTrafficPlayerAimSurrender(player, now))
+                return;
+
+            if (_backupRequested && _stage == InteractionStage.TrafficAwaitingBackup
+                && _trafficContactFled)
+                MaintainTrafficBackupPursuitTransition(player, now);
+
             bool footOrTrafficPursuit = _stage == InteractionStage.FootFleeing
                 || _stage == InteractionStage.TrafficFleeing;
             bool trafficPullingOver = _stage == InteractionStage.TrafficPullingOver;
@@ -3476,6 +4264,17 @@ namespace LSImmersiveLife
             {
                 if (_trafficComplianceExitRequested && !_backupRequested)
                     MaintainTrafficComplianceExit(now);
+                else if (_trafficPursuitStage == TrafficPursuitStage.VehicleFlight
+                    || _trafficPursuitStage == TrafficPursuitStage.OnFootFlight)
+                {
+                    // Backup owns pursuit pressure while assigned. Do not
+                    // brake or hold the selected vehicle during live flight.
+                }
+                else if (_trafficPursuitStage == TrafficPursuitStage.Contained)
+                    HoldTrafficBackupContained(player, now);
+                else if (_trafficPursuitStage == TrafficPursuitStage.VehicleStoppedAwaitingExit
+                    && IsUsable(_trafficPursuitVehicle))
+                    HoldTrafficSubject(_trafficPursuitVehicle);
                 else
                     HoldTrafficSubject();
                 return;
@@ -3659,6 +4458,7 @@ namespace LSImmersiveLife
             }
 
             DateTime now = DateTime.UtcNow;
+            EnableControlledCitizenInjury(_subject, "BackupAcceptedCustody");
             _backupCustodyOfferPresented = false;
             _stage = InteractionStage.BackupSecuring;
             _backupPhaseDeadline = now.AddSeconds(BackupPhysicalEscortTimeoutSeconds);
@@ -3742,16 +4542,23 @@ namespace LSImmersiveLife
             }
 
             bool traffic = _subjectVehicle != null;
+            bool trafficFlightContainedOnFoot = traffic
+                && _trafficContactFled
+                && _trafficPursuitStage == TrafficPursuitStage.Contained
+                && IsUsable(_subject) && !_subject.IsInVehicle();
             int subjectHandle = _subject == null ? 0 : _subject.Handle;
             ReportInteractionAudio(
                 "lsimmersivelife.police.civilian.released", "citizen-released");
-            if (traffic)
+            if (traffic && !trafficFlightContainedOnFoot)
                 ReleaseTrafficSubject();
             else
                 ReleaseFootSubjectNaturally();
             ClearInteractionState();
             _log.Runtime(traffic ? "NPC_TRAFFIC_CONTACT_RELEASED" : "NPC_FOOT_CONTACT_RELEASED", "Ped=" + subjectHandle);
-            Notify(traffic ? "Driver cleared and released naturally." : "Citizen contact completed and released naturally.");
+            Notify(trafficFlightContainedOnFoot
+                ? "The contained Citizen was accepted and released on foot."
+                : traffic ? "Driver cleared and released naturally."
+                    : "Citizen contact completed and released naturally.");
         }
 
         private void RejectInteraction(Ped player)
@@ -3807,8 +4614,16 @@ namespace LSImmersiveLife
 
             if (_subjectVehicle != null)
             {
+                bool trafficFlightContainedOnFoot = _trafficContactFled
+                    && _trafficPursuitStage == TrafficPursuitStage.Contained
+                    && IsUsable(_subject) && !_subject.IsInVehicle();
                 if (_stage == InteractionStage.TrafficRefused)
                 {
+                    if (trafficFlightContainedOnFoot)
+                    {
+                        ResumeContainedTrafficFlightOnFoot(player);
+                        return;
+                    }
                     _log.Runtime("NPC_TRAFFIC_DOCUMENT_BRANCH_CONTINUED",
                         "Driver=" + _subject.Handle
                         + "; Outcome=Flight; DecisionRerolled=false");
@@ -3906,6 +4721,7 @@ namespace LSImmersiveLife
             if (!IsUsable(_subject))
                 return;
 
+            EnableControlledCitizenInjury(_subject, "FootCompliance");
             DateTime now = DateTime.UtcNow;
             _stage = InteractionStage.FootAwaitingPlayerArrest;
             _footPlayerArrested = false;
@@ -3999,7 +4815,12 @@ namespace LSImmersiveLife
                 Notify("The compliant citizen is no longer available for arrest.");
                 return;
             }
-            if (_subjectVehicle != null && !IsSelectedTrafficDriverOutside())
+            bool trafficFlightContainedOnFoot = _subjectVehicle != null
+                && _trafficContactFled
+                && _trafficPursuitStage == TrafficPursuitStage.Contained
+                && IsUsable(_subject) && !_subject.IsInVehicle();
+            if (_subjectVehicle != null && !trafficFlightContainedOnFoot
+                && !IsSelectedTrafficDriverOutside())
             {
                 Notify("The selected driver must physically exit the original stopped vehicle before arrest.");
                 return;
@@ -4404,6 +5225,7 @@ namespace LSImmersiveLife
 
         private void BeginTrafficComplianceDriverExit(DateTime now)
         {
+            EnableControlledCitizenInjury(_subject, "TrafficCompliance");
             _stage = InteractionStage.TrafficAwaitingBackup;
             _readyAt = DateTime.MaxValue;
             _expiresAt = now.AddMinutes(6);
@@ -4522,7 +5344,12 @@ namespace LSImmersiveLife
 
         private void HoldTrafficSubject()
         {
-            if (!IsUsable(_subjectVehicle))
+            HoldTrafficSubject(_subjectVehicle);
+        }
+
+        private void HoldTrafficSubject(Vehicle vehicle)
+        {
+            if (!IsUsable(vehicle))
                 return;
             DateTime now = DateTime.UtcNow;
             if (now < _nextTrafficHoldAt)
@@ -4530,16 +5357,16 @@ namespace LSImmersiveLife
             _nextTrafficHoldAt = now.AddMilliseconds(250);
             try
             {
-                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _subjectVehicle, true);
-                Function.Call(Hash.SET_VEHICLE_BRAKE, _subjectVehicle, true);
-                if (Math.Abs(_subjectVehicle.Speed) > 0.25f
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, true);
+                Function.Call(Hash.SET_VEHICLE_BRAKE, vehicle, true);
+                if (Math.Abs(vehicle.Speed) > 0.25f
                     && now >= _nextTrafficBrakeTaskAt)
                 {
                     // A bounded brake task may slow this selected vehicle.
                     // Never write entity velocity or report a stop until the
                     // driver and vehicle satisfy the physical stop checks.
                     Function.Call(Hash.TASK_VEHICLE_TEMP_ACTION,
-                        _subject, _subjectVehicle, 27, 1200);
+                        _subject, vehicle, 27, 1200);
                     _nextTrafficBrakeTaskAt = now.AddMilliseconds(1200);
                 }
             }
@@ -4557,13 +5384,12 @@ namespace LSImmersiveLife
             {
                 SetSubjectPoliceAware(_subject);
                 Vehicle currentVehicle = _subject.CurrentVehicle;
-                if (IsUsable(currentVehicle) && IsUsable(_subjectVehicle)
-                    && currentVehicle.Handle == _subjectVehicle.Handle)
+                if (IsUsable(currentVehicle))
                 {
                     // The fleeing driver must leave the original vehicle before
-                    // the player is offered custody. Keep the stopped vehicle
-                    // held without turning the driver into a wandering ped.
-                    HoldTrafficSubject();
+                    // the player is offered custody. Preserve the actual car
+                    // the selected Citizen currently occupies.
+                    HoldTrafficSubject(currentVehicle);
                     return;
                 }
 
@@ -4643,6 +5469,14 @@ namespace LSImmersiveLife
                 DateTime now = DateTime.UtcNow;
                 ReleaseSubjectInteractionLockForMovement(driver);
                 _stage = InteractionStage.TrafficFleeing;
+                _trafficPursuitVehicle = vehicle;
+                _trafficPursuitStage = TrafficPursuitStage.VehicleFlight;
+                _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+                _trafficSubjectLostSince = DateTime.MinValue;
+                _nextTrafficBackupPursuitSampleAt = DateTime.MinValue;
+                _nextTrafficPursuitExitAt = DateTime.MinValue;
+                _trafficPursuitExitAttempts = 0;
+                _trafficPursuitExitFailureNotified = false;
                 _trafficContactFled = true;
                 _fleeStartedAt = now;
                 _lastFleeSampleAt = DateTime.MinValue;
@@ -4682,6 +5516,43 @@ namespace LSImmersiveLife
                 HoldTrafficSubject();
                 Notify("The driver could not leave and remains stopped for contact.");
             }
+        }
+
+        private void ResumeContainedTrafficFlightOnFoot(Ped player)
+        {
+            if (!IsUsable(_subject) || _subject.IsDead || _subject.Health <= 0
+                || _subject.IsInVehicle() || !IsUsable(player))
+            {
+                Notify("The contained Citizen is not available to continue the same flight branch.");
+                return;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            ReleaseSubjectInteractionLockForMovement(_subject);
+            _stage = InteractionStage.TrafficFleeing;
+            _trafficPursuitStage = TrafficPursuitStage.OnFootFlight;
+            _trafficPursuitVehicle = null;
+            _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+            _fleeStartedAt = now;
+            _lastFleeSampleAt = DateTime.MinValue;
+            _nextFleeTaskAt = now;
+            _fleeStoppedAt = DateTime.MinValue;
+            _fleeLastPosition = _subject.Position;
+            _fleeMovementConfirmed = false;
+            _fleeRecoveryIssued = false;
+            _trafficPlayerAimStartedAt = DateTime.MinValue;
+            _trafficPlayerAimSubjectHandle = 0;
+            _expiresAt = now.AddMinutes(6);
+            SetSubjectPoliceAware(_subject);
+            IssueFootFleeTask(player, now);
+            EnsureSubjectBlip("Fleeing Driver");
+            _log.Runtime("NPC_TRAFFIC_DOCUMENT_BRANCH_CONTINUED",
+                "Driver=" + _subject.Handle
+                + "; Outcome=Flight; DecisionRerolled=false"
+                + "; Mode=OnFoot; SameCitizen=true"
+                + "; RecordPreserved=" + (_currentRecord != null)
+                + "; ControlledInjuryPreserved=" + _subjectInjuries.ContainsKey(_subject.Handle));
+            Notify("The same Citizen continued the flight response on foot. Pursue until they stop or yield.");
         }
 
         private void StartTrafficResistance(Ped player)
@@ -5188,14 +6059,19 @@ namespace LSImmersiveLife
                 Math.Max(maximumBefore,
                     _injurySettings == null
                         ? 2000 : _injurySettings.ControlledMaximumHealth));
+            int managedHealth = Math.Max(1, Math.Min(
+                managedMaximum,
+                (int)Math.Round((double)healthBefore * managedMaximum / maximumBefore)));
             try
             {
                 subject.CanSufferCriticalHits = false;
                 subject.MaxHealth = managedMaximum;
-                subject.Health = managedMaximum;
+                subject.Health = managedHealth;
                 state.ManagedMaximumHealth = managedMaximum;
                 state.ControlledInjuryActive = true;
                 state.LastHealth = Math.Max(1, subject.Health);
+                state.ManagedHealthAtProtectionStart = state.LastHealth;
+                state.HasLastProcessedDamageRecord = false;
                 ClearSubjectDamageRecords(subject);
                 _log.Runtime("NPC_SUBJECT_CONTROLLED_INJURY_ENABLED",
                     "Interaction=" + state.InteractionId
@@ -5205,6 +6081,7 @@ namespace LSImmersiveLife
                     + "; MaximumBefore=" + maximumBefore
                     + "; ManagedHealth=" + state.LastHealth
                     + "; ManagedMaximum=" + state.ManagedMaximumHealth
+                    + "; StartingHealthRatioPreserved=true"
                     + "; CanSufferCriticalHits=" + subject.CanSufferCriticalHits
                     + "; CooperativeContact=false");
             }
@@ -5272,7 +6149,11 @@ namespace LSImmersiveLife
                     subject, state, currentHealth, currentMaximumHealth,
                     rawBone, damageRecordAvailable, damageKind))
                     return;
+                bool duplicateDamageEvent = IsDuplicateDamageRecord(
+                    state, damageRecordAvailable, damageWeaponHash,
+                    damageAttackerHandle, damageGameTime, rawBone);
                 SuspectHitZone hitZone = ClassifySuspectHitZone(bone);
+                SuspectHitZone rawHitZone = ClassifySuspectHitZone(rawBone);
                 bool physicalDown = false;
                 try
                 {
@@ -5283,29 +6164,51 @@ namespace LSImmersiveLife
                 bool wasDowned = state.Wounded && physicalDown;
                 ClearSubjectDamageRecords(subject);
 
-                state.DamageTaken += damage;
-                state.RegisteredHits++;
-                if (damageKind == ControlledDamageKind.Melee)
-                    state.MeleeHits++;
-                if (wasDowned)
-                    state.DownedHits++;
-                if (hitZone == SuspectHitZone.Head)
-                    state.HeadHits++;
-                else if (hitZone == SuspectHitZone.Chest)
-                    state.ChestHits++;
-                else if (hitZone == SuspectHitZone.Stomach)
-                    state.StomachHits++;
+                if (!duplicateDamageEvent)
+                {
+                    state.DamageTaken += damage;
+                    state.RegisteredHits++;
+                    if (damageKind == ControlledDamageKind.Weapon)
+                        state.WeaponHits++;
+                    if (damageKind == ControlledDamageKind.Melee)
+                        state.MeleeHits++;
+                    if (wasDowned)
+                    {
+                        state.DownedHits++;
+                        if (damageKind == ControlledDamageKind.Weapon)
+                            state.FatalDownedHits++;
+                    }
+                    if (hitZone == SuspectHitZone.Head)
+                        state.HeadHits++;
+                    else if (hitZone == SuspectHitZone.Chest)
+                        state.ChestHits++;
+                    else if (hitZone == SuspectHitZone.Stomach)
+                        state.StomachHits++;
+
+                    if (damageRecordAvailable && damageGameTime > 0)
+                    {
+                        state.HasLastProcessedDamageRecord = true;
+                        state.LastProcessedDamageWeaponHash = damageWeaponHash;
+                        state.LastProcessedDamageAttackerHandle = damageAttackerHandle;
+                        state.LastProcessedDamageGameTime = damageGameTime;
+                        state.LastProcessedDamageBone = rawBone;
+                    }
+                }
 
                 bool engineTerminal = subject.IsDead || currentHealth <= 0;
-                bool fatalHeadOrNeck = damageKind == ControlledDamageKind.Weapon
-                    && hitZone == SuspectHitZone.Head;
-                bool fatalRepeatedMelee = damageKind == ControlledDamageKind.Melee
+                bool fatalHeadOrNeck = !duplicateDamageEvent
+                    && damageKind == ControlledDamageKind.Weapon
+                    && rawHitZone == SuspectHitZone.Head;
+                bool fatalRepeatedMelee = !duplicateDamageEvent
+                    && damageKind == ControlledDamageKind.Melee
                     && state.MeleeHits >= _injurySettings.CumulativeFatalHitThreshold;
-                bool fatalCumulative = damageKind != ControlledDamageKind.Melee
-                    && state.RegisteredHits >= _injurySettings.CumulativeFatalHitThreshold;
-                bool fatalAfterDownedHits = wasDowned && state.DownedHits
-                    >= _injurySettings.RepeatedDamageAfterDownedThreshold
-                    && (damageKind != ControlledDamageKind.Melee || fatalRepeatedMelee);
+                bool fatalCumulative = !duplicateDamageEvent
+                    && damageKind == ControlledDamageKind.Weapon
+                    && state.WeaponHits >= _injurySettings.CumulativeFatalHitThreshold;
+                bool fatalAfterDownedHits = !duplicateDamageEvent && wasDowned
+                    && damageKind == ControlledDamageKind.Weapon
+                    && state.FatalDownedHits
+                    >= _injurySettings.RepeatedDamageAfterDownedThreshold;
                 state.LastDamageKind = damageKind.ToString();
                 state.Fatal = engineTerminal || fatalHeadOrNeck
                     || fatalRepeatedMelee || fatalCumulative || fatalAfterDownedHits;
@@ -5327,11 +6230,14 @@ namespace LSImmersiveLife
                     + "; DamageWeaponHash=" + damageWeaponHash
                     + "; DamageAttackerHandle=" + damageAttackerHandle
                     + "; DamageGameTime=" + damageGameTime
+                    + "; DamageEventDuplicate=" + duplicateDamageEvent
                     + "; HeadHits=" + state.HeadHits
                     + "; ChestHits=" + state.ChestHits
                     + "; StomachHits=" + state.StomachHits
                     + "; RegisteredHits=" + state.RegisteredHits
+                    + "; WeaponHits=" + state.WeaponHits
                     + "; DownedHits=" + state.DownedHits
+                    + "; FatalDownedHits=" + state.FatalDownedHits
                     + "; CumulativeDamage=" + state.DamageTaken
                     + "; WoundedBefore=" + state.Wounded
                     + "; Fatal=" + state.Fatal);
@@ -5362,7 +6268,14 @@ namespace LSImmersiveLife
                     return;
                 }
 
-                if (damageKind == ControlledDamageKind.Melee
+                if (duplicateDamageEvent)
+                {
+                    // A repeated native record cannot restart a reaction task
+                    // or count as another hit. The original event already owns
+                    // its injury response and the current health is still
+                    // reconciled below.
+                }
+                else if (damageKind == ControlledDamageKind.Melee
                     && !IsCitizenPresentationStage(_stage))
                 {
                     state.MeleeReactionPending = true;
@@ -5415,50 +6328,98 @@ namespace LSImmersiveLife
             bool damageRecordAvailable,
             ControlledDamageKind damageKind)
         {
-            if (!state.ControlledInjuryActive
-                || state.ManagedMaximumHealth <= 0
-                || currentMaximumHealth >= state.ManagedMaximumHealth
+            if (state == null || !IsUsable(subject)
                 || currentHealth <= 0 || subject.IsDead
-                || currentHealth != currentMaximumHealth
                 || rawBone != 0 || damageRecordAvailable
                 || damageKind != ControlledDamageKind.Unknown)
                 return false;
 
-            int reconciledHealth = Math.Max(1, Math.Min(
-                state.ManagedMaximumHealth,
-                (int)Math.Round((double)currentHealth
-                    * state.ManagedMaximumHealth / currentMaximumHealth)));
-            try
+            int expectedMaximumHealth = state.ControlledInjuryActive
+                ? state.ManagedMaximumHealth : state.OriginalMaximumHealth;
+            int expectedHealth = state.ControlledInjuryActive
+                ? state.ManagedHealthAtProtectionStart : state.OriginalHealth;
+            if (expectedMaximumHealth <= 0 || expectedHealth <= 0
+                || state.Wounded || state.RegisteredHits > 0
+                || state.LastHealth < expectedHealth)
+                return false;
+
+            // Recognize the observed initialization/persistence signature in
+            // either form: health returns exactly to the value captured before
+            // this Citizen branch, or both current health and maximum fall to
+            // the same lower native default. No damage bone, record, or weapon
+            // classification may accompany this correction.
+            bool returnedToCapturedHealth = currentHealth == state.OriginalHealth;
+            bool maximumAndHealthFellTogether = currentMaximumHealth < expectedMaximumHealth
+                && currentHealth == currentMaximumHealth;
+            if (!returnedToCapturedHealth && !maximumAndHealthFellTogether)
+                return false;
+
+            if (state.ControlledInjuryActive)
             {
-                subject.CanSufferCriticalHits = false;
-                subject.MaxHealth = state.ManagedMaximumHealth;
-                subject.Health = reconciledHealth;
-            }
-            catch (Exception ex)
-            {
-                _log.Exception("NPC_SUBJECT_HEALTH_RECONCILIATION_FAILED", ex);
+                int originalMaximumHealth = Math.Max(1, state.OriginalMaximumHealth);
+                int reconciledHealth = Math.Max(1, Math.Min(
+                    state.ManagedMaximumHealth,
+                    (int)Math.Round((double)state.OriginalHealth
+                        * state.ManagedMaximumHealth / originalMaximumHealth)));
+                try
+                {
+                    subject.CanSufferCriticalHits = false;
+                    if (currentMaximumHealth != state.ManagedMaximumHealth)
+                        subject.MaxHealth = state.ManagedMaximumHealth;
+                    if (currentHealth != reconciledHealth)
+                        subject.Health = reconciledHealth;
+                }
+                catch (Exception ex)
+                {
+                    _log.Exception("NPC_SUBJECT_HEALTH_RECONCILIATION_FAILED", ex);
+                }
             }
 
             int observedMaximum = Math.Max(1, subject.MaxHealth);
             int observedHealth = Math.Max(1, subject.Health);
             state.LastHealth = observedHealth;
             ClearSubjectDamageRecords(subject);
+            state.HasLastProcessedDamageRecord = false;
             if (!state.HealthReconciliationLogged)
             {
                 state.HealthReconciliationLogged = true;
-                _log.Runtime("NPC_SUBJECT_HEALTH_RECONCILED",
+                _log.Runtime(state.ControlledInjuryActive
+                        ? "NPC_SUBJECT_HEALTH_RESET_RECONCILED"
+                        : "NPC_SUBJECT_HEALTH_RESET_IGNORED",
                     "Interaction=" + state.InteractionId
                     + "; RuntimeOwner=Citizen; Ped=" + subject.Handle
                     + "; HealthBeforeReset=" + currentHealth
                     + "; MaximumBeforeReset=" + currentMaximumHealth
+                    + "; ExpectedMaximum=" + expectedMaximumHealth
                     + "; ManagedMaximum=" + state.ManagedMaximumHealth
                     + "; HealthAfter=" + observedHealth
                     + "; MaximumAfter=" + observedMaximum
                     + "; Bone=0; DamageRecordAvailable=false"
                     + "; DamageKind=Unknown; DamageDeltaNotClassifiedAsInjury=true"
-                    + "; Reconciled=" + (observedMaximum >= state.ManagedMaximumHealth));
+                    + "; ControlledHealthWritten=" + state.ControlledInjuryActive
+                    + "; ContactContinues=true; ArrestAuthorized=false"
+                    + "; Reconciled=" + (!state.ControlledInjuryActive
+                        || observedMaximum >= state.ManagedMaximumHealth));
             }
             return true;
+        }
+
+        private static bool IsDuplicateDamageRecord(
+            SubjectInjuryState state,
+            bool damageRecordAvailable,
+            int weaponHash,
+            int attackerHandle,
+            int gameTime,
+            int rawBone)
+        {
+            return state != null
+                && damageRecordAvailable
+                && gameTime > 0
+                && state.HasLastProcessedDamageRecord
+                && state.LastProcessedDamageWeaponHash == weaponHash
+                && state.LastProcessedDamageAttackerHandle == attackerHandle
+                && state.LastProcessedDamageGameTime == gameTime
+                && state.LastProcessedDamageBone == rawBone;
         }
 
         private void InterruptCitizenPresentationForInjury(
@@ -6030,39 +6991,288 @@ namespace LSImmersiveLife
 
         private void MaintainTrafficFlee(Ped player, DateTime now)
         {
-            if (!IsUsable(_subject) || !IsUsable(_subjectVehicle) || !IsDriver(_subject, _subjectVehicle))
+            if (!IsUsable(player))
+                return;
+            if (!IsUsable(_subject))
             {
+                if (_trafficSubjectLostSince == DateTime.MinValue)
+                {
+                    _trafficSubjectLostSince = now;
+                    _log.Runtime("NPC_TRAFFIC_PURSUIT_SUBJECT_LOST_PENDING",
+                        "OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                        + "; RecoveryMilliseconds=" + TrafficSubjectLostRecoveryMilliseconds);
+                }
+                if (now < _trafficSubjectLostSince.AddMilliseconds(
+                        TrafficSubjectLostRecoveryMilliseconds))
+                    return;
+
+                _log.Runtime("NPC_TRAFFIC_PURSUIT_TERMINAL",
+                    "Reason=SelectedCitizenUnavailableAfterBoundedRecovery"
+                    + "; OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle));
                 ReleaseSubject(true);
                 ClearInteractionState();
-                Notify("Traffic pursuit ended because the driver or vehicle is unavailable.");
+                Notify("Traffic pursuit ended because the selected Citizen was lost after recovery.");
+                return;
+            }
+            _trafficSubjectLostSince = DateTime.MinValue;
+            if (_subject.IsDead || _subject.Health <= 0)
+            {
+                _trafficPursuitStage = TrafficPursuitStage.Contained;
+                _log.Runtime("NPC_TRAFFIC_PURSUIT_TERMINAL",
+                    "Reason=ConfirmedCitizenDeath; Ped=" + _subject.Handle);
+                ReleaseSubject(true);
+                ClearInteractionState();
                 return;
             }
 
-            float speed = Math.Abs(_subjectVehicle.Speed);
-            if (!_fleeMovementConfirmed && now >= _lastFleeSampleAt.AddSeconds(1))
+            if (_subject.IsInVehicle())
             {
-                float moved = _subjectVehicle.Position.DistanceTo(_fleeLastPosition);
-                _fleeLastPosition = _subjectVehicle.Position;
+                Vehicle currentVehicle = null;
+                try { currentVehicle = _subject.CurrentVehicle; }
+                catch { }
+                if (!IsUsable(currentVehicle))
+                {
+                    if (_trafficVehicleTransitionStartedAt == DateTime.MinValue)
+                    {
+                        _trafficVehicleTransitionStartedAt = now;
+                        _log.Runtime("NPC_TRAFFIC_PURSUIT_VEHICLE_TRANSITION_PENDING",
+                            "Ped=" + _subject.Handle
+                            + "; OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                            + "; RecoveryMilliseconds=" + TrafficVehicleTransitionRecoveryMilliseconds);
+                    }
+                    if (now < _trafficVehicleTransitionStartedAt.AddMilliseconds(
+                            TrafficVehicleTransitionRecoveryMilliseconds))
+                        return;
+
+                    _log.Runtime("NPC_TRAFFIC_PURSUIT_TERMINAL",
+                        "Reason=CurrentVehicleInvalidAfterBoundedRecovery"
+                        + "; Ped=" + _subject.Handle
+                        + "; OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle));
+                    ReleaseSubject(true);
+                    ClearInteractionState();
+                    Notify("Traffic pursuit ended because the Citizen's vehicle could not be recovered.");
+                    return;
+                }
+
+                _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+                TrackTrafficPursuitVehicle(currentVehicle, now);
+                MaintainTrafficVehicleFlee(player, currentVehicle, now);
+                return;
+            }
+
+            _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+            if (_trafficPursuitStage == TrafficPursuitStage.VehicleFlight
+                || _trafficPursuitStage == TrafficPursuitStage.VehicleStoppedAwaitingExit)
+                BeginTrafficOnFootPursuit(player, now);
+            if (_trafficPursuitStage == TrafficPursuitStage.OnFootFlight)
+                MaintainTrafficOnFootFlee(player, now);
+        }
+
+        private void TrackTrafficPursuitVehicle(Vehicle currentVehicle, DateTime now)
+        {
+            if (!IsUsable(currentVehicle))
+                return;
+
+            int previousHandle = IsUsable(_trafficPursuitVehicle)
+                ? _trafficPursuitVehicle.Handle : 0;
+            bool vehicleChanged = previousHandle != currentVehicle.Handle;
+            bool reenteredOriginal = vehicleChanged && IsUsable(_subjectVehicle)
+                && currentVehicle.Handle == _subjectVehicle.Handle;
+            bool resumedFromFoot = _trafficPursuitStage == TrafficPursuitStage.OnFootFlight;
+            bool resumedAfterStop = _trafficPursuitStage
+                == TrafficPursuitStage.VehicleStoppedAwaitingExit;
+
+            _trafficPursuitVehicle = currentVehicle;
+            _trafficPursuitStage = TrafficPursuitStage.VehicleFlight;
+            if (vehicleChanged || resumedFromFoot || resumedAfterStop)
+            {
+                _fleeLastPosition = currentVehicle.Position;
+                _lastFleeSampleAt = DateTime.MinValue;
+                _fleeStoppedAt = DateTime.MinValue;
+                _trafficPursuitExitAttempts = 0;
+                _trafficPursuitExitFailureNotified = false;
+                _nextTrafficPursuitExitAt = DateTime.MinValue;
+                _fleeStartedAt = now;
+                _fleeMovementConfirmed = true;
+                _fleeRecoveryIssued = false;
+                if (vehicleChanged)
+                    _log.Runtime("NPC_TRAFFIC_PURSUIT_VEHICLE_CHANGED",
+                        "Ped=" + _subject.Handle
+                        + "; PreviousVehicle=" + previousHandle
+                        + "; CurrentVehicle=" + currentVehicle.Handle
+                        + "; OriginalContactVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                        + "; ReenteredOriginal=" + reenteredOriginal
+                        + "; SameCitizen=true; DecisionLocked=" + _citizenDocumentDecisionResolved);
+            }
+        }
+
+        private void BeginTrafficOnFootPursuit(Ped player, DateTime now)
+        {
+            TrafficPursuitStage previousStage = _trafficPursuitStage;
+            InteractionStage previousInteractionStage = _stage;
+            bool backupEnRoute = _backupRequested
+                && previousInteractionStage != InteractionStage.TrafficBackupContained;
+            bool backupAtScene = _backupRequested
+                && previousInteractionStage == InteractionStage.TrafficBackupContained;
+            int previousVehicle = IsUsable(_trafficPursuitVehicle)
+                ? _trafficPursuitVehicle.Handle
+                : (IsUsable(_subjectVehicle) ? _subjectVehicle.Handle : 0);
+            _trafficPursuitVehicle = null;
+            _nextTrafficPursuitExitAt = DateTime.MinValue;
+            _trafficPursuitStage = previousStage
+                == TrafficPursuitStage.VehicleStoppedAwaitingExit
+                ? TrafficPursuitStage.Contained
+                : TrafficPursuitStage.OnFootFlight;
+            _fleeLastPosition = _subject.Position;
+            _lastFleeSampleAt = now;
+            _fleeStoppedAt = DateTime.MinValue;
+            _fleeStartedAt = now;
+            _fleeMovementConfirmed = false;
+            _fleeRecoveryIssued = false;
+            if (_trafficPursuitStage == TrafficPursuitStage.Contained)
+            {
+                SetSubjectPoliceAware(_subject);
+                if (!IsLivingDowned(_subject) && !IsLivingInWrithe(_subject))
+                    _subject.Task.HandsUp(_backupRequested ? 30000 : 20000);
+                if (backupAtScene)
+                    _stage = InteractionStage.TrafficBackupContained;
+                else if (backupEnRoute)
+                    _stage = InteractionStage.TrafficAwaitingBackup;
+                else
+                    _stage = InteractionStage.TrafficRefused;
+                _documentsProvided = false;
+                _dispatcherValidationReceived = false;
+                _citizenRecordReviewed = false;
+                CitizenRecordVisible = false;
+                _log.Runtime("NPC_TRAFFIC_PURSUIT_CONTAINED",
+                    "Ped=" + _subject.Handle
+                    + "; OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                    + "; StoppedVehicle=" + previousVehicle
+                    + "; SameCitizen=true; RecordPreserved=" + (_currentRecord != null)
+                    + "; DecisionLocked=" + _citizenDocumentDecisionResolved
+                    + "; BackupAssigned=" + _backupRequested);
+                Notify(_backupRequested
+                    ? "The fleeing driver exited after the vehicle stopped and is contained for Backup."
+                    : "The fleeing driver exited after stopping. The same Citizen remains in contact for document revalidation.");
+                return;
+            }
+
+            _stage = backupAtScene
+                ? InteractionStage.TrafficBackupContained
+                : backupEnRoute ? InteractionStage.TrafficAwaitingBackup
+                    : InteractionStage.TrafficFleeing;
+            SetSubjectPoliceAware(_subject);
+            if (!backupAtScene)
+                IssueFootFleeTask(player, now);
+            _log.Runtime("NPC_TRAFFIC_PURSUIT_CHANGED_TO_FOOT",
+                "Ped=" + _subject.Handle
+                + "; OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                + "; PreviousVehicle=" + previousVehicle
+                + "; PreviousInteractionStage=" + previousInteractionStage
+                + "; NewInteractionStage=" + _stage
+                + "; SameCitizen=true; RecordPreserved=" + (_currentRecord != null)
+                + "; DecisionLocked=" + _citizenDocumentDecisionResolved
+                + "; InjuryTracked=" + _subjectInjuries.ContainsKey(_subject.Handle)
+                + "; BackupAssigned=" + _backupRequested);
+            if (!backupAtScene)
+                Notify("The same fleeing Citizen left the vehicle. Continue the on-foot pursuit; the contact and selected record remain active.");
+        }
+
+        private void MaintainTrafficBackupPursuitTransition(Ped player, DateTime now)
+        {
+            if (!_backupRequested || !_trafficContactFled || !IsUsable(_subject)
+                || now < _nextTrafficBackupPursuitSampleAt)
+                return;
+            _nextTrafficBackupPursuitSampleAt = now.AddMilliseconds(
+                TrafficBackupPursuitSampleMilliseconds);
+
+            bool isInVehicle;
+            try { isInVehicle = _subject.IsInVehicle(); }
+            catch { return; }
+
+            if (isInVehicle)
+            {
+                Vehicle currentVehicle = null;
+                try { currentVehicle = _subject.CurrentVehicle; }
+                catch { }
+                if (!IsUsable(currentVehicle))
+                {
+                    if (_trafficVehicleTransitionStartedAt == DateTime.MinValue)
+                    {
+                        _trafficVehicleTransitionStartedAt = now;
+                        _log.Runtime("NPC_TRAFFIC_BACKUP_VEHICLE_STATE_PENDING",
+                            "Ped=" + _subject.Handle
+                            + "; CurrentVehicleAvailable=false; ContactPreserved=true");
+                    }
+                    return;
+                }
+
+                _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+                if (_trafficPursuitStage == TrafficPursuitStage.OnFootFlight
+                    || _trafficPursuitStage == TrafficPursuitStage.VehicleFlight
+                    || _trafficPursuitStage == TrafficPursuitStage.VehicleStoppedAwaitingExit)
+                {
+                    bool wasStopped = _trafficPursuitStage
+                        == TrafficPursuitStage.VehicleStoppedAwaitingExit;
+                    bool vehicleChanged = !IsUsable(_trafficPursuitVehicle)
+                        || _trafficPursuitVehicle.Handle != currentVehicle.Handle;
+                    bool vehicleResumed = wasStopped
+                        && Math.Abs(currentVehicle.Speed) > 1.0f;
+                    if (_trafficPursuitStage == TrafficPursuitStage.OnFootFlight
+                        || vehicleChanged || vehicleResumed)
+                        TrackTrafficPursuitVehicle(currentVehicle, now);
+                    if (vehicleResumed)
+                        _log.Runtime("NPC_TRAFFIC_PURSUIT_VEHICLE_RESUMED",
+                            "Ped=" + _subject.Handle + "; Vehicle=" + currentVehicle.Handle
+                            + "; BackupAssigned=true; SameCitizen=true");
+                }
+                return;
+            }
+
+            _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+            if (_trafficPursuitStage == TrafficPursuitStage.VehicleFlight
+                || _trafficPursuitStage == TrafficPursuitStage.VehicleStoppedAwaitingExit)
+                BeginTrafficOnFootPursuit(player, now);
+        }
+
+        private void MaintainTrafficVehicleFlee(Ped player, Vehicle pursuitVehicle, DateTime now)
+        {
+            if (!IsUsable(_subject) || !IsUsable(pursuitVehicle))
+                return;
+            float speed = Math.Abs(pursuitVehicle.Speed);
+            if (now >= _lastFleeSampleAt.AddSeconds(1))
+            {
+                float moved = pursuitVehicle.Position.DistanceTo(_fleeLastPosition);
+                _fleeLastPosition = pursuitVehicle.Position;
                 _lastFleeSampleAt = now;
-                if (speed >= FleeMovementSpeed || moved >= FleeMovementDistance)
+                if (!_fleeMovementConfirmed
+                    && (speed >= FleeMovementSpeed || moved >= FleeMovementDistance))
                 {
                     _fleeMovementConfirmed = true;
                     _log.Runtime("NPC_TRAFFIC_FLEE_MOVEMENT_CONFIRMED",
-                        "Driver=" + _subject.Handle + "; Vehicle=" + _subjectVehicle.Handle +
-                        "; Speed=" + speed.ToString("0.0"));
+                        "Driver=" + _subject.Handle + "; Vehicle=" + pursuitVehicle.Handle
+                        + "; Speed=" + speed.ToString("0.0"));
                     ReportInteractionAudio(
                         "lsimmersivelife.police.traffic.fleeing", "traffic-flee-movement-confirmed");
                     ReportInteractionAudio(
                         "lsimmersivelife.police.traffic.pursuit", "traffic-pursuit-movement-confirmed");
-                    Notify("Traffic flee confirmed. Pursue the moving vehicle until it stops or crashes.");
+                    Notify("Traffic flee confirmed. Pursue the moving vehicle until it stops or the driver exits.");
                 }
-                if (_fleeMovementConfirmed && speed < 1.0f)
-                {
-                    if (_fleeStoppedAt == DateTime.MinValue)
-                        _fleeStoppedAt = now;
-                }
-                else
-                    _fleeStoppedAt = DateTime.MinValue;
+                _fleeStoppedAt = _fleeMovementConfirmed && speed <= 0.45f
+                    ? (_fleeStoppedAt == DateTime.MinValue ? now : _fleeStoppedAt)
+                    : DateTime.MinValue;
+            }
+
+            if (_trafficPursuitStage == TrafficPursuitStage.VehicleStoppedAwaitingExit
+                && speed > 1.0f)
+            {
+                _trafficPursuitStage = TrafficPursuitStage.VehicleFlight;
+                _fleeStoppedAt = DateTime.MinValue;
+                _trafficPursuitExitAttempts = 0;
+                _trafficPursuitExitFailureNotified = false;
+                _nextTrafficPursuitExitAt = DateTime.MinValue;
+                _log.Runtime("NPC_TRAFFIC_PURSUIT_VEHICLE_RESUMED",
+                    "Ped=" + _subject.Handle + "; Vehicle=" + pursuitVehicle.Handle);
             }
 
             if (!_fleeMovementConfirmed && now >= _nextFleeTaskAt)
@@ -6074,12 +7284,19 @@ namespace LSImmersiveLife
                 }
                 if (now >= _fleeStartedAt.AddSeconds(_settings.TrafficTaskRecoverySeconds + 4))
                 {
-                    _recentlyReleasedVehicles.Remove(_subjectVehicle.Handle);
                     SetSubjectPoliceAware(_subject);
-                    _stage = InteractionStage.TrafficRefused;
-                    HoldTrafficSubject();
-                    _log.Runtime("NPC_TRAFFIC_FLEE_NOT_CONFIRMED", "Driver=" + _subject.Handle + "; Vehicle=" + _subjectVehicle.Handle);
-                    Notify("Driver did not get away and remains stopped for Police contact.");
+                    if (_trafficPursuitStage != TrafficPursuitStage.VehicleStoppedAwaitingExit)
+                    {
+                        _trafficPursuitStage = TrafficPursuitStage.VehicleStoppedAwaitingExit;
+                        _fleeStoppedAt = now;
+                        _log.Runtime("NPC_TRAFFIC_FLEE_NOT_CONFIRMED",
+                            "Driver=" + _subject.Handle + "; Vehicle=" + pursuitVehicle.Handle
+                            + "; ContactPreserved=true");
+                        Notify("The driver did not get away. The stopped Citizen contact remains available.");
+                    }
+                    if (_backupRequested)
+                        _stage = InteractionStage.TrafficAwaitingBackup;
+                    RequestStoppedTrafficDriverExit(pursuitVehicle, now);
                 }
                 return;
             }
@@ -6087,26 +7304,235 @@ namespace LSImmersiveLife
             if (_fleeMovementConfirmed && _fleeStoppedAt != DateTime.MinValue
                 && now >= _fleeStoppedAt.AddSeconds(2))
             {
-                _recentlyReleasedVehicles.Remove(_subjectVehicle.Handle);
-                ReportInteractionAudio(
-                    "lsimmersivelife.police.traffic.vehicle_stopped", "traffic-pursuit-stop-confirmed");
+                bool stopConfirmedNow = _trafficPursuitStage
+                    != TrafficPursuitStage.VehicleStoppedAwaitingExit;
+                if (stopConfirmedNow)
+                {
+                    _trafficPursuitStage = TrafficPursuitStage.VehicleStoppedAwaitingExit;
+                    _nextTrafficPursuitExitAt = DateTime.MinValue;
+                    _trafficPursuitExitAttempts = 0;
+                    _trafficPursuitExitFailureNotified = false;
+                    _log.Runtime("NPC_TRAFFIC_PURSUIT_VEHICLE_STOP_CONFIRMED",
+                        "Ped=" + _subject.Handle + "; Vehicle=" + pursuitVehicle.Handle
+                        + "; SameCitizen=true; BackupAssigned=" + _backupRequested);
+                    ReportInteractionAudio(
+                        "lsimmersivelife.police.traffic.vehicle_stopped",
+                        "traffic-pursuit-stop-confirmed");
+                }
                 if (_backupRequested)
                 {
                     _stage = InteractionStage.TrafficAwaitingBackup;
                     SetSubjectPoliceAware(_subject);
-                    HoldTrafficSubject();
-                    _log.Runtime("NPC_TRAFFIC_FLEE_CONTAINED", "Driver=" + _subject.Handle);
-                    Notify("The fleeing vehicle stopped. Backup is continuing to the tracked driver.");
+                    HoldTrafficSubject(pursuitVehicle);
+                    if (stopConfirmedNow)
+                        Notify("The fleeing vehicle stopped. Backup is continuing to the same tracked Citizen.");
+                    return;
                 }
-                else
+                RequestStoppedTrafficDriverExit(pursuitVehicle, now);
+            }
+        }
+
+        private void RequestStoppedTrafficDriverExit(Vehicle pursuitVehicle, DateTime now)
+        {
+            if (!IsUsable(_subject) || !IsUsable(pursuitVehicle)
+                || !_subject.IsInVehicle())
+                return;
+            try
+            {
+                HoldTrafficSubject(pursuitVehicle);
+                if (_trafficPursuitExitAttempts < TrafficPursuitExitMaximumAttempts
+                    && now >= _nextTrafficPursuitExitAt)
                 {
-                    int handle = _subject.Handle;
-                    ReleaseSubject(true);
-                    ClearInteractionState();
-                    _log.Runtime("NPC_TRAFFIC_FLEE_STOPPED", "Driver=" + handle);
-                    Notify("The fleeing vehicle stopped. Reopen NPC interaction to investigate the driver.");
+                    Function.Call(Hash.TASK_LEAVE_VEHICLE,
+                        _subject, pursuitVehicle, 0);
+                    _trafficPursuitExitAttempts++;
+                    _nextTrafficPursuitExitAt = now.AddMilliseconds(
+                        TrafficPursuitExitRetryMilliseconds);
+                    _log.Runtime("NPC_TRAFFIC_PURSUIT_DRIVER_EXIT_REQUESTED",
+                        "Ped=" + _subject.Handle + "; Vehicle=" + pursuitVehicle.Handle
+                        + "; Attempt=" + _trafficPursuitExitAttempts
+                        + "; SameCitizen=true");
+                    return;
+                }
+                if (_trafficPursuitExitAttempts >= TrafficPursuitExitMaximumAttempts
+                    && !_trafficPursuitExitFailureNotified)
+                {
+                    _trafficPursuitExitFailureNotified = true;
+                    _log.Runtime("NPC_TRAFFIC_PURSUIT_DRIVER_EXIT_PENDING",
+                        "Ped=" + _subject.Handle + "; Vehicle=" + pursuitVehicle.Handle
+                        + "; Attempts=" + _trafficPursuitExitAttempts
+                        + "; ContactPreserved=true");
+                    Notify("The vehicle is stopped, but the driver has not exited. The same Citizen remains selected; reposition or continue the stop.");
                 }
             }
+            catch (Exception ex)
+            {
+                _log.Exception("NPC_TRAFFIC_PURSUIT_DRIVER_EXIT_FAILED", ex);
+            }
+        }
+
+        private void MaintainTrafficOnFootFlee(Ped player, DateTime now)
+        {
+            if (!IsUsable(_subject) || !IsUsable(player) || _subject.IsInVehicle())
+                return;
+            if (now >= _lastFleeSampleAt.AddSeconds(1))
+            {
+                float moved = _subject.Position.DistanceTo(_fleeLastPosition);
+                _fleeLastPosition = _subject.Position;
+                _lastFleeSampleAt = now;
+                if (!_fleeMovementConfirmed && moved >= 1.5f)
+                {
+                    _fleeMovementConfirmed = true;
+                    _log.Runtime("NPC_TRAFFIC_FOOT_FLEE_MOVEMENT_CONFIRMED",
+                        "Ped=" + _subject.Handle + "; SameCitizen=true");
+                }
+                _fleeStoppedAt = _fleeMovementConfirmed && moved < 0.35f
+                    ? (_fleeStoppedAt == DateTime.MinValue ? now : _fleeStoppedAt)
+                    : DateTime.MinValue;
+            }
+
+            if (!_fleeMovementConfirmed
+                && now >= _fleeStartedAt.AddSeconds(_settings.TrafficTaskRecoverySeconds + 4))
+            {
+                if (_backupRequested)
+                {
+                    if (now >= _nextFleeTaskAt)
+                    {
+                        IssueFootFleeTask(player, now);
+                        _nextFleeTaskAt = now.AddSeconds(2);
+                    }
+                    return;
+                }
+                EnterTrafficPursuitContainment("NaturalStop");
+                return;
+            }
+
+            if (_fleeMovementConfirmed && _fleeStoppedAt != DateTime.MinValue
+                && now >= _fleeStoppedAt.AddSeconds(2))
+            {
+                if (_backupRequested)
+                {
+                    if (now >= _nextFleeTaskAt)
+                    {
+                        IssueFootFleeTask(player, now);
+                        _nextFleeTaskAt = now.AddSeconds(2);
+                    }
+                    _fleeStoppedAt = now;
+                    return;
+                }
+                EnterTrafficPursuitContainment("NaturalStop");
+            }
+        }
+
+        private bool TryCompleteTrafficPlayerAimSurrender(Ped player, DateTime now)
+        {
+            bool eligible = _trafficContactFled
+                && _trafficPursuitStage == TrafficPursuitStage.OnFootFlight
+                && (_stage == InteractionStage.TrafficFleeing
+                    || _stage == InteractionStage.TrafficAwaitingBackup)
+                && IsUsable(_subject) && !_subject.IsDead && _subject.Health > 0
+                && IsUsable(player)
+                && !_subject.IsInVehicle()
+                && _trafficVehicleTransitionStartedAt == DateTime.MinValue
+                && player.Position.DistanceTo(_subject.Position)
+                    <= TrafficAimSurrenderMaximumDistance;
+            if (!eligible)
+            {
+                _trafficPlayerAimStartedAt = DateTime.MinValue;
+                _trafficPlayerAimSubjectHandle = 0;
+                return false;
+            }
+
+            bool enteringVehicle;
+            bool activeAttack;
+            bool aimingAtSubject;
+            try
+            {
+                enteringVehicle = Function.Call<bool>(
+                    Hash.IS_PED_GETTING_INTO_A_VEHICLE, _subject);
+                activeAttack = _subject.IsShooting || _subject.IsInCombatAgainst(player);
+                aimingAtSubject = Function.Call<bool>(
+                    Hash.IS_PLAYER_FREE_AIMING_AT_ENTITY,
+                    Game.Player.Handle,
+                    _subject);
+            }
+            catch (Exception ex)
+            {
+                _trafficPlayerAimStartedAt = DateTime.MinValue;
+                _trafficPlayerAimSubjectHandle = 0;
+                if (!_trafficPlayerAimCheckFailureLogged)
+                {
+                    _trafficPlayerAimCheckFailureLogged = true;
+                    _log.Exception("NPC_TRAFFIC_PLAYER_AIM_SURRENDER_CHECK_FAILED", ex);
+                }
+                return false;
+            }
+
+            // A Citizen still entering a vehicle or actively attacking remains
+            // in its existing flight/aggression branch. Aim must be sustained
+            // after the selected driver is physically on foot and nonattacking.
+            if (enteringVehicle || activeAttack || !aimingAtSubject)
+            {
+                _trafficPlayerAimStartedAt = DateTime.MinValue;
+                _trafficPlayerAimSubjectHandle = 0;
+                return false;
+            }
+
+            if (_trafficPlayerAimSubjectHandle != _subject.Handle
+                || _trafficPlayerAimStartedAt == DateTime.MinValue)
+            {
+                _trafficPlayerAimSubjectHandle = _subject.Handle;
+                _trafficPlayerAimStartedAt = now;
+                return false;
+            }
+
+            int holdMilliseconds = LSConfig.Clamp(
+                _settings.GunpointSurrenderHoldMilliseconds, 500, 5000);
+            if (now < _trafficPlayerAimStartedAt.AddMilliseconds(holdMilliseconds))
+                return false;
+
+            int subjectHandle = _subject.Handle;
+            EnterTrafficPursuitContainment("PlayerSustainedAim");
+            if (_trafficPursuitStage != TrafficPursuitStage.Contained)
+                return false;
+
+            _log.Runtime("NPC_TRAFFIC_PURSUIT_PLAYER_GUNPOINT_SURRENDER",
+                "Ped=" + subjectHandle
+                + "; Player=" + player.Handle
+                + "; AimHoldMilliseconds=" + holdMilliseconds
+                + "; Distance=" + player.Position.DistanceTo(_subject.Position).ToString("0.0")
+                + "; ActiveAttack=false; SameCitizen=true"
+                + "; RecordPreserved=" + (_currentRecord != null)
+                + "; BackupAssigned=" + _backupRequested);
+            _trafficPlayerAimStartedAt = DateTime.MinValue;
+            _trafficPlayerAimSubjectHandle = 0;
+            return true;
+        }
+
+        private void EnterTrafficPursuitContainment(string reason)
+        {
+            if (!IsUsable(_subject) || _subject.IsDead
+                || _trafficPursuitStage == TrafficPursuitStage.Contained)
+                return;
+            _trafficPursuitStage = TrafficPursuitStage.Contained;
+            _stage = InteractionStage.TrafficRefused;
+            SetSubjectPoliceAware(_subject);
+            if (!IsLivingDowned(_subject) && !IsLivingInWrithe(_subject))
+                _subject.Task.HandsUp(20000);
+            _documentsProvided = false;
+            _dispatcherValidationReceived = false;
+            _citizenRecordReviewed = false;
+            CitizenRecordVisible = false;
+            _log.Runtime("NPC_TRAFFIC_PURSUIT_CONTAINED",
+                "Ped=" + _subject.Handle
+                + "; OriginalVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                + "; SameCitizen=true; RecordPreserved=" + (_currentRecord != null)
+                + "; DecisionLocked=" + _citizenDocumentDecisionResolved
+                + "; BackupAssigned=" + _backupRequested
+                + "; Reason=" + (reason ?? "Unknown"));
+            Notify(_backupRequested
+                ? "The same fleeing Citizen yielded on foot. Backup remains assigned; continue the documented validation and response."
+                : "The same fleeing Citizen stopped on foot and is contained. Continue the documented validation and response.");
         }
 
         private void MaintainTrafficResistance(Ped player, DateTime now)
@@ -6271,25 +7697,39 @@ namespace LSImmersiveLife
 
         private void IssueTrafficFleeTask(Ped player, DateTime now, float speed)
         {
-            if (!IsUsable(_subject) || !IsUsable(_subjectVehicle) || !IsUsable(player))
+            if (!IsUsable(_subject) || !IsUsable(player))
+                return;
+            Vehicle pursuitVehicle = IsUsable(_trafficPursuitVehicle)
+                ? _trafficPursuitVehicle : _subjectVehicle;
+            if (IsUsable(_subject) && _subject.IsInVehicle())
+            {
+                try
+                {
+                    Vehicle current = _subject.CurrentVehicle;
+                    if (IsUsable(current))
+                        pursuitVehicle = current;
+                }
+                catch { }
+            }
+            if (!IsUsable(pursuitVehicle))
                 return;
             try
             {
-                Vector3 destination = FindRoadDestinationAwayFrom(_subjectVehicle.Position, player.Position, 90.0f);
-                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, _subjectVehicle, false);
-                _subjectVehicle.Speed = Math.Max(4.0f, Math.Abs(_subjectVehicle.Speed));
+                Vector3 destination = FindRoadDestinationAwayFrom(pursuitVehicle.Position, player.Position, 90.0f);
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, pursuitVehicle, false);
+                pursuitVehicle.Speed = Math.Max(4.0f, Math.Abs(pursuitVehicle.Speed));
                 _subject.Task.ClearAll();
                 Function.Call(Hash.SET_DRIVER_ABILITY, _subject, 1.0f);
                 Function.Call(Hash.SET_DRIVER_AGGRESSIVENESS, _subject, 0.75f);
                 Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
-                    _subject, _subjectVehicle,
+                    _subject, pursuitVehicle,
                     destination.X, destination.Y, destination.Z,
                     speed, TrafficDrivingStyle, 8.0f);
                 ObserveDeveloperTask(
                     "TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE",
                     _subject.Handle,
                     player.Handle,
-                    _subjectVehicle.Handle,
+                    pursuitVehicle.Handle,
                     "TrafficFlee");
             }
             catch (Exception ex)
@@ -7543,7 +8983,10 @@ namespace LSImmersiveLife
                     && !_subject.IsInVehicle()
                     && (_subjectVehicle == null
                         || (IsBackupInterceptionInvestigationActive
-                            && _stage == InteractionStage.TrafficBackupContained));
+                            && _stage == InteractionStage.TrafficBackupContained)
+                        || IsTrafficOnFootInterceptionInvestigationActive);
+                bool seatedTrafficDocumentPresentation = requested == PendingAnimation.Documents
+                    && IsSelectedTrafficDriverStillSeated();
                 int taskDurationMilliseconds = loopingPose || citizenInteraction
                     ? -1 : _pendingAnimationDuration;
                 float playbackDuration = 0f;
@@ -7664,7 +9107,18 @@ namespace LSImmersiveLife
                     }
 
                     int flags = loopingPose ? 1 : citizenInteraction ? 49 : 0;
-                    _subject.Task.ClearAll();
+                    if (seatedTrafficDocumentPresentation)
+                    {
+                        // Preserve the selected driver's seat/vehicle task.
+                        // The Citizen presents the existing document gesture
+                        // while the officer remains grounded beside the cab.
+                        Function.Call(Hash.CLEAR_PED_SECONDARY_TASK, _subject);
+                        Ped inspectingOfficer = Game.Player.Character;
+                        if (IsUsable(inspectingOfficer) && !inspectingOfficer.IsInVehicle())
+                            inspectingOfficer.Task.LookAt(_subject, 1800);
+                    }
+                    else
+                        _subject.Task.ClearAll();
                     if (!LSImmersiveDictionaryAnimation.TryPlay(
                         _subject,
                         dictionary,
@@ -7704,7 +9158,9 @@ namespace LSImmersiveLife
                     + "; PlaybackRate=1.0"
                     + "; TaskDurationMs=" + taskDurationMilliseconds
                     + "; Playback=" + (twoActorFootDocumentHandoff
-                        ? "ActorLocalUpperBodyPair" : "CitizenOnlyTask")
+                        ? "ActorLocalUpperBodyPair"
+                        : seatedTrafficDocumentPresentation
+                            ? "SeatedDriverPresentation" : "CitizenOnlyTask")
                     + "; PlayerAnimation=" + (playerPed != null)
                     + "; Scene=" + (sceneId < 0 ? "none" : sceneId.ToString())
                     + (playerPed == null ? string.Empty
@@ -7715,7 +9171,9 @@ namespace LSImmersiveLife
                     _documentsProvided = false;
                     Notify(twoActorFootDocumentHandoff
                         ? "Grounded document exchange started. Waiting for both actors to complete the handoff."
-                        : "Citizen document gesture started. Waiting for the physical exchange to play.");
+                        : seatedTrafficDocumentPresentation
+                            ? "The driver remains seated and presents identification for the officer to inspect."
+                            : "Citizen document gesture started. Waiting for the physical exchange to play.");
                 }
                 else if (requested == PendingAnimation.CompliantKneel)
                     Notify("Citizen is kneeling with hands visible and awaiting the physical arrest.");
@@ -8188,6 +9646,22 @@ namespace LSImmersiveLife
             _nextBackupSubjectTask = DateTime.MinValue;
             _fleeLastPosition = Vector3.Zero;
             _trafficPullOverPosition = Vector3.Zero;
+            _trafficContactVehiclePosition = Vector3.Zero;
+            _trafficContactPlayerPosition = Vector3.Zero;
+            _trafficStopConfirmedPosition = Vector3.Zero;
+            _trafficDriverWindowGeometry = default(TrafficDriverWindowGeometry);
+            _trafficDirectFallbackLogged = false;
+            _trafficPursuitVehicle = null;
+            _trafficPursuitStage = TrafficPursuitStage.None;
+            _trafficVehicleTransitionStartedAt = DateTime.MinValue;
+            _trafficSubjectLostSince = DateTime.MinValue;
+            _nextTrafficBackupPursuitSampleAt = DateTime.MinValue;
+            _nextTrafficPursuitExitAt = DateTime.MinValue;
+            _trafficPursuitExitAttempts = 0;
+            _trafficPursuitExitFailureNotified = false;
+            _trafficPlayerAimStartedAt = DateTime.MinValue;
+            _trafficPlayerAimSubjectHandle = 0;
+            _trafficPlayerAimCheckFailureLogged = false;
             _interactionAnchor = Vector3.Zero;
             _footStationDestination = Vector3.Zero;
             _trafficStationDestination = Vector3.Zero;
@@ -8200,7 +9674,9 @@ namespace LSImmersiveLife
             _suspiciousFootContact = false;
             _suspiciousTrafficContact = false;
             _pullOverRecoveryIssued = false;
+            _trafficPullOverFallbackTarget = false;
             _trafficStopConfirmed = false;
+            _trafficStopConfirmedAtTarget = false;
             _trafficComplianceExitRequested = false;
             _trafficDriverExitConfirmed = false;
             _trafficDriverExitAttempts = 0;
@@ -8571,10 +10047,17 @@ namespace LSImmersiveLife
 
         private bool IsTrafficStopAtSelectedRoadside()
         {
-            return _trafficStopConfirmed
-                && IsUsable(_subjectVehicle)
-                && _subjectVehicle.Position.DistanceTo(_trafficPullOverPosition) <= 6.0f
-                && Math.Abs(_subjectVehicle.Speed) <= 0.75f;
+            if (!_trafficStopConfirmed || !IsUsable(_subjectVehicle)
+                || !IsSelectedTrafficDriverStillSeated()
+                || Math.Abs(_subjectVehicle.Speed) > 0.75f)
+                return false;
+
+            bool nearConfirmedStop = HasFiniteComponents(_trafficStopConfirmedPosition)
+                && _subjectVehicle.Position.DistanceTo(_trafficStopConfirmedPosition)
+                    <= TrafficStopPositionDriftRadius;
+            bool hasValidStopBasis = _trafficStopConfirmedAtTarget
+                || IsTrafficVehicleNearContactArea(_subjectVehicle);
+            return nearConfirmedStop && hasValidStopBasis;
         }
 
         private bool IsSelectedTrafficDriverOutside()

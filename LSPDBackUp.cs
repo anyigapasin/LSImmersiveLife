@@ -65,17 +65,15 @@ namespace LSImmersiveLife
         private const int DispatchArrestCombatCheckMilliseconds = 150;
         private const int DispatchInteriorAccessTimeoutSeconds = 75;
         private const int DispatchInteriorAccessMaximumDoorRetries = 3;
-        private const float NpcVehicleBlockMinimumForward = 8f;
-        private const float NpcVehicleBlockMaximumForward = 65f;
-        private const float NpcVehicleBlockLateralTolerance = 20f;
-        private const float NpcVehicleBlockMaximumDistance = 75f;
         private const float NpcFootInterceptionVehicleDistance = 45f;
         private const float NpcCustodyTransportStagingDistance = 16f;
         private const float NpcCustodyTransportMaximumSceneDistance = 28f;
         private const float NpcCustodyTransportMinimumSceneDistance = 7f;
         private const int NpcVehicleStopSettleMilliseconds = 1200;
-        private const int NpcVehicleBrakeTaskMilliseconds = 1800;
         private const int NpcVehicleInterceptionLogMilliseconds = 5000;
+        private const int NpcVehicleInterceptionRouteRefreshMilliseconds = 3000;
+        private const int NpcVehicleInterceptionRouteFailureLimit = 3;
+        private const float NpcVehicleContainmentRadius = 32f;
         private const int NpcBackgroundDepartureSeconds = RouteStallTimeoutSeconds;
         private const float NpcBackgroundDepartureMinimumDistance = 28f;
 
@@ -146,7 +144,6 @@ namespace LSImmersiveLife
         private DateTime _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
         private bool _npcFootInterceptionCommitted;
         private DateTime _npcVehicleStoppedAt = DateTime.MinValue;
-        private DateTime _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
         private bool _npcVehicleContainmentReported;
         private bool _npcVehiclePursuitStartedLogged;
         private bool _npcContainmentAimLogged;
@@ -225,6 +222,15 @@ namespace LSImmersiveLife
             internal bool NpcVehiclePursuitActive;
             internal bool VehiclePursuitLead;
             internal bool VehiclePursuitBlocker;
+            internal bool NpcPursuitRolesInitialized;
+            internal int NpcPursuitTargetHandle;
+            internal int NpcPursuitVehicleHandle;
+            internal DateTime NextNpcBlockerRouteAt = DateTime.MinValue;
+            internal int NpcBlockerRouteFailures;
+            internal bool NpcBlockerFallbackToTrail;
+            internal bool NpcBlockerRouteAttempted;
+            internal Vector3 NpcBlockerLastProgressPosition = Vector3.Zero;
+            internal bool NpcPursuitDriverTaskCleared;
             internal bool VehicleContainmentStopRequested;
             internal bool DispatchGroupSceneSupport;
             internal bool DispatchGroupSceneExitRequested;
@@ -592,7 +598,6 @@ namespace LSImmersiveLife
             _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
             _npcFootInterceptionCommitted = false;
             _npcVehicleStoppedAt = DateTime.MinValue;
-            _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
             _npcVehicleContainmentReported = false;
             _npcVehiclePursuitStartedLogged = false;
             _npcContainmentAimLogged = false;
@@ -1164,7 +1169,6 @@ namespace LSImmersiveLife
             _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
             _npcFootInterceptionCommitted = false;
             _npcVehicleStoppedAt = DateTime.MinValue;
-            _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
             _npcVehicleContainmentReported = false;
             _npcVehiclePursuitStartedLogged = false;
             _npcContainmentAimLogged = false;
@@ -1285,7 +1289,7 @@ namespace LSImmersiveLife
                 ? _incident.CurrentVehiclePursuitTargets.ToList()
                 : new List<Ped>();
             bool npcPursuit = _npcResponse != null && _npcResponse.HasBackupAssignment
-                && _npcTargetWasFleeing;
+                && _npcTargetWasFleeing && !_npcCustodyTransportRequested;
             bool movingPursuit = dispatchPursuit || npcPursuit;
             Ped movingTarget = dispatchPursuit
                 ? currentDispatchPursuitTarget
@@ -1293,8 +1297,9 @@ namespace LSImmersiveLife
             Vehicle movingTargetVehicle = dispatchPursuit
                 ? ResolvePursuitVehicle(_incident, movingTarget)
                 : npcPursuit
-                    ? ResolvePursuitVehicle(movingTarget, _npcResponse.ActiveSubjectVehicle)
+                    ? ResolvePursuitVehicle(movingTarget, _npcResponse.ActivePursuitVehicle)
                     : null;
+            bool npcVehiclePursuit = npcPursuit && movingTargetVehicle != null;
             List<Ped> dispatchFootTargets = dispatchPursuit
                 ? ActiveFootPursuitTargets(null)
                 : new List<Ped>();
@@ -1316,7 +1321,11 @@ namespace LSImmersiveLife
                     "Reason=NO_VALID_INITIAL_VEHICLE_PATH_NODE");
                 return false;
             }
-            int requestedUnits = _npcResponse == null ? _settings.UnitsPerRequest : 1;
+            int requestedUnits = _npcResponse == null
+                ? _settings.UnitsPerRequest
+                : npcVehiclePursuit
+                    ? Math.Min(2, Math.Max(1, _settings.UnitsPerRequest))
+                    : 1;
             if (_gangResponse != null)
                 requestedUnits = Math.Min(3, Math.Max(2, _settings.UnitsPerRequest));
             List<DispatchPursuitAssignment> dispatchPursuitPlan =
@@ -1362,6 +1371,10 @@ namespace LSImmersiveLife
                 dispatchPursuitPlan = new List<DispatchPursuitAssignment>();
             for (int index = 0; index < requestedUnits; index++)
             {
+                if (npcVehiclePursuit && index == 1
+                    && !_units.Any(IsUsable))
+                    break;
+
                 Ped unitPursuitTarget = movingTarget;
                 Vehicle unitPursuitVehicle = movingTargetVehicle;
                 int pursuitSlotIndex = index;
@@ -1552,9 +1565,21 @@ namespace LSImmersiveLife
                         Vehicle = vehicle,
                         Driver = driver,
                         VehiclePursuitBlocker = unitPursuitVehicle != null
-                            && pursuitSlotIndex == 0,
+                            && (dispatchAssignment != null
+                                ? pursuitSlotIndex == 0
+                                : npcVehiclePursuit && index == 1),
                         VehiclePursuitLead = unitPursuitVehicle != null
-                            && pursuitSlotIndex == 1,
+                            && (dispatchAssignment != null
+                                ? pursuitSlotIndex == 1
+                                : npcVehiclePursuit && index == 0),
+                        NpcPursuitRolesInitialized = npcVehiclePursuit,
+                        NpcPursuitTargetHandle = npcVehiclePursuit
+                            && unitPursuitTarget != null ? unitPursuitTarget.Handle : 0,
+                        NpcPursuitVehicleHandle = npcVehiclePursuit
+                            ? unitPursuitVehicle.Handle : 0,
+                        NextNpcBlockerRouteAt = DateTime.MinValue,
+                        NpcBlockerRouteFailures = 0,
+                        NpcBlockerFallbackToTrail = false,
                         DispatchGroupSceneSupport = dispatchGroupSceneSupport,
                         DispatchGroupSceneSupportTargetHandle = 0,
                         DispatchFootPursuitSuspectHandle = dispatchPursuit
@@ -1607,24 +1632,50 @@ namespace LSImmersiveLife
                     if (movingPursuit && !dispatchGroupSceneSupport
                         && unitPursuitTarget != null)
                     {
-                        Vector3 targetRoad = ResolveInterceptionRoadPosition(
-                            unitPursuitTarget, unitPursuitVehicle);
-                        if (targetRoad != Vector3.Zero)
-                            unitDestination = targetRoad;
-                        else if (pursuitSlotIndex > 0)
+                        if (npcVehiclePursuit)
                         {
-                            Vector3 chaseRoad;
-                            float chaseHeading;
-                            if (TryGetNearbyVehicleRoadNode(
-                                unitPursuitTarget.Position,
-                                unitPursuitTarget.Position,
-                                45f,
-                                out chaseRoad,
-                                out chaseHeading))
-                                unitDestination = chaseRoad;
+                            Vector3 pursuitRoad;
+                            float pursuitHeading;
+                            if (TryResolveDispatchVehiclePursuitRoadNode(
+                                unitPursuitTarget,
+                                unitPursuitVehicle,
+                                unit.VehiclePursuitBlocker,
+                                out pursuitRoad,
+                                out pursuitHeading))
+                                unitDestination = pursuitRoad;
+                            else
+                                // The safe spawn staging point is already on a
+                                // validated vehicle node. Keep that finite
+                                // target while the live-pursuit owner retries
+                                // ahead-node resolution at its bounded cadence.
+                                unitDestination = spawn;
+                        }
+                        else
+                        {
+                            Vector3 targetRoad = ResolveInterceptionRoadPosition(
+                                unitPursuitTarget, unitPursuitVehicle);
+                            if (targetRoad != Vector3.Zero)
+                                unitDestination = targetRoad;
+                            else if (pursuitSlotIndex > 0)
+                            {
+                                Vector3 chaseRoad;
+                                float chaseHeading;
+                                if (TryGetNearbyVehicleRoadNode(
+                                    unitPursuitTarget.Position,
+                                    unitPursuitTarget.Position,
+                                    45f,
+                                    out chaseRoad,
+                                    out chaseHeading))
+                                    unitDestination = chaseRoad;
+                            }
                         }
                     }
                     unit.Destination = unitDestination;
+                    if (npcVehiclePursuit && unit.VehiclePursuitBlocker)
+                    {
+                        unit.NpcBlockerRouteAttempted = unitDestination != Vector3.Zero;
+                        unit.NpcBlockerLastProgressPosition = vehicle.Position;
+                    }
                     if (unitPursuitTarget != null)
                     {
                         unit.LastPursuitTargetDistance = vehicle.Position.DistanceTo(
@@ -1675,6 +1726,26 @@ namespace LSImmersiveLife
                     LogException("POLICE_BACKUP_UNIT_CREATE_FAILED", ex);
                     try { if (vehicle != null && vehicle.Exists()) vehicle.Delete(); } catch { }
                 }
+            }
+            if (npcVehiclePursuit)
+            {
+                List<BackupUnit> citizenPursuitUnits = _units
+                    .Where(IsUsable).Take(2).ToList();
+                for (int index = 0; index < citizenPursuitUnits.Count; index++)
+                {
+                    BackupUnit pursuitUnit = citizenPursuitUnits[index];
+                    pursuitUnit.NpcPursuitRolesInitialized = true;
+                    pursuitUnit.VehiclePursuitLead = index == 0;
+                    pursuitUnit.VehiclePursuitBlocker = index == 1;
+                }
+                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_ROLES_ASSIGNED",
+                    "Ped=" + (movingTarget == null ? 0 : movingTarget.Handle)
+                    + "; Lead=" + (citizenPursuitUnits.Count > 0
+                        ? citizenPursuitUnits[0].Vehicle.Handle : 0)
+                    + "; Interceptor=" + (citizenPursuitUnits.Count > 1
+                        ? citizenPursuitUnits[1].Vehicle.Handle : 0)
+                    + "; Units=" + citizenPursuitUnits.Count
+                    + "; Maximum=2");
             }
             return _units.Count > 0;
         }
@@ -2981,6 +3052,22 @@ namespace LSImmersiveLife
             if (!IsUsable(unit))
                 return false;
 
+            bool subjectIsOnFoot = !subject.IsInVehicle();
+            foreach (BackupUnit pursuitUnit in _units)
+            {
+                if (!IsUsable(pursuitUnit) || pursuitUnit == unit)
+                    continue;
+                if (subjectIsOnFoot
+                    && (pursuitUnit.NpcVehiclePursuitActive
+                        || pursuitUnit.VehicleContainmentStopRequested))
+                {
+                    pursuitUnit.NpcVehiclePursuitActive = false;
+                    HoldNpcPursuitVehicle(pursuitUnit);
+                }
+            }
+            if (subjectIsOnFoot)
+                unit.NpcVehiclePursuitActive = false;
+
             if (_npcInterventionStarted)
             {
                 // Containment has already transferred ownership to the
@@ -2992,7 +3079,7 @@ namespace LSImmersiveLife
             }
 
             Vehicle subjectVehicle = ResolvePursuitVehicle(
-                subject, npcResponse.ActiveSubjectVehicle);
+                subject, npcResponse.ActivePursuitVehicle);
             if (subjectVehicle != null && subject.IsInVehicle())
             {
                 _nextNpcFootInterceptionRouteAt = DateTime.MinValue;
@@ -3003,23 +3090,37 @@ namespace LSImmersiveLife
                 && subjectVehicle.Handle != unit.Vehicle.Handle)
             {
                 bool contained = MaintainNpcVehicleInterception(
-                    unit, subject, subjectVehicle, npcResponse, now);
+                    unit, subject, subjectVehicle, now);
                 if (!contained)
                 {
                     SetState(LSPDBackupAssignmentState.Intercepting);
                     return true;
                 }
 
-                unit.NpcVehiclePursuitActive = false;
+                BackupUnit pursuitLead;
+                BackupUnit pursuitBlocker;
+                ResolveNpcVehiclePursuitUnits(
+                    unit, out pursuitLead, out pursuitBlocker);
+                foreach (BackupUnit pursuitUnit in _units)
+                    if (IsUsable(pursuitUnit))
+                        pursuitUnit.NpcVehiclePursuitActive = false;
                 if (!_npcInterventionStarted)
                 {
+                    BackupUnit containmentUnit = ResolveNpcContainmentUnit(
+                        pursuitLead, pursuitBlocker, subject);
+                    if (!IsUsable(containmentUnit))
+                        return true;
                     if (_npcEscortOfficer == null
                         || !_npcEscortOfficer.Exists()
-                        || _npcEscortOfficer.IsDead)
+                        || _npcEscortOfficer.IsDead
+                        || !containmentUnit.Officers.Any(officer => officer != null
+                            && officer.Exists() && !officer.IsDead
+                            && officer.Handle == _npcEscortOfficer.Handle))
                     {
-                        _npcEscortOfficer = unit.Officers.FirstOrDefault(officer =>
+                        _npcEscortOfficer = containmentUnit.Officers.FirstOrDefault(officer =>
                             officer != null && officer.Exists() && !officer.IsDead
-                            && officer.Handle != unit.Driver.Handle) ?? unit.Driver;
+                            && officer.Handle != containmentUnit.Driver.Handle)
+                            ?? containmentUnit.Driver;
                     }
                     if (_npcEscortOfficer == null || !_npcEscortOfficer.Exists())
                         return true;
@@ -3029,6 +3130,8 @@ namespace LSImmersiveLife
                         + "; SubjectVehicle=" + subjectVehicle.Handle
                         + "; Officer=" + _npcEscortOfficer.Handle
                         + "; BackupVehicle=" + unit.Vehicle.Handle
+                        + "; LeadUnit=" + (pursuitLead == null ? 0 : pursuitLead.Vehicle.Handle)
+                        + "; BlockerUnit=" + (pursuitBlocker == null ? 0 : pursuitBlocker.Vehicle.Handle)
                         + "; Mode=TrafficVehicleInterception");
                     _npcInterventionStarted = npcResponse.BeginBackupIntervention(
                         _npcEscortOfficer, unit.Vehicle);
@@ -3060,185 +3163,331 @@ namespace LSImmersiveLife
             BackupUnit unit,
             Ped subject,
             Vehicle subjectVehicle,
-            LSPDNPCResponse npcResponse,
             DateTime now)
         {
             if (!IsUsable(unit) || subject == null || !subject.Exists()
-                || subjectVehicle == null || !subjectVehicle.Exists())
+                || subject.IsDead || subjectVehicle == null || !subjectVehicle.Exists())
                 return false;
 
-            if (unit.NpcVehiclePursuitActive
-                && unit.VehicleContainmentStopRequested
-                && subjectVehicle.Handle != unit.Vehicle.Handle
-                && subjectVehicle.Position.DistanceTo(unit.Vehicle.Position)
-                    > NpcVehicleBlockMaximumDistance)
+            BackupUnit lead;
+            BackupUnit blocker;
+            ResolveNpcVehiclePursuitUnits(unit, out lead, out blocker);
+            if (!IsUsable(lead))
+                return false;
+
+            var pursuingUnits = _units.Where(candidate => IsUsable(candidate)
+                && (candidate == lead || candidate == blocker
+                    || candidate.NpcBlockerFallbackToTrail)).ToList();
+            foreach (BackupUnit pursuitUnit in pursuingUnits)
             {
-                // The target moved away from a temporary containment attempt.
-                // Release the local stop and let the live pursuit resume; do
-                // not keep a handbrake/cleared-driver state on the response
-                // vehicle while the target is moving again.
-                unit.VehicleContainmentStopRequested = false;
-                _npcVehicleStoppedAt = DateTime.MinValue;
-                _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
-                try { Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, false); }
-                catch { }
+                bool targetChanged = pursuitUnit.NpcPursuitTargetHandle != subject.Handle
+                    || pursuitUnit.NpcPursuitVehicleHandle != subjectVehicle.Handle;
+                if (targetChanged)
+                {
+                    pursuitUnit.NpcPursuitTargetHandle = subject.Handle;
+                    pursuitUnit.NpcPursuitVehicleHandle = subjectVehicle.Handle;
+                    pursuitUnit.NpcBlockerRouteFailures = 0;
+                    pursuitUnit.NextNpcBlockerRouteAt = now;
+                    pursuitUnit.PursuitBlockerHolding = false;
+                    pursuitUnit.VehicleContainmentStopRequested = false;
+                    pursuitUnit.NpcBlockerRouteAttempted = false;
+                    pursuitUnit.NpcBlockerLastProgressPosition = pursuitUnit.Vehicle.Position;
+                    pursuitUnit.NpcPursuitDriverTaskCleared = false;
+                    pursuitUnit.LastDriveTaskAt = DateTime.MinValue;
+                    pursuitUnit.Destination = Vector3.Zero;
+                }
+                pursuitUnit.NpcVehiclePursuitActive = true;
             }
 
-            float directionX;
-            float directionY;
-            float targetSpeed;
-            GetMovementDirection(subjectVehicle, out directionX, out directionY, out targetSpeed);
-            Vector3 delta = unit.Vehicle.Position - subjectVehicle.Position;
-            float distance = unit.Vehicle.Position.DistanceTo(subjectVehicle.Position);
-            float forwardDistance = delta.X * directionX + delta.Y * directionY;
-            float lateralDistance = Math.Abs(delta.X * -directionY + delta.Y * directionX);
-            bool inBlockingPosition = forwardDistance >= NpcVehicleBlockMinimumForward
-                && forwardDistance <= NpcVehicleBlockMaximumForward
-                && lateralDistance <= NpcVehicleBlockLateralTolerance
-                && distance <= NpcVehicleBlockMaximumDistance;
-
-            if (!inBlockingPosition)
+            float targetSpeed = Math.Abs(subjectVehicle.Speed);
+            float leadDistance = lead.Vehicle.Position.DistanceTo(subjectVehicle.Position);
+            bool targetStopped = targetSpeed <= DispatchVehicleStoppedSpeed;
+            if (targetStopped)
             {
-                unit.NpcVehiclePursuitActive = true;
-                if (unit.VehicleContainmentStopRequested)
-                {
-                    unit.VehicleContainmentStopRequested = false;
-                    _npcVehicleStoppedAt = DateTime.MinValue;
-                    _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
-                    try
-                    {
-                        Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, false);
-                    }
-                    catch { }
-                }
-                SetEmergencySignals(unit.Vehicle, true);
+                if (_npcVehicleStoppedAt == DateTime.MinValue)
+                    _npcVehicleStoppedAt = now;
+            }
+            else
+            {
+                _npcVehicleStoppedAt = DateTime.MinValue;
+                _npcVehicleContainmentReported = false;
+                foreach (BackupUnit pursuitUnit in pursuingUnits)
+                    ReleaseNpcPursuitVehicleHold(pursuitUnit);
+            }
 
-                // This is deliberately the actual tracked vehicle, not a
-                // changing world-coordinate interception point.  Dispatch
-                // already uses this task successfully; sharing the same
-                // throttled task ownership prevents the NPC route loop and
-                // pursuit task from fighting over the Backup driver.
-                if (now >= unit.LastDriveTaskAt.AddMilliseconds(TaskRefreshMilliseconds))
+            // Unit 1 keeps live pursuit pressure. A second unit can take the
+            // cached road-ahead role; if no safe node or route progress appears
+            // after three throttled attempts it becomes another trail unit.
+            foreach (BackupUnit pursuitUnit in pursuingUnits)
+            {
+                bool aheadInterceptor = pursuitUnit == blocker
+                    && !pursuitUnit.NpcBlockerFallbackToTrail;
+                if (!aheadInterceptor)
                 {
-                    try
+                    SetEmergencySignals(pursuitUnit.Vehicle, true);
+                    if (now >= pursuitUnit.LastDriveTaskAt
+                        .AddMilliseconds(TaskRefreshMilliseconds))
                     {
-                        unit.Driver.Task.VehicleChase(subject);
-                        unit.LastDriveTaskAt = now;
-                        if (!_npcVehiclePursuitStartedLogged)
+                        try
                         {
-                            _npcVehiclePursuitStartedLogged = true;
-                            LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED",
-                                "Driver=" + subject.Handle
-                                + "; SubjectVehicle=" + subjectVehicle.Handle
-                                + "; BackupVehicle=" + unit.Vehicle.Handle
-                                + "; Distance=" + distance.ToString("0.0")
-                                + "; Mode=LiveVehicleChase");
+                            pursuitUnit.Driver.Task.VehicleChase(subject);
+                            pursuitUnit.LastDriveTaskAt = now;
+                            if (!_npcVehiclePursuitStartedLogged)
+                            {
+                                _npcVehiclePursuitStartedLogged = true;
+                                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED",
+                                    "Ped=" + subject.Handle
+                                    + "; Vehicle=" + subjectVehicle.Handle
+                                    + "; Lead=" + pursuitUnit.Vehicle.Handle
+                                    + "; Mode=LiveVehicleChase");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            LogException("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_FAILED", ex);
+                            pursuitUnit.LastDriveTaskAt = now;
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        // Keep a bounded, road-validated fallback for a
-                        // transient native failure.  It is never the normal
-                        // pursuit path and is still handled by SendTo's road
-                        // validation instead of a raw subject coordinate.
-                        LogException("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_FAILED", ex);
-                        Vector3 fallback = ResolveNpcDestination(
-                            npcResponse, Game.Player.Character);
-                        if (fallback != Vector3.Zero)
-                        {
-                            SendTo(unit, fallback, false);
-                            LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_FALLBACK",
-                                "SubjectVehicle=" + subjectVehicle.Handle
-                                + "; BackupVehicle=" + unit.Vehicle.Handle
-                                + "; RoadTarget=" + fallback);
-                        }
-                    }
+                    continue;
                 }
-                if (now >= _lastNpcVehicleInterceptionLogAt.AddMilliseconds(
+
+                SetEmergencySignals(pursuitUnit.Vehicle,
+                    !pursuitUnit.PursuitBlockerHolding);
+                if (now < pursuitUnit.NextNpcBlockerRouteAt)
+                    continue;
+                pursuitUnit.NextNpcBlockerRouteAt = now.AddMilliseconds(
+                    NpcVehicleInterceptionRouteRefreshMilliseconds);
+
+                bool movingTowardPreviousRoute = pursuitUnit.NpcBlockerRouteAttempted
+                    && pursuitUnit.Destination != Vector3.Zero
+                    && pursuitUnit.Vehicle.Position.DistanceTo(pursuitUnit.Destination) > 12f
+                    && pursuitUnit.Vehicle.Position.DistanceTo(
+                        pursuitUnit.NpcBlockerLastProgressPosition) >= 2f;
+                if (movingTowardPreviousRoute)
+                    pursuitUnit.NpcBlockerRouteFailures = 0;
+                bool previousRouteStalled = pursuitUnit.NpcBlockerRouteAttempted
+                    && pursuitUnit.Destination != Vector3.Zero
+                    && pursuitUnit.Vehicle.Position.DistanceTo(pursuitUnit.Destination) > 12f
+                    && !movingTowardPreviousRoute;
+                if (previousRouteStalled)
+                    pursuitUnit.NpcBlockerRouteFailures++;
+                pursuitUnit.NpcBlockerLastProgressPosition = pursuitUnit.Vehicle.Position;
+
+                Vector3 blockerDestination;
+                bool hasSafeAheadNode = TryResolveDispatchVehiclePursuitRoadNode(
+                    subject, subjectVehicle, true,
+                    out blockerDestination, out _);
+                bool currentRouteFailed = !hasSafeAheadNode;
+                if (!hasSafeAheadNode)
+                {
+                    if (!previousRouteStalled)
+                        pursuitUnit.NpcBlockerRouteFailures++;
+                }
+                else
+                {
+                    Vector3 priorDestination = pursuitUnit.Destination;
+                    float blockerDistance = pursuitUnit.Vehicle.Position.DistanceTo(
+                        blockerDestination);
+                    if (blockerDistance <= 12f)
+                    {
+                        pursuitUnit.PursuitBlockerHolding = true;
+                        pursuitUnit.Arrived = true;
+                        pursuitUnit.Destination = blockerDestination;
+                        bool firstBlockHold = !pursuitUnit.VehicleContainmentStopRequested;
+                        HoldNpcPursuitVehicle(pursuitUnit);
+                        if (firstBlockHold)
+                        {
+                            LogRuntime("POLICE_BACKUP_NPC_INTERCEPTOR_POSITIONED",
+                                "Ped=" + subject.Handle
+                                + "; TargetVehicle=" + subjectVehicle.Handle
+                                + "; Interceptor=" + pursuitUnit.Vehicle.Handle
+                                + "; AheadDistance=" + (blockerDestination.DistanceTo(
+                                    subjectVehicle.Position)).ToString("0.0"));
+                        }
+                    }
+                    else
+                    {
+                        if (pursuitUnit.PursuitBlockerHolding)
+                            ReleaseNpcPursuitVehicleHold(pursuitUnit);
+                        bool routeChanged = priorDestination == Vector3.Zero
+                            || priorDestination.DistanceTo(blockerDestination) >= 14f;
+                        bool reachedPreviousGoal = priorDestination != Vector3.Zero
+                            && pursuitUnit.Vehicle.Position.DistanceTo(priorDestination) <= 12f;
+                        if (routeChanged || reachedPreviousGoal)
+                        {
+                            if (!SendTo(pursuitUnit, blockerDestination, true))
+                                currentRouteFailed = true;
+                            pursuitUnit.NpcBlockerRouteAttempted = true;
+                        }
+                    }
+                    pursuitUnit.NpcBlockerRouteAttempted = true;
+                }
+
+                if (currentRouteFailed && !previousRouteStalled)
+                    pursuitUnit.NpcBlockerRouteFailures++;
+
+                if (pursuitUnit.NpcBlockerRouteFailures
+                    >= NpcVehicleInterceptionRouteFailureLimit)
+                {
+                    if (pursuitUnit.VehicleContainmentStopRequested)
+                        ReleaseNpcPursuitVehicleHold(pursuitUnit);
+                    pursuitUnit.NpcBlockerFallbackToTrail = true;
+                    pursuitUnit.VehiclePursuitBlocker = false;
+                    pursuitUnit.VehiclePursuitLead = true;
+                    pursuitUnit.NpcBlockerRouteFailures = 0;
+                    pursuitUnit.PursuitBlockerHolding = false;
+                    pursuitUnit.LastDriveTaskAt = DateTime.MinValue;
+                    pursuitUnit.NextNpcBlockerRouteAt = DateTime.MinValue;
+                    SetEmergencySignals(pursuitUnit.Vehicle, true);
+                    LogRuntime("POLICE_BACKUP_NPC_INTERCEPTOR_FALLBACK",
+                        "Ped=" + subject.Handle
+                        + "; TargetVehicle=" + subjectVehicle.Handle
+                        + "; Unit=" + pursuitUnit.Vehicle.Handle
+                        + "; FailedAttempts=" + NpcVehicleInterceptionRouteFailureLimit
+                        + "; Fallback=TrailingVehicleChase");
+                }
+            }
+
+            if (now >= _lastNpcVehicleInterceptionLogAt.AddMilliseconds(
                     NpcVehicleInterceptionLogMilliseconds))
-                {
-                    _lastNpcVehicleInterceptionLogAt = now;
-                    LogRuntime("POLICE_BACKUP_NPC_VEHICLE_INTERCEPTION_TRACKING",
-                        "Driver=" + subject.Handle
-                        + "; SubjectVehicle=" + subjectVehicle.Handle
-                        + "; BackupVehicle=" + unit.Vehicle.Handle
-                        + "; Distance=" + distance.ToString("0.0")
-                        + "; ForwardDistance=" + forwardDistance.ToString("0.0")
-                        + "; LateralDistance=" + lateralDistance.ToString("0.0")
-                        + "; TargetSpeed=" + targetSpeed.ToString("0.0")
-                        + "; Mode=LiveVehicleChase");
-                }
-                return false;
-            }
-
-            unit.NpcVehiclePursuitActive = true;
-            SetEmergencySignals(unit.Vehicle, true);
-            if (!unit.VehicleContainmentStopRequested)
             {
-                unit.VehicleContainmentStopRequested = true;
-                try
-                {
-                    Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, true);
-                    unit.Vehicle.Speed = 0.0f;
-                    unit.Driver.Task.ClearAll();
-                }
-                catch (Exception ex)
-                {
-                    LogException("POLICE_BACKUP_NPC_VEHICLE_BLOCK_FAILED", ex);
-                }
-                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_BLOCKING_POSITION",
-                    "Driver=" + subject.Handle
-                    + "; SubjectVehicle=" + subjectVehicle.Handle
-                    + "; BackupVehicle=" + unit.Vehicle.Handle
-                    + "; Distance=" + distance.ToString("0.0")
-                    + "; ForwardDistance=" + forwardDistance.ToString("0.0")
-                    + "; LateralDistance=" + lateralDistance.ToString("0.0")
-                    + "; Siren=true");
+                _lastNpcVehicleInterceptionLogAt = now;
+                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_INTERCEPTION_TRACKING",
+                    "Ped=" + subject.Handle
+                    + "; TargetVehicle=" + subjectVehicle.Handle
+                    + "; Lead=" + lead.Vehicle.Handle
+                    + "; Interceptor=" + (blocker == null ? 0 : blocker.Vehicle.Handle)
+                    + "; LeadDistance=" + leadDistance.ToString("0.0")
+                    + "; Speed=" + targetSpeed.ToString("0.0")
+                    + "; SustainedStop=" + (_npcVehicleStoppedAt != DateTime.MinValue
+                        && now >= _npcVehicleStoppedAt.AddMilliseconds(
+                            NpcVehicleStopSettleMilliseconds)));
             }
 
-            targetSpeed = Math.Abs(subjectVehicle.Speed);
-            if (targetSpeed > DispatchVehicleStoppedSpeed)
-            {
-                _npcVehicleStoppedAt = DateTime.MinValue;
-                if (now >= _nextNpcVehicleBrakeTaskAt)
-                {
-                    _nextNpcVehicleBrakeTaskAt = now.AddMilliseconds(NpcVehicleBrakeTaskMilliseconds);
-                    try
-                    {
-                        Function.Call(Hash.SET_VEHICLE_BRAKE, subjectVehicle, true);
-                        Function.Call(Hash.TASK_VEHICLE_TEMP_ACTION,
-                            subject, subjectVehicle, 27, NpcVehicleBrakeTaskMilliseconds);
-                    }
-                    catch (Exception ex)
-                    {
-                        LogException("POLICE_BACKUP_NPC_VEHICLE_BRAKE_FAILED", ex);
-                    }
-                    LogRuntime("POLICE_BACKUP_NPC_VEHICLE_BRAKING_REQUESTED",
-                        "Driver=" + subject.Handle
-                        + "; SubjectVehicle=" + subjectVehicle.Handle
-                        + "; BackupVehicle=" + unit.Vehicle.Handle
-                        + "; Speed=" + targetSpeed.ToString("0.0"));
-                }
+            bool sustainedStop = _npcVehicleStoppedAt != DateTime.MinValue
+                && now >= _npcVehicleStoppedAt.AddMilliseconds(
+                    NpcVehicleStopSettleMilliseconds);
+            if (!sustainedStop || leadDistance > NpcVehicleContainmentRadius)
                 return false;
-            }
 
-            if (_npcVehicleStoppedAt == DateTime.MinValue)
-                _npcVehicleStoppedAt = now;
-            if (now < _npcVehicleStoppedAt.AddMilliseconds(NpcVehicleStopSettleMilliseconds))
-                return false;
+            foreach (BackupUnit pursuitUnit in pursuingUnits)
+                if (pursuitUnit.Vehicle.Position.DistanceTo(subjectVehicle.Position)
+                    <= NpcVehicleContainmentRadius + 12f)
+                    HoldNpcPursuitVehicle(pursuitUnit);
 
             if (!_npcVehicleContainmentReported)
             {
                 _npcVehicleContainmentReported = true;
                 LogRuntime("POLICE_BACKUP_NPC_VEHICLE_CONTAINED",
-                    "Driver=" + subject.Handle
-                    + "; SubjectVehicle=" + subjectVehicle.Handle
-                    + "; BackupVehicle=" + unit.Vehicle.Handle
-                    + "; ForwardDistance=" + forwardDistance.ToString("0.0")
-                    + "; LateralDistance=" + lateralDistance.ToString("0.0")
-                    + "; TargetSpeed=" + targetSpeed.ToString("0.0"));
+                    "Ped=" + subject.Handle
+                    + "; TargetVehicle=" + subjectVehicle.Handle
+                    + "; Lead=" + lead.Vehicle.Handle
+                    + "; Interceptor=" + (blocker == null ? 0 : blocker.Vehicle.Handle)
+                    + "; TargetSpeed=" + targetSpeed.ToString("0.00")
+                    + "; SustainedStopMilliseconds=" + NpcVehicleStopSettleMilliseconds
+                    + "; SameCitizen=true");
             }
+            SetState(LSPDBackupAssignmentState.Intercepting);
             return true;
+        }
+
+        private void ResolveNpcVehiclePursuitUnits(
+            BackupUnit transportUnit,
+            out BackupUnit lead,
+            out BackupUnit blocker)
+        {
+            lead = _units.FirstOrDefault(candidate => IsUsable(candidate)
+                && candidate.VehiclePursuitLead);
+            if (!IsUsable(lead))
+                lead = IsUsable(transportUnit) ? transportUnit
+                    : _units.FirstOrDefault(IsUsable);
+
+            BackupUnit selectedLead = lead;
+            blocker = _units.FirstOrDefault(candidate => IsUsable(candidate)
+                && candidate != selectedLead && candidate.VehiclePursuitBlocker
+                && !candidate.NpcBlockerFallbackToTrail);
+            if (!IsUsable(lead))
+            {
+                blocker = null;
+                return;
+            }
+
+            if (!lead.NpcPursuitRolesInitialized)
+            {
+                lead.NpcPursuitRolesInitialized = true;
+                lead.VehiclePursuitLead = true;
+                lead.VehiclePursuitBlocker = false;
+            }
+            if (IsUsable(blocker))
+            {
+                blocker.NpcPursuitRolesInitialized = true;
+                blocker.VehiclePursuitBlocker = true;
+                blocker.VehiclePursuitLead = false;
+            }
+        }
+
+        private static BackupUnit ResolveNpcContainmentUnit(
+            BackupUnit lead,
+            BackupUnit blocker,
+            Ped subject)
+        {
+            if (!IsUsable(lead))
+                return IsUsable(blocker) ? blocker : null;
+            if (!IsUsable(blocker) || subject == null || !subject.Exists())
+                return lead;
+            return blocker.Vehicle.Position.DistanceTo(subject.Position)
+                < lead.Vehicle.Position.DistanceTo(subject.Position)
+                ? blocker : lead;
+        }
+
+        private void HoldNpcPursuitVehicle(BackupUnit unit)
+        {
+            if (!IsUsable(unit))
+                return;
+            bool firstHold = !unit.VehicleContainmentStopRequested;
+            unit.VehicleContainmentStopRequested = true;
+            if (firstHold)
+            {
+                SetEmergencySignals(unit.Vehicle, false);
+                try { Function.Call(Hash.SET_VEHICLE_BRAKE, unit.Vehicle, true); }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_BACKUP_NPC_CONTAINMENT_BRAKE_FAILED", ex);
+                }
+            }
+            if (unit.NpcPursuitDriverTaskCleared
+                || Math.Abs(unit.Vehicle.Speed) > 0.65f)
+                return;
+            try
+            {
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, true);
+                unit.Driver.Task.ClearAll();
+                unit.NpcPursuitDriverTaskCleared = true;
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_BACKUP_NPC_CONTAINMENT_VEHICLE_HOLD_FAILED", ex);
+            }
+        }
+
+        private void ReleaseNpcPursuitVehicleHold(BackupUnit unit)
+        {
+            if (!IsUsable(unit) || !unit.VehicleContainmentStopRequested)
+                return;
+            unit.VehicleContainmentStopRequested = false;
+            unit.Arrived = false;
+            unit.PursuitBlockerHolding = false;
+            unit.NpcPursuitDriverTaskCleared = false;
+            SetEmergencySignals(unit.Vehicle, true);
+            try
+            {
+                Function.Call(Hash.SET_VEHICLE_BRAKE, unit.Vehicle, false);
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, false);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_BACKUP_NPC_CONTAINMENT_VEHICLE_RELEASE_FAILED", ex);
+            }
         }
 
         private void SupportNpcContact(LSPDNPCResponse npcResponse)
@@ -3301,7 +3550,7 @@ namespace LSImmersiveLife
             }
 
             Vehicle subjectVehicle = ResolvePursuitVehicle(
-                subject, npcResponse.ActiveSubjectVehicle);
+                subject, npcResponse.ActivePursuitVehicle);
             // A fleeing foot subject can move a long way while the Backup
             // officer is leaving the car. Keep the existing unit on a fresh,
             // validated road interception until it is close enough for the
@@ -3327,7 +3576,7 @@ namespace LSImmersiveLife
                 && subjectVehicle.Handle != unit.Vehicle.Handle)
             {
                 if (!MaintainNpcVehicleInterception(
-                    unit, subject, subjectVehicle, npcResponse, DateTime.UtcNow))
+                    unit, subject, subjectVehicle, DateTime.UtcNow))
                 {
                     SetState(LSPDBackupAssignmentState.Intercepting);
                     return;
@@ -6626,7 +6875,7 @@ namespace LSImmersiveLife
             {
                 Ped subject = npcResponse.ActiveSubject;
                 Vehicle vehicle = ResolvePursuitVehicle(
-                    subject, npcResponse.ActiveSubjectVehicle);
+                    subject, npcResponse.ActivePursuitVehicle);
                 if (subject != null && subject.Exists())
                     return ResolveInterceptionRoadPosition(subject, vehicle);
             }
@@ -7358,7 +7607,8 @@ namespace LSImmersiveLife
             float maximumDistance = MaximumPursuitSpawnDistance;
             float perpendicularX = -directionY;
             float perpendicularY = directionX;
-            bool stageAhead = _incident != null && index == 0;
+            bool stageAhead = (_incident != null && index == 0)
+                || (_npcResponse != null && _npcTargetWasFleeing && index == 1);
             float unitLateral = (index % 2 == 0 ? -1f : 1f)
                 * (10f + (index / 2) * 12f);
 

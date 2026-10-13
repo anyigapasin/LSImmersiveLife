@@ -849,6 +849,7 @@ namespace LSImmersiveLife
         internal int TrafficFleeChancePercent { get; set; }
         internal int PullOverTimeoutSeconds { get; set; }
         internal int TrafficTaskRecoverySeconds { get; set; }
+        internal int GunpointSurrenderHoldMilliseconds { get; set; }
         internal int ScenePedReactionRadius { get; set; }
         internal int MaximumAffectedPedestrians { get; set; }
         internal int SceneReactionCooldownSeconds { get; set; }
@@ -873,6 +874,7 @@ namespace LSImmersiveLife
                 TrafficFleeChancePercent = 45,
                 PullOverTimeoutSeconds = 12,
                 TrafficTaskRecoverySeconds = 8,
+                GunpointSurrenderHoldMilliseconds = 1500,
                 ScenePedReactionRadius = 18,
                 MaximumAffectedPedestrians = 3,
                 SceneReactionCooldownSeconds = 15
@@ -902,6 +904,7 @@ namespace LSImmersiveLife
                 TrafficFleeChancePercent = LSConfig.Int(n, "trafficFleeChancePercent", d.TrafficFleeChancePercent, 0, 100),
                 PullOverTimeoutSeconds = LSConfig.Int(n, "pullOverTimeoutSeconds", d.PullOverTimeoutSeconds, 5, 45),
                 TrafficTaskRecoverySeconds = LSConfig.Int(n, "trafficTaskRecoverySeconds", d.TrafficTaskRecoverySeconds, 4, 30),
+                GunpointSurrenderHoldMilliseconds = LSConfig.Int(n, "gunpointSurrenderHoldMilliseconds", d.GunpointSurrenderHoldMilliseconds, 500, 5000),
                 ScenePedReactionRadius = LSConfig.Int(n, "scenePedReactionRadius", d.ScenePedReactionRadius, 5, 60),
                 MaximumAffectedPedestrians = LSConfig.Int(n, "maximumAffectedPedestrians", d.MaximumAffectedPedestrians, 0, 12),
                 SceneReactionCooldownSeconds = LSConfig.Int(n, "sceneReactionCooldownSeconds", d.SceneReactionCooldownSeconds, 5, 120)
@@ -924,6 +927,7 @@ namespace LSImmersiveLife
             TrafficFleeChancePercent = LSConfig.Clamp(TrafficFleeChancePercent, 0, 100);
             PullOverTimeoutSeconds = LSConfig.Clamp(PullOverTimeoutSeconds, 5, 45);
             TrafficTaskRecoverySeconds = LSConfig.Clamp(TrafficTaskRecoverySeconds, 4, 30);
+            GunpointSurrenderHoldMilliseconds = LSConfig.Clamp(GunpointSurrenderHoldMilliseconds, 500, 5000);
             ScenePedReactionRadius = LSConfig.Clamp(ScenePedReactionRadius, 5, 60);
             MaximumAffectedPedestrians = LSConfig.Clamp(MaximumAffectedPedestrians, 0, 12);
             SceneReactionCooldownSeconds = LSConfig.Clamp(SceneReactionCooldownSeconds, 5, 120);
@@ -948,6 +952,7 @@ namespace LSImmersiveLife
                 new XAttribute("trafficFleeChancePercent", TrafficFleeChancePercent),
                 new XAttribute("pullOverTimeoutSeconds", PullOverTimeoutSeconds),
                 new XAttribute("trafficTaskRecoverySeconds", TrafficTaskRecoverySeconds),
+                new XAttribute("gunpointSurrenderHoldMilliseconds", GunpointSurrenderHoldMilliseconds),
                 new XAttribute("scenePedReactionRadius", ScenePedReactionRadius),
                 new XAttribute("maximumAffectedPedestrians", MaximumAffectedPedestrians),
                 new XAttribute("sceneReactionCooldownSeconds", SceneReactionCooldownSeconds));
