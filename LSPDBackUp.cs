@@ -54,6 +54,8 @@ namespace LSImmersiveLife
         private const float DispatchFootPursuitTaskSpeed = 4.0f;
         private const float DispatchFootLeadOffsetY = 5.0f;
         private const float DispatchFootLeadContainmentDistance = 8.0f;
+        private const int NpcFootInterceptionRouteRefreshSeconds = 3;
+        private const int NpcFootInterceptionRouteFreshSeconds = 4;
         private const float DispatchFootStoppedSpeedThreshold = 0.75f;
         private const int DispatchFootSpeedRefreshMilliseconds = 1000;
         private const int DispatchFootApproachProgressSampleMilliseconds = 3000;
@@ -67,11 +69,14 @@ namespace LSImmersiveLife
         private const float NpcVehicleBlockMaximumForward = 65f;
         private const float NpcVehicleBlockLateralTolerance = 20f;
         private const float NpcVehicleBlockMaximumDistance = 75f;
-        private const float NpcFootInterceptionVehicleDistance = 42f;
+        private const float NpcFootInterceptionVehicleDistance = 45f;
+        private const float NpcCustodyTransportStagingDistance = 16f;
+        private const float NpcCustodyTransportMaximumSceneDistance = 28f;
+        private const float NpcCustodyTransportMinimumSceneDistance = 7f;
         private const int NpcVehicleStopSettleMilliseconds = 1200;
         private const int NpcVehicleBrakeTaskMilliseconds = 1800;
         private const int NpcVehicleInterceptionLogMilliseconds = 5000;
-        private const int NpcBackgroundDepartureSeconds = 35;
+        private const int NpcBackgroundDepartureSeconds = RouteStallTimeoutSeconds;
         private const float NpcBackgroundDepartureMinimumDistance = 28f;
 
         private readonly LSPDAudioDispatch _audio;
@@ -123,8 +128,10 @@ namespace LSImmersiveLife
         private bool _npcInterventionStarted;
         private bool _npcTargetWasFleeing;
         private bool _npcOfficerExitRequested;
+        private bool _npcCustodyTransportRequested;
         private bool _npcTransportStarted;
         private bool _npcPlayerSessionReleased;
+        private bool _npcDepartureStallNotified;
         private int _npcRouteRetargetCount;
         private Vector3 _npcRouteOverride = Vector3.Zero;
         private Vector3 _npcStationRouteDestination = Vector3.Zero;
@@ -135,6 +142,9 @@ namespace LSImmersiveLife
         private bool _npcBackgroundCleanupRequested;
         private DateTime _lastNpcVehicleInterceptionLogAt = DateTime.MinValue;
         private DateTime _lastNpcFootInterceptionLogAt = DateTime.MinValue;
+        private DateTime _nextNpcFootInterceptionRouteAt = DateTime.MinValue;
+        private DateTime _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
+        private bool _npcFootInterceptionCommitted;
         private DateTime _npcVehicleStoppedAt = DateTime.MinValue;
         private DateTime _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
         private bool _npcVehicleContainmentReported;
@@ -520,7 +530,8 @@ namespace LSImmersiveLife
         internal string RequestNpcSupport(
             LSPDNPCResponse npcResponse,
             Ped player,
-            bool preferSavedFavorite)
+            bool preferSavedFavorite,
+            bool custodyTransportRequest = false)
         {
             if (!_settings.Enabled)
                 return "Backup is disabled in LS Immersive settings.";
@@ -559,12 +570,14 @@ namespace LSImmersiveLife
             _npcEscortLastProgressAt = DateTime.MinValue;
             _npcEscortRecoveryCount = 0;
             _npcInterventionStarted = false;
+            _npcCustodyTransportRequested = custodyTransportRequest;
             _npcTargetWasFleeing = npcResponse.IsFleeing
                 || npcResponse.WasFleeingFootContact
                 || npcResponse.WasFleeingTrafficContact;
             _npcOfficerExitRequested = false;
             _npcTransportStarted = false;
             _npcPlayerSessionReleased = false;
+            _npcDepartureStallNotified = false;
             _npcRouteRetargetCount = 0;
             _npcRouteOverride = Vector3.Zero;
             _npcStationRouteDestination = Vector3.Zero;
@@ -575,6 +588,9 @@ namespace LSImmersiveLife
             _npcBackgroundCleanupRequested = false;
             _lastNpcVehicleInterceptionLogAt = DateTime.MinValue;
             _lastNpcFootInterceptionLogAt = DateTime.MinValue;
+            _nextNpcFootInterceptionRouteAt = DateTime.MinValue;
+            _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
+            _npcFootInterceptionCommitted = false;
             _npcVehicleStoppedAt = DateTime.MinValue;
             _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
             _npcVehicleContainmentReported = false;
@@ -589,8 +605,11 @@ namespace LSImmersiveLife
                 "Fleeing=" + _npcTargetWasFleeing
                 + "; Target=" + npcResponse.SupportPosition
                 + "; Vehicle=" + _vehicleModelName
-                + "; Officer=" + _officerModelName);
-            return "Backup requested. One Police unit is staging for the citizen contact.";
+                + "; Officer=" + _officerModelName
+                + "; CitizenTransportRequest=" + _npcCustodyTransportRequested);
+            return custodyTransportRequest
+                ? "Backup transport requested. One Police unit is staging near the citizen scene."
+                : "Backup requested. One Police unit is staging for the citizen contact.";
         }
 
         /// <summary>
@@ -781,7 +800,7 @@ namespace LSImmersiveLife
             // interaction. Do not send this unit back through the generic
             // assignment destination logic: that was the path that converted
             // a completed local handoff into a station-route/recovery loop.
-            if (npcAssignment && _npcTransportStarted && _npcPlayerSessionReleased)
+            if (npcAssignment && _npcTransportStarted)
             {
                 ProcessNpcBackgroundDeparture(npcResponse, player, now);
                 return;
@@ -1131,14 +1150,19 @@ namespace LSImmersiveLife
             _npcInterventionStarted = false;
             _npcTargetWasFleeing = false;
             _npcOfficerExitRequested = false;
+            _npcCustodyTransportRequested = false;
             _npcTransportStarted = false;
             _npcPlayerSessionReleased = false;
+            _npcDepartureStallNotified = false;
             _npcRouteRetargetCount = 0;
             _npcRouteOverride = Vector3.Zero;
             _npcStationRouteDestination = Vector3.Zero;
             _npcDeliveryCompletedAt = DateTime.MinValue;
             _lastNpcVehicleInterceptionLogAt = DateTime.MinValue;
             _lastNpcFootInterceptionLogAt = DateTime.MinValue;
+            _nextNpcFootInterceptionRouteAt = DateTime.MinValue;
+            _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
+            _npcFootInterceptionCommitted = false;
             _npcVehicleStoppedAt = DateTime.MinValue;
             _nextNpcVehicleBrakeTaskAt = DateTime.MinValue;
             _npcVehicleContainmentReported = false;
@@ -1633,6 +1657,10 @@ namespace LSImmersiveLife
                         "Vehicle=" + vehicle.Handle + "; Driver=" + driver.Handle
                         + "; Spawn=" + spawn + "; Destination=" + unitDestination
                         + "; RoadHeading=" + spawnHeading.ToString("0.0")
+                        + (_npcResponse != null && _npcCustodyTransportRequested
+                            ? "; Assignment=CitizenCustodyTransport; SceneDistance="
+                                + spawn.DistanceTo(destination).ToString("0.0")
+                            : string.Empty)
                         + (dispatchGroupSceneSupport
                             ? "; Assignment=OriginalSceneGroupCover"
                             : string.Empty)
@@ -2815,10 +2843,49 @@ namespace LSImmersiveLife
             if (!IsUsable(unit) || subject == null || !subject.Exists()
                 || subject.IsDead || npcResponse == null)
                 return false;
+            if (_npcFootInterceptionCommitted)
+                return false;
 
             float vehicleDistance = unit.Vehicle.Position.DistanceTo(subject.Position);
-            if (vehicleDistance <= NpcFootInterceptionVehicleDistance)
+            bool routeRefreshAttempted = false;
+            bool routeAvailable = false;
+            if (now >= _nextNpcFootInterceptionRouteAt)
             {
+                routeRefreshAttempted = true;
+                _nextNpcFootInterceptionRouteAt = now.AddSeconds(
+                    NpcFootInterceptionRouteRefreshSeconds);
+                Vector3 interception = ResolveNpcDestination(
+                    npcResponse, Game.Player.Character);
+                Vector3 roadNode = Vector3.Zero;
+                float roadHeading;
+                bool hasRoadNode = interception != Vector3.Zero
+                    && TryGetNearbyVehicleRoadNode(
+                        interception, subject.Position, 22f,
+                        out roadNode, out roadHeading);
+                if (!hasRoadNode)
+                    hasRoadNode = TryGetNearbyVehicleRoadNode(
+                        subject.Position, subject.Position, 35f,
+                        out roadNode, out roadHeading);
+                if (hasRoadNode && SendTo(unit, roadNode, true))
+                {
+                    _lastNpcFootInterceptionRouteAt = now;
+                    routeAvailable = true;
+                }
+            }
+
+            bool recentRoute = _lastNpcFootInterceptionRouteAt != DateTime.MinValue
+                && now < _lastNpcFootInterceptionRouteAt.AddSeconds(
+                    NpcFootInterceptionRouteFreshSeconds);
+            float roadDistance = unit.Destination == Vector3.Zero
+                ? float.MaxValue
+                : unit.Vehicle.Position.DistanceTo(unit.Destination);
+            bool reachedInterception = vehicleDistance
+                    <= NpcFootInterceptionVehicleDistance
+                || (recentRoute && roadDistance
+                    <= Math.Max(8f, _settings.ArrivalRadius));
+            if (reachedInterception)
+            {
+                _npcFootInterceptionCommitted = true;
                 unit.Arrived = true;
                 unit.NpcVehiclePursuitActive = false;
                 SetEmergencySignals(unit.Vehicle, false);
@@ -2832,27 +2899,35 @@ namespace LSImmersiveLife
                 {
                     LogException("POLICE_BACKUP_NPC_FOOT_INTERCEPTION_HOLD_FAILED", ex);
                 }
+                LogRuntime("POLICE_BACKUP_NPC_FOOT_APPROACH_REACHED",
+                    "Ped=" + subject.Handle
+                    + "; BackupVehicle=" + unit.Vehicle.Handle
+                    + "; VehicleDistance=" + vehicleDistance.ToString("0.0")
+                    + "; RoadDistance=" + roadDistance.ToString("0.0")
+                    + "; Arrival=" + (vehicleDistance
+                        <= NpcFootInterceptionVehicleDistance
+                            ? "SubjectDistance" : "ValidatedRoadNode"));
                 return false;
             }
 
-            Vector3 interception = ResolveNpcDestination(
-                npcResponse, Game.Player.Character);
-            if (interception == Vector3.Zero)
-                return false;
-
             // If an earlier arrival let the escort officer leave before the
             // target moved again, bring that same officer back to the owned
-            // vehicle before the next road approach. No entity is teleported
-            // and no replacement unit is created.
+            // vehicle before the next road approach. Reuse the officer's
+            // assigned seat so a one-officer unit does not ask its driver to
+            // re-enter the occupied passenger seat.
             if (_npcEscortOfficer != null && _npcEscortOfficer.Exists()
                 && !_npcEscortOfficer.IsDead
                 && !_npcEscortOfficer.IsInVehicle()
+                && routeAvailable
                 && now >= _nextNpcOfficerTaskAt)
             {
                 try
                 {
                     _npcEscortOfficer.Task.EnterVehicle(
-                        unit.Vehicle, VehicleSeat.RightFront, 12000, 1.0f);
+                        unit.Vehicle,
+                        _npcEscortOfficer.Handle == unit.Driver.Handle
+                            ? VehicleSeat.Driver : VehicleSeat.RightFront,
+                        12000, 1.0f);
                     _npcOfficerExitRequested = false;
                     _nextNpcOfficerTaskAt = now.AddSeconds(6);
                 }
@@ -2865,7 +2940,6 @@ namespace LSImmersiveLife
             unit.Arrived = false;
             unit.NpcVehiclePursuitActive = false;
             SetEmergencySignals(unit.Vehicle, true);
-            SendTo(unit, interception, false);
 
             if (now >= _lastNpcFootInterceptionLogAt.AddMilliseconds(
                 NpcVehicleInterceptionLogMilliseconds))
@@ -2875,7 +2949,9 @@ namespace LSImmersiveLife
                     "Ped=" + subject.Handle
                     + "; BackupVehicle=" + unit.Vehicle.Handle
                     + "; VehicleDistance=" + vehicleDistance.ToString("0.0")
-                    + "; Interception=" + interception
+                    + "; RoadDistance=" + roadDistance.ToString("0.0")
+                    + "; RouteRefreshAttempted=" + routeRefreshAttempted
+                    + "; RouteAvailable=" + (routeAvailable || recentRoute)
                     + "; OfficerInVehicle="
                     + (_npcEscortOfficer == null || !_npcEscortOfficer.Exists()
                         ? false : _npcEscortOfficer.IsInVehicle()));
@@ -2917,6 +2993,12 @@ namespace LSImmersiveLife
 
             Vehicle subjectVehicle = ResolvePursuitVehicle(
                 subject, npcResponse.ActiveSubjectVehicle);
+            if (subjectVehicle != null && subject.IsInVehicle())
+            {
+                _nextNpcFootInterceptionRouteAt = DateTime.MinValue;
+                _lastNpcFootInterceptionRouteAt = DateTime.MinValue;
+                _npcFootInterceptionCommitted = false;
+            }
             if (subjectVehicle != null && subject.IsInVehicle()
                 && subjectVehicle.Handle != unit.Vehicle.Handle)
             {
@@ -3184,17 +3266,10 @@ namespace LSImmersiveLife
 
             if (_npcTransportStarted)
             {
-                // This is retained as a safety path for an assignment that
-                // entered transport before the player-release flag was set.
-                // It intentionally performs only the local departure cleanup;
-                // Backup NPC custody no longer simulates a station journey.
-                if (!_npcPlayerSessionReleased)
-                    _npcPlayerSessionReleased =
-                        npcResponse.ReleasePlayerSessionForBackgroundTransport(
-                            "BackupCustodyAlreadyLoaded");
-                if (_npcPlayerSessionReleased)
-                    ProcessNpcBackgroundDeparture(
-                        npcResponse, Game.Player.Character, DateTime.UtcNow);
+                // Keep PoliceCore's Citizen/Backup slot until the physical
+                // custody vehicle has actually left the scene.
+                ProcessNpcBackgroundDeparture(
+                    npcResponse, Game.Player.Character, DateTime.UtcNow);
                 return;
             }
 
@@ -3339,23 +3414,14 @@ namespace LSImmersiveLife
                 {
                     try
                     {
-                        if (_npcTargetWasFleeing)
-                        {
-                            // Track the actual fleeing entity instead of a
-                            // stale coordinate. GTA can recalculate around
-                            // moving obstacles while the officer closes in.
-                            Function.Call(Hash.TASK_GO_TO_ENTITY,
-                                _npcEscortOfficer, subject, -1, 2.2f,
-                                3.2f, 1073741824, 0);
-                        }
-                        else
-                        {
-                            Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
-                                _npcEscortOfficer,
-                                subject.Position.X, subject.Position.Y, subject.Position.Z,
-                                1.2f, -1, 1.5f, 0, 0f);
-                        }
-                        _nextNpcOfficerTaskAt = DateTime.UtcNow.AddSeconds(6);
+                        // Dispatch's foot pursuit tracks the live Ped at its
+                        // established 4 m/s task speed. Use that same target
+                        // task for resistance and flight so a moving subject
+                        // cannot outrun a stale 1.2 m/s navigation point.
+                        Function.Call(Hash.TASK_GO_TO_ENTITY,
+                            _npcEscortOfficer, subject, -1, 1.5f,
+                            DispatchFootPursuitTaskSpeed, 1073741824, 0);
+                        _nextNpcOfficerTaskAt = DateTime.UtcNow.AddSeconds(3);
                     }
                     catch (Exception ex) { LogException("POLICE_BACKUP_NPC_OFFICER_APPROACH_FAILED", ex); }
                 }
@@ -3445,7 +3511,10 @@ namespace LSImmersiveLife
                     try
                     {
                         _npcEscortOfficer.Task.EnterVehicle(
-                            unit.Vehicle, VehicleSeat.RightFront, 10000, 1.0f);
+                            unit.Vehicle,
+                            _npcEscortOfficer.Handle == unit.Driver.Handle
+                                ? VehicleSeat.Driver : VehicleSeat.RightFront,
+                            10000, 1.0f);
                         _nextNpcOfficerTaskAt = DateTime.UtcNow.AddSeconds(6);
                     }
                     catch (Exception ex) { LogException("POLICE_BACKUP_NPC_ESCORT_ENTRY_FAILED", ex); }
@@ -3465,10 +3534,12 @@ namespace LSImmersiveLife
                 NpcBackgroundDepartureSeconds);
             _npcBackgroundDepartureDestination =
                 ResolveNpcBackgroundDepartureDestination(unit, Game.Player.Character);
-            _npcPlayerSessionReleased =
-                npcResponse.ReleasePlayerSessionForBackgroundTransport(
-                    "BackupCustodyLoaded");
+            _npcPlayerSessionReleased = false;
+            _npcDepartureStallNotified = false;
             unit.Arrived = false;
+            unit.RouteRecoveryCount = 0;
+            unit.LastProgressPosition = unit.Vehicle.Position;
+            unit.LastProgressAt = DateTime.UtcNow;
             bool departureTaskIssued = _npcBackgroundDepartureDestination != Vector3.Zero
                 && SendTo(unit, _npcBackgroundDepartureDestination, true);
             if (!departureTaskIssued)
@@ -3481,7 +3552,10 @@ namespace LSImmersiveLife
                 "Vehicle=" + unit.Vehicle.Handle
                 + "; Destination=" + _npcBackgroundDepartureDestination
                 + "; TaskIssued=" + departureTaskIssued
-                + "; PlayerSessionReleased=" + _npcPlayerSessionReleased);
+                + "; PlayerSessionReleased=false"
+                + "; MinimumDepartureDistance="
+                + NpcBackgroundDepartureMinimumDistance.ToString("0.0")
+                + "; CitizenLoaded=" + npcResponse.IsLoadedInBackupVehicle);
         }
 
         private void ProcessNpcBackgroundDeparture(
@@ -3492,34 +3566,66 @@ namespace LSImmersiveLife
             BackupUnit unit = _npcTransportUnit;
             if (!IsUsable(unit))
             {
-                npcResponse.CompleteBackupBackgroundDeparture(
-                    "Backup unit was unavailable after the citizen left the scene.");
-                BeginNpcBackgroundCleanup(
-                    "Backup unit was unavailable after custody transfer.");
+                if (!_npcDepartureStallNotified)
+                {
+                    _npcDepartureStallNotified = true;
+                    LogRuntime("POLICE_BACKUP_NPC_DEPARTURE_NOT_CONFIRMED",
+                        "Reason=TransportUnitUnavailable; PlayerSessionReleased=false");
+                    Notify("Backup's transport vehicle is unavailable. The Citizen handoff is not complete, so patrol remains paused.");
+                }
                 return;
             }
 
             if (!npcResponse.IsLoadedInBackupVehicle)
             {
-                npcResponse.CompleteBackupBackgroundDeparture(
-                    "The citizen was no longer confirmed inside the departing Backup vehicle.");
-                ReleaseNpcCustodyCollisionProtection(unit);
-                BeginNpcBackgroundCleanup(
-                    "Loaded Backup custody could not be confirmed during departure.");
+                if (!_npcDepartureStallNotified)
+                {
+                    _npcDepartureStallNotified = true;
+                    try { Function.Call(Hash.SET_VEHICLE_HANDBRAKE, unit.Vehicle, true); }
+                    catch { }
+                    LogRuntime("POLICE_BACKUP_NPC_DEPARTURE_NOT_CONFIRMED",
+                        "Vehicle=" + unit.Vehicle.Handle
+                        + "; Reason=CitizenSeatNotConfirmed; PlayerSessionReleased=false");
+                    Notify("The Citizen is no longer confirmed in Backup's vehicle. Patrol remains paused until the custody handoff is restored.");
+                }
                 return;
             }
 
-            float playerDistance = player == null || !player.Exists()
-                ? float.MaxValue
-                : unit.Vehicle.Position.DistanceTo(player.Position);
-            bool playerIsFarAway = playerDistance >= DefaultSafeCleanupDistance;
-            bool departureWindowExpired = _npcBackgroundDepartureDeadline != DateTime.MinValue
-                && now >= _npcBackgroundDepartureDeadline;
-            if (playerIsFarAway || departureWindowExpired)
+            bool driverInVehicle = unit.Driver != null
+                && unit.Driver.Exists() && !unit.Driver.IsDead
+                && unit.Driver.CurrentVehicle != null
+                && unit.Driver.CurrentVehicle.Exists()
+                && unit.Driver.CurrentVehicle.Handle == unit.Vehicle.Handle;
+            Vector3 vehiclePosition = unit.Vehicle.Position;
+            float distanceFromScene = _npcBackgroundDepartureOrigin == Vector3.Zero
+                ? 0f : unit.Vehicle.Position.DistanceTo(_npcBackgroundDepartureOrigin);
+            if (driverInVehicle
+                && distanceFromScene >= NpcBackgroundDepartureMinimumDistance)
             {
-                string reason = playerIsFarAway
-                    ? "Backup vehicle left the player's active scene."
-                    : "Bounded Backup departure window completed.";
+                _npcPlayerSessionReleased =
+                    npcResponse.ReleasePlayerSessionForBackgroundTransport(
+                        "BackupVehiclePhysicallyDepartedScene");
+                if (!_npcPlayerSessionReleased)
+                {
+                    LogRuntime("POLICE_BACKUP_NPC_DEPARTURE_NOT_CONFIRMED",
+                        "Vehicle=" + unit.Vehicle.Handle
+                        + "; CitizenLoaded=true; DriverInVehicle=true"
+                        + "; DistanceFromScene=" + distanceFromScene.ToString("0.0")
+                        + "; Reason=PlayerSessionReleaseRejected");
+                    return;
+                }
+
+                string reason = "Backup vehicle physically departed with the same Citizen loaded. DistanceFromScene="
+                    + distanceFromScene.ToString("0.0") + "m.";
+                LogRuntime("POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED",
+                    "Ped=" + npcResponse.ActiveSubject.Handle
+                    + "; Vehicle=" + unit.Vehicle.Handle
+                    + "; Driver=" + unit.Driver.Handle
+                    + "; CitizenLoaded=true; DriverInVehicle=true"
+                    + "; DistanceFromScene=" + distanceFromScene.ToString("0.0")
+                    + "; MinimumDistance="
+                    + NpcBackgroundDepartureMinimumDistance.ToString("0.0")
+                    + "; PlayerSessionReleased=true");
                 npcResponse.CompleteBackupBackgroundDeparture(reason);
                 ReleaseNpcCustodyCollisionProtection(unit);
                 _npcDeliveryCompletedAt = now;
@@ -3527,9 +3633,64 @@ namespace LSImmersiveLife
                 return;
             }
 
-            // The departure task is intentionally not refreshed here. Once the
-            // loaded unit has been sent away, GTA owns the short natural drive;
-            // a new task is issued only by a future, explicit assignment.
+            float movementSinceProgress = vehiclePosition.DistanceTo(unit.LastProgressPosition);
+            if (movementSinceProgress >= 4f)
+            {
+                unit.LastProgressPosition = vehiclePosition;
+                unit.LastProgressAt = now;
+                unit.RouteRecoveryCount = 0;
+                _npcBackgroundDepartureDeadline = now.AddSeconds(
+                    NpcBackgroundDepartureSeconds);
+            }
+
+            if (_npcBackgroundDepartureDeadline != DateTime.MinValue
+                && now >= _npcBackgroundDepartureDeadline
+                && driverInVehicle && !_npcDepartureStallNotified)
+            {
+                _npcBackgroundDepartureDeadline = now.AddSeconds(
+                    NpcBackgroundDepartureSeconds);
+                int retargetAttempt = _npcRouteRetargetCount + 1;
+                bool retargetIssued = TryRetargetNpcTransportRoute(
+                    unit, _npcBackgroundDepartureDestination, now);
+                if (retargetIssued)
+                {
+                    LogRuntime("POLICE_BACKUP_NPC_DEPARTURE_ROUTE_RECOVERED",
+                        "Vehicle=" + unit.Vehicle.Handle
+                        + "; CitizenLoaded=true; DriverInVehicle=true"
+                        + "; DistanceFromScene=" + distanceFromScene.ToString("0.0")
+                        + "; Attempt=" + _npcRouteRetargetCount
+                        + "; Waypoint=" + unit.Destination
+                        + "; PlayerSessionReleased=false");
+                    Notify("Backup's transport route was blocked. The unit is trying another road path; patrol remains paused until the loaded Citizen leaves.");
+                }
+                else if (_npcRouteRetargetCount < retargetAttempt
+                    && _npcRouteRetargetCount < MaximumNpcRouteRetargets)
+                {
+                    // Count a failed candidate search as a bounded attempt too;
+                    // otherwise a missing road node would be queried forever.
+                    _npcRouteRetargetCount++;
+                    LogRuntime("POLICE_BACKUP_NPC_DEPARTURE_ROUTE_RECOVERY_FAILED",
+                        "Vehicle=" + unit.Vehicle.Handle
+                        + "; CitizenLoaded=true; DriverInVehicle=true"
+                        + "; DistanceFromScene=" + distanceFromScene.ToString("0.0")
+                        + "; Attempt=" + _npcRouteRetargetCount
+                        + "; PlayerSessionReleased=false");
+                }
+                else
+                {
+                    _npcDepartureStallNotified = true;
+                    LogRuntime("POLICE_BACKUP_NPC_DEPARTURE_STALLED",
+                        "Vehicle=" + unit.Vehicle.Handle
+                        + "; CitizenLoaded=true; DriverInVehicle=true"
+                        + "; DistanceFromScene=" + distanceFromScene.ToString("0.0")
+                        + "; RouteRetargetAttempts=" + _npcRouteRetargetCount
+                        + "; PlayerSessionReleased=false");
+                    Notify("Backup still has the Citizen but its vehicle has not physically left the scene. Patrol remains paused.");
+                }
+            }
+
+            // Keep the player activity occupied until position evidence shows
+            // the loaded Backup vehicle has actually departed the scene.
             SetState(LSPDBackupAssignmentState.Supporting);
         }
 
@@ -7285,11 +7446,14 @@ namespace LSImmersiveLife
 
             Vector3 reference = destination == Vector3.Zero
                 ? player.Position : destination;
+            bool closeCustodyTransport = _npcCustodyTransportRequested;
             float configuredDistance = Math.Max(35f, _settings.MinimumStagingDistance);
-            float minimumDistance = destination == Vector3.Zero
-                ? configuredDistance
-                : Math.Max(42f, configuredDistance * 0.65f);
-            float lateral = 10f;
+            float minimumDistance = closeCustodyTransport
+                ? NpcCustodyTransportStagingDistance
+                : destination == Vector3.Zero
+                    ? configuredDistance
+                    : Math.Max(42f, configuredDistance * 0.65f);
+            float lateral = closeCustodyTransport ? 6f : 10f;
             Vector3[] candidates =
             {
                 reference + new Vector3(-minimumDistance, lateral, 0f),
@@ -7305,33 +7469,65 @@ namespace LSImmersiveLife
             foreach (Vector3 candidate in candidates)
             {
                 Vector3 road;
-                if (!TryGetNearbyRoadPosition(candidate, reference, 55f, out road))
+                if (!TryGetNearbyRoadPosition(
+                    candidate,
+                    reference,
+                    closeCustodyTransport ? 24f : 55f,
+                    out road))
                     continue;
-                if (road.DistanceTo(player.Position)
-                    < Math.Max(22f, minimumDistance * 0.5f))
-                    continue;
-                if (destination != Vector3.Zero
-                    && road.DistanceTo(destination) < minimumDistance * 0.45f)
-                    continue;
+                if (closeCustodyTransport)
+                {
+                    float targetDistance = road.DistanceTo(reference);
+                    if (targetDistance < NpcCustodyTransportMinimumSceneDistance
+                        || targetDistance > NpcCustodyTransportMaximumSceneDistance
+                        || road.DistanceTo(player.Position) > 34f)
+                        continue;
+                }
+                else
+                {
+                    if (road.DistanceTo(player.Position)
+                        < Math.Max(22f, minimumDistance * 0.5f))
+                        continue;
+                    if (destination != Vector3.Zero
+                        && road.DistanceTo(destination) < minimumDistance * 0.45f)
+                        continue;
+                }
                 return road;
             }
 
             // A local road probe around the player is a safe last attempt,
             // but never return an unchecked coordinate that may be inside a
             // building, on a sidewalk, or at an invalid world position.
-            Vector3[] localCandidates =
-            {
-                player.GetOffsetPosition(new Vector3(-18f, 28f, 0f)),
-                player.GetOffsetPosition(new Vector3(18f, 28f, 0f)),
-                player.GetOffsetPosition(new Vector3(-18f, -28f, 0f)),
-                player.GetOffsetPosition(new Vector3(18f, -28f, 0f))
-            };
+            Vector3[] localCandidates = closeCustodyTransport
+                ? new[]
+                {
+                    player.GetOffsetPosition(new Vector3(-12f, 18f, 0f)),
+                    player.GetOffsetPosition(new Vector3(12f, 18f, 0f)),
+                    player.GetOffsetPosition(new Vector3(-12f, -18f, 0f)),
+                    player.GetOffsetPosition(new Vector3(12f, -18f, 0f))
+                }
+                : new[]
+                {
+                    player.GetOffsetPosition(new Vector3(-18f, 28f, 0f)),
+                    player.GetOffsetPosition(new Vector3(18f, 28f, 0f)),
+                    player.GetOffsetPosition(new Vector3(-18f, -28f, 0f)),
+                    player.GetOffsetPosition(new Vector3(18f, -28f, 0f))
+                };
             foreach (Vector3 candidate in localCandidates)
             {
                 Vector3 road;
-                if (!TryGetNearbyRoadPosition(candidate, player.Position, 45f, out road))
+                if (!TryGetNearbyRoadPosition(
+                    candidate,
+                    player.Position,
+                    closeCustodyTransport ? 28f : 45f,
+                    out road))
+                    continue;
+                if (closeCustodyTransport
+                    && (road.DistanceTo(reference) > NpcCustodyTransportMaximumSceneDistance
+                        || road.DistanceTo(player.Position) > 34f))
                     continue;
                 if (destination != Vector3.Zero
+                    && !closeCustodyTransport
                     && road.DistanceTo(destination) < Math.Max(18f, minimumDistance * 0.4f))
                     continue;
                 return road;
@@ -7697,7 +7893,8 @@ namespace LSImmersiveLife
                 else if (_npcTargetWasFleeing)
                 {
                     Function.Call(Hash.TASK_GO_TO_ENTITY,
-                        officer, subject, -1, 1.5f, 3.2f, 1073741824, 0);
+                        officer, subject, -1, 1.5f,
+                        DispatchFootPursuitTaskSpeed, 1073741824, 0);
                 }
                 else
                 {

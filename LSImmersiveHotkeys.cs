@@ -164,8 +164,16 @@ namespace LSImmersiveLife
     {
         internal static void SuppressMeleeThisFrame()
         {
-            Game.DisableControlThisFrame(GTA.Control.Attack);
-            Game.DisableControlThisFrame(GTA.Control.Attack2);
+            SuppressMeleeThisFrame(false);
+        }
+
+        internal static void SuppressMeleeThisFrame(bool preserveAimedWeaponAttack)
+        {
+            if (!preserveAimedWeaponAttack)
+            {
+                Game.DisableControlThisFrame(GTA.Control.Attack);
+                Game.DisableControlThisFrame(GTA.Control.Attack2);
+            }
             Game.DisableControlThisFrame(GTA.Control.MeleeAttackLight);
             Game.DisableControlThisFrame(GTA.Control.MeleeAttackHeavy);
             Game.DisableControlThisFrame(GTA.Control.MeleeAttackAlternate);

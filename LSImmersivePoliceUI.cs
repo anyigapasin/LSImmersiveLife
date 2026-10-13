@@ -59,9 +59,9 @@ namespace LSImmersiveLife
         private NativeItem _crimeBackupRequest;
         private NativeItem _acceptNpcInteraction;
         private NativeItem _rejectNpcInteraction;
-        private NativeItem _greetNpc;
         private NativeItem _requestNpcDocuments;
         private NativeItem _requestNpcValidation;
+        private NativeItem _confirmNpcRecordReview;
         private NativeItem _arrestNpcCitizen;
         private NativeItem _releaseNpcCitizen;
         private NativeItem _requestNpcTransportBackup;
@@ -650,12 +650,12 @@ namespace LSImmersiveLife
                 "Available while a Crime Activity is active.");
             _callDefaultBackup = new NativeItem(
                 "Request a Back Up NPC Ped Interaction",
-                "Available while a Citizen interaction requires assistance.");
+                "Request contact assistance; request secured-citizen transport in Citizen Ped Response.");
 
             _callBackup.Activated += delegate { RunCoreCommand(_core.CallFavoriteBackup); };
             _gangBackupRequest.Activated += delegate { RunCoreCommand(_core.CallFavoriteBackup); };
             _crimeBackupRequest.Activated += delegate { RunCoreCommand(_core.CallFavoriteBackup); };
-            _callDefaultBackup.Activated += delegate { RunCoreCommand(_core.CallFavoriteBackup); };
+            _callDefaultBackup.Activated += delegate { RunCoreCommand(_core.RequestNpcBackupAssistance); };
 
             backupResponse.Add(_callBackup);
             backupResponse.Add(_gangBackupRequest);
@@ -676,8 +676,7 @@ namespace LSImmersiveLife
             _gangBackupRequest.Enabled = available && _core.GangResponse.HasActiveIncident;
             _crimeBackupRequest.Enabled = available && _core.CrimeActivity.BlocksOtherPoliceActivities;
             _callDefaultBackup.Enabled = available
-                && _core.NpcResponse.CanRequestBackup
-                && !_core.NpcResponse.CanBeginPlayerVehicleCustody;
+                && _core.NpcResponse.CanRequestBackup;
         }
 
         private void RefreshNpcInteractionMenu()
@@ -690,9 +689,9 @@ namespace LSImmersiveLife
             // instruction when it is not ready, instead of showing dead rows.
             _acceptNpcInteraction.Enabled = true;
             _rejectNpcInteraction.Enabled = true;
-            _greetNpc.Enabled = true;
             _requestNpcDocuments.Enabled = true;
             _requestNpcValidation.Enabled = true;
+            _confirmNpcRecordReview.Enabled = true;
             _arrestNpcCitizen.Enabled = true;
             _releaseNpcCitizen.Enabled = true;
             _requestNpcTransportBackup.Enabled = true;
@@ -702,13 +701,14 @@ namespace LSImmersiveLife
         {
             _acceptNpcInteraction = new NativeItem("Accept");
             _rejectNpcInteraction = new NativeItem("Reject");
-            _greetNpc = new NativeItem("Greet The Ped");
             _requestNpcDocuments = new NativeItem("Request the Validation ID/Document");
             _requestNpcValidation = new NativeItem("Request Dispatcher For Validation Request");
+            _confirmNpcRecordReview = new NativeItem("Confirm Review of Citizen Documents");
             _arrestNpcCitizen = new NativeItem("Arrest the Ped");
             _releaseNpcCitizen = new NativeItem("Release The Ped");
             _requestNpcTransportBackup = new NativeItem(
-                "Request a Back Up For Citizen Transport");
+                "Request a Back Up For Citizen Transport",
+                "Request a nearby Backup transport escort for a physically secured citizen.");
 
             _acceptNpcInteraction.Activated += delegate
             {
@@ -718,10 +718,6 @@ namespace LSImmersiveLife
             {
                 RunNpcCommand(_core.RejectNpcInteraction);
             };
-            _greetNpc.Activated += delegate
-            {
-                RunNpcCommand(_core.BeginNpcInteraction);
-            };
             _requestNpcDocuments.Activated += delegate
             {
                 RunNpcCommand(_core.RequestNpcDocuments);
@@ -729,6 +725,10 @@ namespace LSImmersiveLife
             _requestNpcValidation.Activated += delegate
             {
                 RunNpcCommand(_core.RequestNpcValidation);
+            };
+            _confirmNpcRecordReview.Activated += delegate
+            {
+                RunNpcCommand(_core.ConfirmNpcDocumentReview);
             };
             _arrestNpcCitizen.Activated += delegate
             {
@@ -740,14 +740,14 @@ namespace LSImmersiveLife
             };
             _requestNpcTransportBackup.Activated += delegate
             {
-                RunCoreCommand(_core.CallFavoriteBackup);
+                RunCoreCommand(_core.RequestNpcBackupTransport);
             };
 
-            npcInteraction.Add(_acceptNpcInteraction);
-            npcInteraction.Add(_rejectNpcInteraction);
-            npcInteraction.Add(_greetNpc);
             npcInteraction.Add(_requestNpcDocuments);
             npcInteraction.Add(_requestNpcValidation);
+            npcInteraction.Add(_confirmNpcRecordReview);
+            npcInteraction.Add(_acceptNpcInteraction);
+            npcInteraction.Add(_rejectNpcInteraction);
             npcInteraction.Add(_arrestNpcCitizen);
             npcInteraction.Add(_releaseNpcCitizen);
             npcInteraction.Add(_requestNpcTransportBackup);
@@ -1903,14 +1903,14 @@ namespace LSImmersiveLife
         }
 
         /// <summary>
-        /// Draws the selected citizen database record in the lower-left field
+        /// Draws the selected citizen database record in the lower-right field
         /// area. This is a view only; LSNPCDatabase and LSPDNPCResponse remain
         /// responsible for the record and interaction state.
         /// </summary>
         private sealed class LSPDCitizenRecordPanel
         {
-            private const float Left = 0.035f;
-            private const float Top = 0.46f;
+            private const float Left = 0.51f;
+            private const float Top = 0.55f;
             private const float Width = 0.45f;
             private const float Height = 0.35f;
 
@@ -1962,7 +1962,7 @@ namespace LSImmersiveLife
                 _title = Text(Left + 0.018f, Top + 0.010f,
                     "CITIZEN CONTACT", 0.42f, Color.White);
                 _titleRight = RightText(Left + Width - 0.020f, Top + 0.012f,
-                    "POLICE ALMANAC", 0.35f, Color.White);
+                    "DISPATCHER VALIDATION", 0.35f, Color.White);
                 _subtitle = Text(Left + 0.018f, Top + 0.047f,
                     "ACTIVE FIELD RECORD", 0.24f,
                     Color.FromArgb(255, 88, 191, 227));

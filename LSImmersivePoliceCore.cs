@@ -147,7 +147,8 @@ namespace LSImmersiveLife
                 _profile,
                 _config.Police.NpcResponse,
                 _config.Police.Traffic,
-                _npcDatabase);
+                _npcDatabase,
+                Audio);
             NpcResponse.ConfigureSuspectInjurySettings(_config.Police.SuspectInjury);
             CrimeActivity = new LSPDCrimeActivity(
                 Audio,
@@ -2065,6 +2066,74 @@ namespace LSImmersiveLife
             return CallBackup(true);
         }
 
+        internal string RequestNpcBackupAssistance()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+            {
+                LastOperationMessage = "The player character is unavailable.";
+                return LastOperationMessage;
+            }
+
+            if (!NpcResponse.CanRequestBackup)
+            {
+                LastOperationMessage = NpcResponse.RequestBackupSupportCommand();
+                return LastOperationMessage;
+            }
+
+            LastOperationMessage = StartNpcBackupRequest(player, false);
+            return LastOperationMessage;
+        }
+
+        internal string RequestNpcBackupTransport()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+            {
+                LastOperationMessage = "The player character is unavailable.";
+                return LastOperationMessage;
+            }
+
+            if (NpcResponse.HasBackupAssignment)
+            {
+                LastOperationMessage = NpcResponse.RequestBackupTransportCommand(player);
+                return LastOperationMessage;
+            }
+
+            if (!NpcResponse.CanRequestBackupTransport)
+            {
+                LastOperationMessage = NpcResponse.RequestBackupTransportCommand(player);
+                return LastOperationMessage;
+            }
+
+            LastOperationMessage = StartNpcBackupRequest(player, true);
+            return LastOperationMessage;
+        }
+
+        private string StartNpcBackupRequest(Ped player, bool custodyTransportRequest)
+        {
+            string backupResult = Backup.RequestNpcSupport(
+                NpcResponse,
+                player,
+                true,
+                custodyTransportRequest);
+            if (!backupResult.StartsWith("Backup requested", StringComparison.OrdinalIgnoreCase)
+                && !backupResult.StartsWith("Existing backup", StringComparison.OrdinalIgnoreCase)
+                && !backupResult.StartsWith("Backup is already", StringComparison.OrdinalIgnoreCase))
+                return backupResult;
+
+            string handoff = NpcResponse.RequestBackupSupportCommand();
+            return custodyTransportRequest
+                ? "Citizen transport escort requested. " + handoff
+                : handoff + " " + backupResult;
+        }
+
         private string TryStartNpcPlayerVehicleCustody(Ped player)
         {
             if (!NpcResponse.CanBeginPlayerVehicleCustody)
@@ -2377,6 +2446,14 @@ namespace LSImmersiveLife
             if (!RequireActive())
                 return LastOperationMessage;
             LastOperationMessage = NpcResponse.RequestCitizenValidationCommand();
+            return LastOperationMessage;
+        }
+
+        internal string ConfirmNpcDocumentReview()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+            LastOperationMessage = NpcResponse.ConfirmCitizenRecordReviewCommand();
             return LastOperationMessage;
         }
 

@@ -304,6 +304,85 @@ namespace LSImmersiveLife
             }
         }
 
+        /// <summary>
+        /// Applies the authored post-flight database result to the already
+        /// selected Citizen record. Identity and life-context fields remain
+        /// stable; only document and response-status fields are refreshed.
+        /// </summary>
+        internal bool TryApplyAdverseRevalidation(
+            Ped ped,
+            bool trafficContact,
+            LSPDNPCRecord currentRecord,
+            out LSPDNPCRecord record)
+        {
+            record = null;
+            if (ped == null || !ped.Exists())
+                return false;
+            if (!IsLoaded && !Reload())
+                return false;
+
+            LSPDNPCRecord selectedRecord = currentRecord;
+            if (selectedRecord == null
+                || selectedRecord.PedModelHash != ped.Model.Hash)
+            {
+                if (!TryGetRecord(ped, trafficContact, out selectedRecord))
+                    return false;
+            }
+
+            bool alreadyAdverse = string.Equals(selectedRecord.StatusFamily, "suspicious",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(selectedRecord.StatusFamily, "high_alert",
+                    StringComparison.OrdinalIgnoreCase);
+            if (alreadyAdverse)
+            {
+                _sessionRecords[ped.Handle] = selectedRecord;
+                record = selectedRecord;
+                return true;
+            }
+
+            try
+            {
+                LSPDNPCRecord adverseRecord = GenerateRecord(ped, trafficContact, true);
+                if (adverseRecord == null
+                    || (!string.Equals(adverseRecord.StatusFamily, "suspicious", StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(adverseRecord.StatusFamily, "high_alert", StringComparison.OrdinalIgnoreCase)))
+                {
+                    LogRuntime("NPC_DATABASE_ADVERSE_REVALIDATION_UNAVAILABLE",
+                        "Ped=" + ped.Handle + "; Reason=No authored adverse status was available");
+                    return false;
+                }
+
+                selectedRecord.DocumentName = adverseRecord.DocumentName;
+                selectedRecord.DocumentStatus = adverseRecord.DocumentStatus;
+                selectedRecord.StatusId = adverseRecord.StatusId;
+                selectedRecord.StatusFamily = adverseRecord.StatusFamily;
+                selectedRecord.StatusDescription = adverseRecord.StatusDescription;
+                selectedRecord.RecommendedResponse = adverseRecord.RecommendedResponse;
+                selectedRecord.WarrantId = adverseRecord.WarrantId;
+                selectedRecord.WarrantLabel = adverseRecord.WarrantLabel;
+                selectedRecord.WarrantActive = adverseRecord.WarrantActive;
+                selectedRecord.Disposition = adverseRecord.Disposition;
+                selectedRecord.RequiresCustody = adverseRecord.RequiresCustody;
+                _sessionRecords[ped.Handle] = selectedRecord;
+                TrimSessionRecords();
+                record = selectedRecord;
+                LogRuntime("NPC_DATABASE_ADVERSE_REVALIDATION_ASSIGNED",
+                    "Ped=" + ped.Handle
+                    + "; Citizen=" + selectedRecord.CitizenId
+                    + "; Status=" + selectedRecord.StatusId
+                    + "; Family=" + selectedRecord.StatusFamily
+                    + "; Warrant=" + selectedRecord.WarrantId
+                    + "; IdentityPreserved=true");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                if (_log != null)
+                    _log.Exception("NPC_DATABASE_ADVERSE_REVALIDATION_FAILED", ex);
+                return false;
+            }
+        }
+
         private LSPDNPCRecord GenerateRecord(
             Ped ped,
             bool trafficContact,
