@@ -35,6 +35,11 @@ namespace LSImmersiveLife
         private readonly LSPDGangDataIntegration _gangData;
         private readonly LSNPCDatabase _npcDatabase;
         private readonly List<Blip> _stationMarkers = new List<Blip>();
+        private readonly List<Ped> _npcProtectedActors = new List<Ped>(16);
+        private readonly List<Vehicle> _npcProtectedVehicles = new List<Vehicle>(12);
+        private readonly List<Ped> _npcTrafficOperationActors = new List<Ped>(12);
+        private readonly List<Vehicle> _npcTrafficOperationVehicles = new List<Vehicle>(8);
+        private DateTime _nextNpcTrafficOperationRefresh = DateTime.MinValue;
         private PlayerStateSnapshot _normalPlayerState;
         private Vehicle _managedPoliceVehicle;
         private Blip _preferredPoliceVehicleBlip;
@@ -342,6 +347,9 @@ namespace LSImmersiveLife
             _gangIncidentWasActive = false;
             _crimeActivityWasActive = false;
             _npcInteractionWasActive = false;
+            _nextNpcTrafficOperationRefresh = DateTime.MinValue;
+            _npcTrafficOperationActors.Clear();
+            _npcTrafficOperationVehicles.Clear();
             ClearPendingSavedProfileApply();
             _stationSetupCompletionPending = false;
             _log.Runtime(
@@ -421,14 +429,16 @@ namespace LSImmersiveLife
 
             // Authority owns player-scoped vanilla protection. PoliceResponse
             // owns this separate local officer recognition/de-escalation pass;
-            // Core only provides the active Authority context and runtime order.
-            // This remains active outside Dispatch so ordinary patrol does not
-            // revert to hostile vanilla Police behavior between incidents.
+            // Core provides the active Authority context and the current
+            // Dispatch occurrence so PoliceResponse can distinguish each
+            // secured suspect from unresolved threats. This remains active
+            // outside Dispatch so ordinary patrol behavior stays available.
             if (!paused)
                 Response.MaintainAuthoritySupport(
                     player,
                     _authority.Settings,
-                    Convoy.ProtectedActors.Concat(Backup.ProtectedActors));
+                    Convoy.ProtectedActors.Concat(Backup.ProtectedActors),
+                    Dispatch.Current);
 
             if (Patrol.IsPatrolling && !paused)
                 UpdateGangSample(player);
@@ -491,17 +501,33 @@ namespace LSImmersiveLife
             // as a protected scene actor, so the UI could see a person directly
             // in front of Anyi yet still report "No safe civilian...". Protect
             // only actors that a specialized owner actually owns.
-            var protectedActors = new List<Ped>();
-            protectedActors.AddRange(CrimeActivity.ActiveCriminals);
+            _npcProtectedActors.Clear();
+            _npcProtectedActors.AddRange(CrimeActivity.ActiveCriminals);
             Ped activeGangThreat = _gangResponse.ActiveThreat;
             if (activeGangThreat != null && activeGangThreat.Exists())
-                protectedActors.Add(activeGangThreat);
-            protectedActors.AddRange(_gangResponse.ActiveThreats);
-            protectedActors.AddRange(Convoy.ProtectedActors);
-            protectedActors.AddRange(Backup.ProtectedActors);
-            NpcResponse.SetProtectedSceneActors(Dispatch.Current, protectedActors);
-            NpcResponse.SetProtectedSceneVehicles(
-                Convoy.ProtectedVehicles.Concat(Backup.ProtectedVehicles));
+                _npcProtectedActors.Add(activeGangThreat);
+            _npcProtectedActors.AddRange(_gangResponse.ActiveThreats);
+            _npcProtectedActors.AddRange(Convoy.ProtectedActors);
+            _npcProtectedActors.AddRange(Backup.ProtectedActors);
+            _npcProtectedActors.AddRange(Response.ProtectedActors);
+            NpcResponse.SetProtectedSceneActors(Dispatch.Current, _npcProtectedActors);
+
+            _npcProtectedVehicles.Clear();
+            _npcProtectedVehicles.AddRange(Dispatch.CurrentSuspectVehicles);
+            LSPDDispatchEvent currentDispatch = Dispatch.Current;
+            if (currentDispatch != null)
+            {
+                if (currentDispatch.SuspectVehicle != null)
+                    _npcProtectedVehicles.Add(currentDispatch.SuspectVehicle);
+                if (currentDispatch.VictimVehicle != null)
+                    _npcProtectedVehicles.Add(currentDispatch.VictimVehicle);
+                if (currentDispatch.ParkedPlayerUtility != null)
+                    _npcProtectedVehicles.Add(currentDispatch.ParkedPlayerUtility);
+            }
+            _npcProtectedVehicles.AddRange(Convoy.ProtectedVehicles);
+            _npcProtectedVehicles.AddRange(Backup.ProtectedVehicles);
+            _npcProtectedVehicles.AddRange(Response.ProtectedVehicles);
+            NpcResponse.SetProtectedSceneVehicles(_npcProtectedVehicles);
             bool dispatchBlocksNpcContact = Dispatch.HasIncident || gangActive
                 || Convoy.Active || crimeActivityActive;
             // NPCResponse's traffic/crowd reactions are deliberately local to
@@ -512,12 +538,45 @@ namespace LSImmersiveLife
             // runtime output during otherwise unrelated travel.
             bool activeRoadScene = IsPlayerAtActiveRoadScene(
                 player, gangActive, crimeActivityActive);
+            DateTime now = DateTime.UtcNow;
+            if (now >= _nextNpcTrafficOperationRefresh)
+            {
+                _nextNpcTrafficOperationRefresh = now.AddMilliseconds(500);
+                _npcTrafficOperationActors.Clear();
+                _npcTrafficOperationActors.AddRange(Convoy.ProtectedActors);
+                _npcTrafficOperationActors.AddRange(Backup.ProtectedActors);
+                _npcTrafficOperationActors.AddRange(Response.ProtectedActors);
+                _npcTrafficOperationVehicles.Clear();
+                _npcTrafficOperationVehicles.AddRange(Convoy.ProtectedVehicles);
+                _npcTrafficOperationVehicles.AddRange(Backup.ProtectedVehicles);
+                _npcTrafficOperationVehicles.AddRange(Response.ProtectedVehicles);
+                if (Dispatch.HasIncident && currentDispatch != null)
+                {
+                    if (currentDispatch.Suspect != null)
+                        _npcTrafficOperationActors.Add(currentDispatch.Suspect);
+                    if (currentDispatch.Suspects != null)
+                        _npcTrafficOperationActors.AddRange(currentDispatch.Suspects);
+                    if (currentDispatch.Victim != null)
+                        _npcTrafficOperationActors.Add(currentDispatch.Victim);
+                    if (currentDispatch.AdditionalParticipants != null)
+                        _npcTrafficOperationActors.AddRange(currentDispatch.AdditionalParticipants);
+                    _npcTrafficOperationVehicles.AddRange(Dispatch.CurrentSuspectVehicles);
+                    if (currentDispatch.SuspectVehicle != null)
+                        _npcTrafficOperationVehicles.Add(currentDispatch.SuspectVehicle);
+                    if (currentDispatch.VictimVehicle != null)
+                        _npcTrafficOperationVehicles.Add(currentDispatch.VictimVehicle);
+                }
+                NpcResponse.SetTrafficOperationEntities(
+                    _npcTrafficOperationActors,
+                    _npcTrafficOperationVehicles);
+            }
             NpcResponse.Process(
                 Patrol.IsPatrolling,
                 dispatchBlocksNpcContact,
                 activeRoadScene,
                 paused,
-                allowGameplayInput);
+                allowGameplayInput,
+                _authority.IsActive && _authority.Settings.EnableCivilianReactionControl);
 
             bool npcInteractionActive = NpcResponse.HasActiveInteraction;
             if (_npcInteractionWasActive && !npcInteractionActive)

@@ -16,6 +16,8 @@ namespace LSImmersiveLife
     /// </summary>
     internal sealed class LSPDPoliceResponse
     {
+        private const string DispatchCustodyRelationshipGroupName =
+            "LSIL_DISPATCH_CUSTODY";
         private const int TaskRefreshMilliseconds = 6000;
         private const float SceneArrivalRadius = 18f;
         private const float InteriorThresholdRadius = 1.35f;
@@ -32,11 +34,20 @@ namespace LSImmersiveLife
             new List<PoliceResponseUnit>();
         private readonly Dictionary<int, DateTime> _authorityAcknowledgements =
             new Dictionary<int, DateTime>();
-        private readonly Dictionary<int, DateTime> _authorityDeescalations =
-            new Dictionary<int, DateTime>();
+        private readonly Dictionary<int, int> _authorityDeescalationTargets =
+            new Dictionary<int, int>();
+        private readonly Dictionary<int, string> _authorityDeescalationOccurrences =
+            new Dictionary<int, string>();
+        private readonly Dictionary<int, DispatchCustodyActorState>
+            _dispatchCustodyActors = new Dictionary<int, DispatchCustodyActorState>();
+        private readonly Dictionary<int, DispatchCustodyRelationshipSnapshot>
+            _dispatchCustodyRelationshipSnapshots =
+                new Dictionary<int, DispatchCustodyRelationshipSnapshot>();
         private DateTime _nextAuthoritySupportScan = DateTime.MinValue;
         private DateTime _nextResponseModelStatusLog = DateTime.MinValue;
         private int _nearbyAuthorityAllyCount;
+        private int _dispatchCustodyRelationshipGroupHash;
+        private int _lastDispatchCustodySignature;
 
         // This list is only a fallback for vanilla peds whose relationship
         // group is not exposed correctly by another mod. It deliberately does
@@ -92,6 +103,23 @@ namespace LSImmersiveLife
             internal int InteriorThreatTargetHandle;
         }
 
+        private sealed class DispatchCustodyActorState
+        {
+            internal Ped Actor;
+            internal int OriginalRelationshipGroup;
+            internal int AssignedRelationshipGroup;
+            internal int ModelHash;
+            internal string OccurrenceId;
+            internal string State;
+        }
+
+        private sealed class DispatchCustodyRelationshipSnapshot
+        {
+            internal int OtherGroup;
+            internal int CustodyToOther;
+            internal int OtherToCustody;
+        }
+
         private const int InteriorPhaseVehicleResponse = 0;
         private const int InteriorPhaseLeaveVehicle = 1;
         private const int InteriorPhaseApproachEntry = 2;
@@ -134,6 +162,30 @@ namespace LSImmersiveLife
             {
                 CleanupDead();
                 return _units.Count;
+            }
+        }
+
+        // PoliceCore may expose these live references to NPCResponse as
+        // protected scene entities. LSPDPoliceResponse remains their owner;
+        // ambient traffic must never replace a response vehicle or officer task.
+        internal IEnumerable<Ped> ProtectedActors
+        {
+            get
+            {
+                foreach (PoliceResponseUnit unit in _units)
+                    if (unit != null && unit.Driver != null
+                        && unit.Driver.Exists() && !unit.Driver.IsDead)
+                        yield return unit.Driver;
+            }
+        }
+
+        internal IEnumerable<Vehicle> ProtectedVehicles
+        {
+            get
+            {
+                foreach (PoliceResponseUnit unit in _units)
+                    if (unit != null && unit.Vehicle != null && unit.Vehicle.Exists())
+                        yield return unit.Vehicle;
             }
         }
 
@@ -1015,15 +1067,17 @@ namespace LSImmersiveLife
 
         /// <summary>
         /// Maintains local, non-owning recognition from nearby vanilla Police
-        /// and optional military personnel toward the active Police player.
-        /// It never changes relationship groups, never touches gang/civilian
-        /// actors, and clears a task only when the recognised officer is
-        /// actually in combat against the player.
+        /// and optional military personnel toward the active Police player and
+        /// the current Dispatch custody transition. Dispatch actors remain
+        /// owned by Dispatch/Convoy; this owner only changes a secured suspect's
+        /// temporary Police relationship and de-escalates an officer who is
+        /// actually targeting that suspect.
         /// </summary>
         internal void MaintainAuthoritySupport(
             Ped player,
             LSPDAuthoritySettings authoritySettings,
-            IEnumerable<Ped> protectedActors)
+            IEnumerable<Ped> protectedActors,
+            LSPDDispatchEvent dispatchIncident)
         {
             if (player == null || !player.Exists() || authoritySettings == null
                 || !authoritySettings.EnableWorldBehaviorChanges
@@ -1032,16 +1086,42 @@ namespace LSImmersiveLife
                     && !authoritySettings.SuppressAmbientPoliceHostility
                     && !authoritySettings.SuppressMilitaryHostility))
             {
+                RestoreDispatchCustodyProtection("AuthoritySupportDisabled");
+                _authorityDeescalationTargets.Clear();
+                _authorityDeescalationOccurrences.Clear();
+                _lastDispatchCustodySignature = 0;
                 _nearbyAuthorityAllyCount = 0;
                 return;
             }
 
             DateTime now = DateTime.UtcNow;
+            int custodySignature = DispatchCustodySignature(dispatchIncident);
+            if (custodySignature != _lastDispatchCustodySignature)
+            {
+                _lastDispatchCustodySignature = custodySignature;
+                // Core calls this coordinator every active tick. A tiny
+                // managed-state signature lets a new handcuff/compliance state
+                // run the existing bounded nearby scan immediately, without
+                // polling the world or issuing natives every frame.
+                _nextAuthoritySupportScan = DateTime.MinValue;
+            }
             if (now < _nextAuthoritySupportScan)
                 return;
             _nextAuthoritySupportScan = now.AddMilliseconds(
                 _settings.AuthoritySupportScanMilliseconds);
             TrimAuthoritySupportMemory(now);
+
+            try
+            {
+                ReconcileDispatchCustodyProtection(
+                    dispatchIncident,
+                    player,
+                    authoritySettings.SuppressAmbientPoliceHostility);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_CUSTODY_RECONCILE_FAILED", ex);
+            }
 
             Ped[] nearby;
             try
@@ -1072,6 +1152,8 @@ namespace LSImmersiveLife
                 }
             }
 
+            AddDispatchActorHandles(dispatchIncident, protectedHandles);
+
             var allies = new List<Ped>();
             foreach (Ped ped in nearby)
             {
@@ -1087,33 +1169,70 @@ namespace LSImmersiveLife
                 allies.Add(ped);
             }
 
-            // A hostile officer always receives the available local support
-            // budget before an idle officer receives a cosmetic acknowledgement.
-            // This avoids the former failure mode where three greetings could
-            // consume the scan budget while a fourth nearby officer kept aiming
-            // at the player.
+            // Some Police addons use a Police vehicle/model with a non-COP
+            // relationship group. Snapshot and protect only relationship pairs
+            // represented by this nearby support sample.
+            if (_dispatchCustodyActors.Count > 0)
+            {
+                var reconciledPoliceGroups = new HashSet<int>();
+                foreach (Ped ally in allies)
+                {
+                    int group = GetPedRelationshipGroupHash(ally);
+                    if (group != 0 && reconciledPoliceGroups.Add(group))
+                        EnsureDispatchCustodyRelationship(group);
+                }
+            }
+
+            // Officers who are already engaged against a newly secured suspect
+            // or the Player receive the local task correction before cosmetic
+            // acknowledgements. Remember the current target, not just a timer,
+            // so a continuing combat task is not cleared every few seconds.
             int touched = 0;
+            var observedTargetingOfficers = new HashSet<int>();
             foreach (Ped ped in allies)
             {
-                if (touched >= _settings.MaximumAuthoritySupportPeds
-                    || !IsTargetingPlayer(ped, player))
+                Ped custodyTarget = FindDispatchCustodyCombatTarget(ped);
+                int targetHandle = custodyTarget != null
+                    ? custodyTarget.Handle
+                    : IsTargetingPlayer(ped, player) ? player.Handle : 0;
+                if (targetHandle == 0)
                     continue;
-                if (IsRemembered(_authorityDeescalations, ped.Handle, now))
+                observedTargetingOfficers.Add(ped.Handle);
+                int previousTargetHandle;
+                string occurrenceId = targetHandle == player.Handle
+                    ? "PolicePlayer"
+                    : DispatchCustodyOccurrence(targetHandle);
+                string previousOccurrenceId;
+                if (_authorityDeescalationTargets.TryGetValue(
+                        ped.Handle, out previousTargetHandle)
+                    && previousTargetHandle == targetHandle
+                    && _authorityDeescalationOccurrences.TryGetValue(
+                        ped.Handle, out previousOccurrenceId)
+                    && string.Equals(previousOccurrenceId, occurrenceId,
+                        StringComparison.Ordinal))
+                    continue;
+                if (touched >= _settings.MaximumAuthoritySupportPeds)
                     continue;
 
                 try
                 {
-                    // Clearing a confirmed player-targeting task is local and
-                    // reversible: no persistent ped flags, models,
-                    // relationships, or ambient entity ownership change.
+                    // A relationship change prevents reacquisition; this one
+                    // task clear ends an already-issued combat assignment. The
+                    // officer's actor, model, weapons, and ownership stay intact.
                     ped.Task.ClearAll();
-                    if (_settings.AuthorityGreetingEnabled && !ped.IsInVehicle())
+                    if (targetHandle == player.Handle
+                        && _settings.AuthorityGreetingEnabled && !ped.IsInVehicle())
                         ped.Task.LookAt(player, 900);
-                    _authorityDeescalations[ped.Handle] = now.AddSeconds(3);
+                    _authorityDeescalationTargets[ped.Handle] = targetHandle;
+                    _authorityDeescalationOccurrences[ped.Handle] = occurrenceId;
                     touched++;
                     LogRuntime(
                         "POLICE_AUTHORITY_OFFICER_DEESCALATED",
-                        "Ped=" + ped.Handle + "; Military="
+                        "Officer=" + ped.Handle
+                        + "; Target=" + targetHandle
+                        + "; TargetType=" + (targetHandle == player.Handle
+                            ? "PolicePlayer" : "DispatchCustodySuspect")
+                        + "; Military="
                         + IsMilitaryAlly(ped).ToString()
                         + "; Distance="
                         + ped.Position.DistanceTo(player.Position).ToString("0.0"));
@@ -1124,6 +1243,13 @@ namespace LSImmersiveLife
                 }
             }
 
+            foreach (int officerHandle in _authorityDeescalationTargets.Keys.ToArray())
+                if (!observedTargetingOfficers.Contains(officerHandle))
+                {
+                    _authorityDeescalationTargets.Remove(officerHandle);
+                    _authorityDeescalationOccurrences.Remove(officerHandle);
+                }
+
             if (!_settings.AuthorityGreetingEnabled)
             {
                 _nearbyAuthorityAllyCount = allies.Count;
@@ -1133,7 +1259,7 @@ namespace LSImmersiveLife
             foreach (Ped ped in allies)
             {
                 if (touched >= _settings.MaximumAuthoritySupportPeds
-                    || IsRemembered(_authorityDeescalations, ped.Handle, now)
+                    || _authorityDeescalationTargets.ContainsKey(ped.Handle)
                     || !CanAcknowledgeOfficer(ped, player)
                     || IsRemembered(_authorityAcknowledgements, ped.Handle, now))
                     continue;
@@ -1161,6 +1287,444 @@ namespace LSImmersiveLife
             _nearbyAuthorityAllyCount = allies.Count;
         }
 
+        private static int DispatchCustodySignature(LSPDDispatchEvent incident)
+        {
+            if (!IsActiveDispatchCustodyIncident(incident)
+                || incident.Suspects == null)
+                return 0;
+
+            unchecked
+            {
+                int signature = 17;
+                signature = signature * 31 + (incident.Id ?? string.Empty).GetHashCode();
+                signature = signature * 31 + (int)incident.State;
+                foreach (Ped suspect in incident.Suspects)
+                {
+                    if (suspect == null)
+                        continue;
+                    string custodyState = DispatchCustodyState(incident, suspect);
+                    if (custodyState == null)
+                        continue;
+                    signature = signature * 31 + suspect.Handle;
+                    signature = signature * 31 + custodyState.GetHashCode();
+                }
+                return signature == 0 ? 1 : signature;
+            }
+        }
+
+        private static bool IsActiveDispatchCustodyIncident(
+            LSPDDispatchEvent incident)
+        {
+            if (incident == null)
+                return false;
+            switch (incident.State)
+            {
+                case LSPDDispatchState.Accepted:
+                case LSPDDispatchState.EnRoute:
+                case LSPDDispatchState.OnScene:
+                case LSPDDispatchState.Investigating:
+                case LSPDDispatchState.SuspectFleeing:
+                case LSPDDispatchState.SuspectCompliant:
+                case LSPDDispatchState.SuspectResisting:
+                case LSPDDispatchState.Arrested:
+                case LSPDDispatchState.AwaitingTransport:
+                case LSPDDispatchState.HoldingAtStation:
+                case LSPDDispatchState.PrisonTransfer:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static string DispatchCustodyState(
+            LSPDDispatchEvent incident,
+            Ped suspect)
+        {
+            if (!IsActiveDispatchCustodyIncident(incident)
+                || suspect == null || incident.Suspects == null
+                || !incident.Suspects.Any(value => value != null
+                    && value.Handle == suspect.Handle))
+                return null;
+
+            int handle = suspect.Handle;
+            if ((incident.PlayerHandcuffInProgress
+                    && incident.PlayerHandcuffTargetHandle == handle)
+                || (incident.BackupArrestInProgressSuspectHandles != null
+                    && incident.BackupArrestInProgressSuspectHandles.Contains(handle)))
+                return "PhysicalArrestInProgress";
+
+            string response;
+            if (incident.SuspectResponses != null
+                && incident.SuspectResponses.TryGetValue(handle, out response)
+                && IsExplicitRenewedThreat(response))
+                return null;
+
+            if (incident.ArrestedSuspects != null
+                && incident.ArrestedSuspects.Any(value => value != null
+                    && value.Handle == handle))
+                return "HandcuffedOrInCustody";
+            if (incident.CompliantSuspects != null
+                && incident.CompliantSuspects.Any(value => value != null
+                    && value.Handle == handle))
+                return "Compliant";
+            return null;
+        }
+
+        private static bool IsExplicitRenewedThreat(string response)
+        {
+            return string.Equals(response, "resist", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(response, "flee", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(response, "fight", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(response, "shoot", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(response, "combat", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void ReconcileDispatchCustodyProtection(
+            LSPDDispatchEvent incident,
+            Ped player,
+            bool protectionEnabled)
+        {
+            var desired = new Dictionary<int, string>();
+            if (protectionEnabled && incident != null && incident.Suspects != null)
+                foreach (Ped suspect in incident.Suspects)
+                {
+                    if (suspect == null || !suspect.Exists() || suspect.IsDead
+                        || suspect.Health <= 0)
+                        continue;
+                    string custodyState = DispatchCustodyState(incident, suspect);
+                    if (custodyState != null)
+                        desired[suspect.Handle] = custodyState;
+                }
+
+            if (desired.Count == 0 || !EnsureDispatchCustodyRelationshipGroup())
+            {
+                RestoreDispatchCustodyProtection(
+                    desired.Count == 0 ? "NoSecuredDispatchSuspects" : "RelationshipGroupUnavailable");
+                return;
+            }
+
+            if (player != null && player.Exists())
+                EnsureDispatchCustodyRelationship(GetPedRelationshipGroupHash(player));
+            EnsureDispatchCustodyRelationship(
+                RelationshipGroupHashValue(RelationshipGroupHash.Cop));
+
+            var retained = new HashSet<int>();
+            foreach (KeyValuePair<int, string> entry in desired)
+            {
+                int handle = entry.Key;
+                Ped suspect = incident.Suspects.FirstOrDefault(value =>
+                    value != null && value.Exists() && value.Handle == handle);
+                if (suspect == null)
+                    continue;
+
+                int modelHash;
+                int currentGroup;
+                try
+                {
+                    modelHash = suspect.Model.Hash;
+                    currentGroup = GetPedRelationshipGroupHash(suspect);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                DispatchCustodyActorState state;
+                if (_dispatchCustodyActors.TryGetValue(handle, out state)
+                    && (state.ModelHash != modelHash
+                        || state.Actor == null
+                        || !state.Actor.Exists()))
+                {
+                    RestoreDispatchCustodyActor(state, "EntityChanged");
+                    _dispatchCustodyActors.Remove(handle);
+                    state = null;
+                }
+
+                if (state == null)
+                {
+                    state = new DispatchCustodyActorState
+                    {
+                        Actor = suspect,
+                        OriginalRelationshipGroup = currentGroup,
+                        AssignedRelationshipGroup = _dispatchCustodyRelationshipGroupHash,
+                        ModelHash = modelHash,
+                        OccurrenceId = incident.Id ?? string.Empty,
+                        State = entry.Value
+                    };
+                    _dispatchCustodyActors[handle] = state;
+                    if (currentGroup != _dispatchCustodyRelationshipGroupHash)
+                        Function.Call(Hash.SET_PED_RELATIONSHIP_GROUP_HASH,
+                            suspect, _dispatchCustodyRelationshipGroupHash);
+                    LogRuntime(
+                        "POLICE_DISPATCH_CUSTODY_PROTECTION_APPLIED",
+                        "Occurrence=" + state.OccurrenceId
+                        + "; Suspect=" + handle
+                        + "; State=" + state.State
+                        + "; OriginalGroup=" + state.OriginalRelationshipGroup
+                        + "; CustodyGroup=" + state.AssignedRelationshipGroup);
+                }
+                else
+                {
+                    if (currentGroup != state.AssignedRelationshipGroup)
+                    {
+                        // Keep the latest externally assigned group as the
+                        // restoration target, then reapply this bounded custody
+                        // state while the Dispatch transition remains active.
+                        state.OriginalRelationshipGroup = currentGroup;
+                        Function.Call(Hash.SET_PED_RELATIONSHIP_GROUP_HASH,
+                            suspect, state.AssignedRelationshipGroup);
+                    }
+                    if (!string.Equals(state.OccurrenceId, incident.Id,
+                            StringComparison.Ordinal)
+                        || !string.Equals(state.State, entry.Value,
+                            StringComparison.Ordinal))
+                    {
+                        LogRuntime(
+                            "POLICE_DISPATCH_CUSTODY_PROTECTION_STATE",
+                            "Occurrence=" + incident.Id
+                            + "; Suspect=" + handle
+                            + "; PreviousOccurrence=" + state.OccurrenceId
+                            + "; PreviousState=" + state.State
+                            + "; State=" + entry.Value);
+                        state.OccurrenceId = incident.Id ?? string.Empty;
+                        state.State = entry.Value;
+                    }
+                }
+
+                retained.Add(handle);
+            }
+
+            foreach (int handle in _dispatchCustodyActors.Keys.ToArray())
+                if (!retained.Contains(handle))
+                {
+                    DispatchCustodyActorState state = _dispatchCustodyActors[handle];
+                    RestoreDispatchCustodyActor(state, "NoLongerSecuredOrCompliant");
+                    _dispatchCustodyActors.Remove(handle);
+                }
+
+            if (_dispatchCustodyActors.Count == 0)
+                RestoreDispatchCustodyRelationships();
+        }
+
+        private bool EnsureDispatchCustodyRelationshipGroup()
+        {
+            if (_dispatchCustodyRelationshipGroupHash != 0)
+                return true;
+            try
+            {
+                using (OutputArgument groupOutput = new OutputArgument())
+                {
+                    Function.Call<bool>(
+                        Hash.ADD_RELATIONSHIP_GROUP,
+                        DispatchCustodyRelationshipGroupName,
+                        groupOutput);
+                    _dispatchCustodyRelationshipGroupHash = groupOutput.GetResult<int>();
+                }
+                if (_dispatchCustodyRelationshipGroupHash == 0)
+                    _dispatchCustodyRelationshipGroupHash = unchecked((int)
+                        StringHash.AtStringHash(DispatchCustodyRelationshipGroupName, 0));
+                return _dispatchCustodyRelationshipGroupHash != 0;
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_CUSTODY_GROUP_CREATE_FAILED", ex);
+                return false;
+            }
+        }
+
+        private void EnsureDispatchCustodyRelationship(int otherGroup)
+        {
+            int custodyGroup = _dispatchCustodyRelationshipGroupHash;
+            if (custodyGroup == 0 || otherGroup == 0 || otherGroup == custodyGroup)
+                return;
+            try
+            {
+                int custodyToOther = Function.Call<int>(
+                    Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                    custodyGroup, otherGroup);
+                int otherToCustody = Function.Call<int>(
+                    Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                    otherGroup, custodyGroup);
+
+                DispatchCustodyRelationshipSnapshot snapshot;
+                if (!_dispatchCustodyRelationshipSnapshots.TryGetValue(
+                        otherGroup, out snapshot))
+                {
+                    snapshot = new DispatchCustodyRelationshipSnapshot
+                    {
+                        OtherGroup = otherGroup,
+                        CustodyToOther = custodyToOther,
+                        OtherToCustody = otherToCustody
+                    };
+                    _dispatchCustodyRelationshipSnapshots[otherGroup] = snapshot;
+                }
+                else
+                {
+                    // Retain a new live value before restoring our temporary
+                    // Respect relationship, so authority shutdown does not
+                    // discard a change made by another relationship owner.
+                    if (custodyToOther != 1)
+                        snapshot.CustodyToOther = custodyToOther;
+                    if (otherToCustody != 1)
+                        snapshot.OtherToCustody = otherToCustody;
+                }
+
+                if (custodyToOther != 1 || otherToCustody != 1)
+                {
+                    Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                        1, custodyGroup, otherGroup);
+                    Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                        1, otherGroup, custodyGroup);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_CUSTODY_RELATIONSHIP_FAILED", ex);
+            }
+        }
+
+        private void RestoreDispatchCustodyProtection(string reason)
+        {
+            foreach (DispatchCustodyActorState state in
+                _dispatchCustodyActors.Values.ToArray())
+                RestoreDispatchCustodyActor(state, reason);
+            _dispatchCustodyActors.Clear();
+            RestoreDispatchCustodyRelationships();
+        }
+
+        private void RestoreDispatchCustodyActor(
+            DispatchCustodyActorState state,
+            string reason)
+        {
+            if (state == null || state.Actor == null || !state.Actor.Exists())
+                return;
+            try
+            {
+                if (state.Actor.Model.Hash != state.ModelHash)
+                    return;
+                int currentGroup = GetPedRelationshipGroupHash(state.Actor);
+                if (currentGroup != state.AssignedRelationshipGroup)
+                    return;
+                Function.Call(Hash.SET_PED_RELATIONSHIP_GROUP_HASH,
+                    state.Actor, state.OriginalRelationshipGroup);
+                LogRuntime(
+                    "POLICE_DISPATCH_CUSTODY_PROTECTION_RESTORED",
+                    "Occurrence=" + state.OccurrenceId
+                    + "; Suspect=" + state.Actor.Handle
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; RelationshipGroup=" + state.OriginalRelationshipGroup);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_CUSTODY_ACTOR_RESTORE_FAILED", ex);
+            }
+        }
+
+        private void RestoreDispatchCustodyRelationships()
+        {
+            int custodyGroup = _dispatchCustodyRelationshipGroupHash;
+            if (custodyGroup == 0)
+                return;
+            foreach (DispatchCustodyRelationshipSnapshot snapshot in
+                _dispatchCustodyRelationshipSnapshots.Values.ToArray())
+            {
+                try
+                {
+                    int currentCustodyToOther = Function.Call<int>(
+                        Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                        custodyGroup, snapshot.OtherGroup);
+                    int currentOtherToCustody = Function.Call<int>(
+                        Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                        snapshot.OtherGroup, custodyGroup);
+                    if (currentCustodyToOther == 1)
+                        Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                            snapshot.CustodyToOther,
+                            custodyGroup,
+                            snapshot.OtherGroup);
+                    if (currentOtherToCustody == 1)
+                        Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                            snapshot.OtherToCustody,
+                            snapshot.OtherGroup,
+                            custodyGroup);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_DISPATCH_CUSTODY_RELATIONSHIP_RESTORE_FAILED", ex);
+                }
+            }
+
+            _dispatchCustodyRelationshipSnapshots.Clear();
+            try
+            {
+                Function.Call(Hash.REMOVE_RELATIONSHIP_GROUP, custodyGroup);
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_DISPATCH_CUSTODY_GROUP_REMOVE_FAILED", ex);
+            }
+            _dispatchCustodyRelationshipGroupHash = 0;
+        }
+
+        private static int GetPedRelationshipGroupHash(Ped ped)
+        {
+            try
+            {
+                if (ped == null || !ped.Exists())
+                    return 0;
+                return Function.Call<int>(Hash.GET_PED_RELATIONSHIP_GROUP_HASH, ped);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private string DispatchCustodyOccurrence(int suspectHandle)
+        {
+            DispatchCustodyActorState state;
+            return _dispatchCustodyActors.TryGetValue(suspectHandle, out state)
+                && state != null
+                ? state.OccurrenceId ?? string.Empty
+                : string.Empty;
+        }
+
+        private Ped FindDispatchCustodyCombatTarget(Ped officer)
+        {
+            if (officer == null || !officer.Exists() || _dispatchCustodyActors.Count == 0)
+                return null;
+            foreach (DispatchCustodyActorState state in _dispatchCustodyActors.Values)
+            {
+                if (state == null || state.Actor == null || !state.Actor.Exists()
+                    || state.Actor.IsDead)
+                    continue;
+                try
+                {
+                    if (officer.IsInCombatAgainst(state.Actor))
+                        return state.Actor;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        private static void AddDispatchActorHandles(
+            LSPDDispatchEvent incident,
+            ISet<int> handles)
+        {
+            if (incident == null || handles == null)
+                return;
+            if (incident.Suspects != null)
+                foreach (Ped actor in incident.Suspects)
+                    if (actor != null && actor.Exists())
+                        handles.Add(actor.Handle);
+            if (incident.AdditionalParticipants != null)
+                foreach (Ped actor in incident.AdditionalParticipants)
+                    if (actor != null && actor.Exists())
+                        handles.Add(actor.Handle);
+            if (incident.Victim != null && incident.Victim.Exists())
+                handles.Add(incident.Victim.Handle);
+        }
+
         internal void ReleaseAll()
         {
             foreach (PoliceResponseUnit unit in _units.ToArray())
@@ -1172,7 +1736,10 @@ namespace LSImmersiveLife
         {
             ReleaseAll();
             _authorityAcknowledgements.Clear();
-            _authorityDeescalations.Clear();
+            _authorityDeescalationTargets.Clear();
+            _authorityDeescalationOccurrences.Clear();
+            RestoreDispatchCustodyProtection("PoliceAuthorityReset");
+            _lastDispatchCustodySignature = 0;
             _nextAuthoritySupportScan = DateTime.MinValue;
             _nearbyAuthorityAllyCount = 0;
         }
@@ -1264,7 +1831,6 @@ namespace LSImmersiveLife
         private void TrimAuthoritySupportMemory(DateTime now)
         {
             TrimMemory(_authorityAcknowledgements, now);
-            TrimMemory(_authorityDeescalations, now);
         }
 
         private static void TrimMemory(Dictionary<int, DateTime> memory, DateTime now)

@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!--
   LS Immersive Life's one editable configuration document.
 
@@ -19,7 +19,7 @@
      pedestrianDensityPercent="100" />
 
     <Logging runtimeEnabled="true" debugEnabled="true" 
-    verboseDiagnostics="false" sessionHeaders="true" />
+    verboseDiagnostics="true" sessionHeaders="true" />
     <Performance maxManagedEntities="64" 
     cleanupIntervalSeconds="30" 
     heavyScanIntervalMilliseconds="1250" 
@@ -41,7 +41,7 @@
     suppressMilitaryHostility="true" 
     authorityControlRefreshMilliseconds="750" 
     enableGangReactionControl="false" 
-    enableCivilianReactionControl="false" 
+    enableCivilianReactionControl="true" 
     enableWorldBehaviorChanges="true"
     useVerifiedInteriorsOnly="true" />
 
@@ -63,7 +63,7 @@
     <!-- Quiet, player-led criminal intelligence. This is intentionally separate
          from Dispatch and uses LSPDCrimeActivityEvent.xml only as scene data. -->
 
-    <CrimeActivity enabled="true" 
+    <CrimeActivity enabled="false" 
      autoDiscover="true" 
      nearbyTipNotifications="true" 
      discoveryScanSeconds="8"

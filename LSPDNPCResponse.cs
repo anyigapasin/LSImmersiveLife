@@ -11,18 +11,17 @@ using System.Windows.Forms;
 namespace LSImmersiveLife
 {
     /// <summary>
-    /// Local Police civilian and traffic-contact owner. Construction is passive;
-    /// runtime contacts are gated by Police Authority and Patrol.
+    /// Local Police civilian-contact and ambient-reaction owner. Construction is
+    /// passive; PoliceCore supplies Authority context and owned-scene boundaries.
     /// </summary>
     // The original boundary note is retained above. The owner below now runs
     // only through the explicit Authority and Patrol gates described here.
     /// <summary>
-    /// Owns the small, Police-only civilian contact loop.
+    /// Owns bounded Police-only civilian contact and ambient reaction loops.
     ///
-    /// This is deliberately local: it considers one nearby foot pedestrian or
-    /// one nearby driver, never scans the city, never owns Gang data, and never
-    /// creates a Dispatch incident. PoliceCore calls it only during an active
-    /// Police Authority patrol.
+    /// Contact selection remains Patrol-only. Presence and traffic reactions
+    /// follow active Authority scenes and custody using small local samples. This
+    /// owner never scans the city, owns Gang data, or creates Dispatch incidents.
     /// </summary>
     internal sealed class LSPDNPCResponse
     {
@@ -39,7 +38,7 @@ namespace LSImmersiveLife
         private const float StoppedTrafficSpeed = 6.0f;
         private const float LocalTrafficCautionSpeed = 4.0f;
         private const float ActiveSceneTrafficCautionSpeed = 7.0f;
-        private const float ActiveSceneTrafficDepartureRadius = 7.0f;
+        private const float PredictedTrafficCautionSpeed = 2.0f;
         private const float TrafficWindowContactRadius = 5.5f;
         private const float TrafficDriverWindowContactRadius = 4.25f;
         private const float InteractionReleaseDistance = 32.0f;
@@ -57,8 +56,21 @@ namespace LSImmersiveLife
         private const int StationFollowTimeoutMilliseconds = 180000;
         private const int SubjectHoldMilliseconds = 3000;
         private const int TrafficCautionMilliseconds = 500;
+        private const int TrafficApproachBrakeMilliseconds = 1200;
+        private const int TrafficApproachBrakeCooldownMilliseconds = 1500;
+        private const int MaximumTrafficOperationAnchors = 4;
         private const int FleeMemoryMilliseconds = 30000;
         private const int SceneReactionScanMilliseconds = 1000;
+        private const int CalmCivilianPauseMilliseconds = 1500;
+        private const int CalmCivilianNoticeMilliseconds = 1100;
+        private const int CalmCivilianStepBackMilliseconds = 2200;
+        private const int CivilianRetreatMilliseconds = 7000;
+        private const float CivilianInterferenceRadius = 2.15f;
+        private const float CivilianPresenceNoticeRadius = 6.0f;
+        private const float CivilianStepBackDistance = 2.5f;
+        private const float MaximumTrafficVerticalSeparation = 2.5f;
+        private const float MaximumTrafficImpactLookAheadSeconds = 3.0f;
+        private const float ImminentTrafficImpactWindowSeconds = 1.5f;
         private const int DeescalationScanMilliseconds = 1250;
         private const int ApproachScanMilliseconds = 1000;
         private const int ApproachCandidateMilliseconds = 4500;
@@ -189,8 +201,14 @@ namespace LSImmersiveLife
             new Dictionary<int, DateTime>();
         private readonly Dictionary<int, DateTime> _recentApproachCandidates =
             new Dictionary<int, DateTime>();
-        private readonly Dictionary<int, DateTime> _recentSceneVehicleDepartures =
+        private readonly Dictionary<int, DateTime> _recentTrafficApproachBrakes =
             new Dictionary<int, DateTime>();
+        private readonly Dictionary<int, float> _trafficVehicleSafetyRadii =
+            new Dictionary<int, float>();
+        private readonly List<Ped> _trafficOperationActors = new List<Ped>(MaximumTrafficOperationAnchors);
+        private readonly List<Vehicle> _trafficOperationVehicles = new List<Vehicle>(MaximumTrafficOperationAnchors);
+        private readonly HashSet<int> _trafficDriversSeen = new HashSet<int>();
+        private readonly HashSet<int> _sceneReactionPedsSeen = new HashSet<int>();
         private readonly Dictionary<int, CollisionGuard> _collisionGuards =
             new Dictionary<int, CollisionGuard>();
         private readonly HashSet<int> _protectedSceneActorHandles =
@@ -253,6 +271,8 @@ namespace LSImmersiveLife
         private DateTime _expiresAt = DateTime.MinValue;
         private DateTime _nextSubjectHold = DateTime.MinValue;
         private DateTime _nextTrafficCaution = DateTime.MinValue;
+        private DateTime _nextTrafficApproachBrakeTrim = DateTime.MinValue;
+        private int _trafficOperationAnchorCursor;
         private DateTime _nextSceneReactionScan = DateTime.MinValue;
         private DateTime _nextDeescalationScan = DateTime.MinValue;
         private DateTime _nextApproachScan = DateTime.MinValue;
@@ -1522,6 +1542,47 @@ namespace LSImmersiveLife
                 AddProtectedSceneVehicle(vehicle);
         }
 
+        /// <summary>
+        /// Stores the live positions of already-owned police/custody actors and
+        /// vehicles. NPCResponse uses one rotating local sample to warn ordinary
+        /// traffic near the active operation; it never tasks these anchors.
+        /// </summary>
+        internal void SetTrafficOperationEntities(
+            IEnumerable<Ped> actors,
+            IEnumerable<Vehicle> vehicles)
+        {
+            _trafficOperationActors.Clear();
+            _trafficOperationVehicles.Clear();
+            if (actors != null)
+            {
+                foreach (Ped actor in actors)
+                {
+                    if (!IsUsable(actor)
+                        || _trafficOperationActors.Any(value => value.Handle == actor.Handle))
+                        continue;
+                    if (_trafficOperationActors.Count + _trafficOperationVehicles.Count
+                        >= MaximumTrafficOperationAnchors)
+                        break;
+                    _trafficOperationActors.Add(actor);
+                }
+            }
+            if (vehicles != null
+                && _trafficOperationActors.Count + _trafficOperationVehicles.Count
+                    < MaximumTrafficOperationAnchors)
+            {
+                foreach (Vehicle vehicle in vehicles)
+                {
+                    if (!IsUsable(vehicle)
+                        || _trafficOperationVehicles.Any(value => value.Handle == vehicle.Handle))
+                        continue;
+                    if (_trafficOperationActors.Count + _trafficOperationVehicles.Count
+                        >= MaximumTrafficOperationAnchors)
+                        break;
+                    _trafficOperationVehicles.Add(vehicle);
+                }
+            }
+        }
+
         internal string StatusText
         {
             get
@@ -1602,10 +1663,10 @@ namespace LSImmersiveLife
         internal bool CitizenRecordVisible { get; private set; }
 
         /// <summary>
-        /// Runs only while PoliceCore has an explicitly active Authority session
-        /// and Patrol is on. UI owns G as the Citizen framework key; E begins
-        /// quick contact when no Citizen is active and secures only at the
-        /// documented physical-arrest stage. Y/N remain decision shortcuts.
+        /// Runs while PoliceCore has an explicitly active Authority session.
+        /// Patrol gates Citizen contact selection; local ambient reactions and
+        /// traffic caution also follow active scenes and custody. UI owns G as
+        /// the Citizen framework key; E/Y/N retain their existing contact roles.
         /// </summary>
         internal void Process(bool isPatrolling, bool dispatchActive, bool paused)
         {
@@ -1632,6 +1693,23 @@ namespace LSImmersiveLife
             bool activeRoadScene,
             bool paused,
             bool allowGameplayInput)
+        {
+            Process(
+                isPatrolling,
+                contactBlocked,
+                activeRoadScene,
+                paused,
+                allowGameplayInput,
+                true);
+        }
+
+        internal void Process(
+            bool isPatrolling,
+            bool contactBlocked,
+            bool activeRoadScene,
+            bool paused,
+            bool allowGameplayInput,
+            bool civilianReactionControlEnabled)
         {
             if (paused)
             {
@@ -1668,6 +1746,7 @@ namespace LSImmersiveLife
             // scan reclaim that subject as a new ambient contact.
             if (_backupBackgroundTransport)
             {
+                ApplyLocalTrafficCaution(player, now, false, false);
                 MaintainCollisionGuards(player, now);
                 ResetKeyStates();
                 return;
@@ -1686,17 +1765,20 @@ namespace LSImmersiveLife
                 }
                 ReleaseApproachCandidate();
                 ApplyLocalTrafficCaution(player, now, false, false);
-                if (now >= _nextDeescalationScan)
+                if (civilianReactionControlEnabled)
                 {
-                    _nextDeescalationScan = now.AddMilliseconds(DeescalationScanMilliseconds);
-                    ApplyPoliceDeescalation(player, now);
+                    ApplyPolicePresenceReaction(player, now, activeRoadScene);
+                    if (now >= _nextDeescalationScan)
+                    {
+                        _nextDeescalationScan = now.AddMilliseconds(DeescalationScanMilliseconds);
+                        ApplyPoliceDeescalation(player, now);
+                    }
                 }
                 MaintainCollisionGuards(player, now);
                 TrimReleasedVehicleMemory(now);
                 TrimSceneReactionMemory(now);
                 TrimDeescalationMemory(now);
                 TrimApproachMemory(now);
-                TrimSceneVehicleDepartureMemory(now);
                 ResetKeyStates();
                 return;
             }
@@ -1768,13 +1850,14 @@ namespace LSImmersiveLife
                 RejectInteraction(player);
 
             MaintainInteraction(player, now);
-            ApplyActiveSceneCivilianReaction(player, now, activeRoadScene);
+            if (civilianReactionControlEnabled)
+                ApplyPolicePresenceReaction(player, now, activeRoadScene);
             ApplyLocalTrafficCaution(
                 player,
                 now,
                 activeRoadScene && _trafficSettings.StopTrafficAtActiveScenes,
                 HasActiveInteraction);
-            if (now >= _nextDeescalationScan)
+            if (civilianReactionControlEnabled && now >= _nextDeescalationScan)
             {
                 _nextDeescalationScan = now.AddMilliseconds(DeescalationScanMilliseconds);
                 ApplyPoliceDeescalation(player, now);
@@ -1784,7 +1867,6 @@ namespace LSImmersiveLife
             TrimSceneReactionMemory(now);
             TrimDeescalationMemory(now);
             TrimApproachMemory(now);
-            TrimSceneVehicleDepartureMemory(now);
         }
 
         internal string BeginInteractionCommand()
@@ -1946,9 +2028,17 @@ namespace LSImmersiveLife
             _recentSceneReactions.Clear();
             _recentDeescalations.Clear();
             _recentApproachCandidates.Clear();
-            _recentSceneVehicleDepartures.Clear();
+            _recentTrafficApproachBrakes.Clear();
             _collisionGuards.Clear();
             _nextDeescalationScan = DateTime.MinValue;
+            _nextSceneReactionScan = DateTime.MinValue;
+            _nextTrafficCaution = DateTime.MinValue;
+            _nextTrafficApproachBrakeTrim = DateTime.MinValue;
+            _trafficOperationAnchorCursor = 0;
+            _trafficOperationActors.Clear();
+            _trafficOperationVehicles.Clear();
+            _trafficDriversSeen.Clear();
+            _sceneReactionPedsSeen.Clear();
             _protectedSceneActorHandles.Clear();
             _protectedSceneVehicleHandles.Clear();
             _protectedSceneActors.Clear();
@@ -5052,65 +5142,287 @@ namespace LSImmersiveLife
             bool activeRoadScene,
             bool protectInteraction)
         {
-            // This is a short, local safety bubble. It is not a global traffic
-            // override: only a vehicle demonstrably travelling into the officer's
-            // space is affected, and only the configured small cap is touched
-            // in a live scene.
+            // The player sample protects an ordinary foot/road patrol. One
+            // additional sample rotates through current Backup, PoliceResponse,
+            // Dispatch-scene, and custody anchors so traffic awareness follows
+            // the actual local operation without a city-wide vehicle scan.
             if (!_trafficSettings.Enabled || now < _nextTrafficCaution)
                 return;
             _nextTrafficCaution = now.AddMilliseconds(TrafficCautionMilliseconds);
+            TrimTrafficApproachBrakeMemory(now);
 
-            bool localPoliceScene = activeRoadScene || protectInteraction;
+            Ped operationAnchor;
+            bool hasOperationAnchor = TryGetNextTrafficOperationAnchor(player, out operationAnchor);
+            bool operationAnchorNearPlayer = hasOperationAnchor
+                && IsUsable(player)
+                && player.Position.DistanceTo(operationAnchor.Position)
+                    <= ActiveSceneTrafficCautionRadius;
+            // A remote escort or response unit gets its own local sample below.
+            // It must not enlarge the Player-centered radius merely because the
+            // operation exists elsewhere in the world.
+            bool localPoliceScene = activeRoadScene || protectInteraction
+                || operationAnchorNearPlayer;
             float radius = localPoliceScene
                 ? ActiveSceneTrafficCautionRadius
                 : LocalTrafficCautionRadius;
-            Ped[] nearby = World.GetNearbyPeds(player, radius);
-            if (nearby == null)
-                return;
-
-            Vehicle playerVehicle = player.CurrentVehicle;
-            int interventions = 0;
-            int maximumInterventions = localPoliceScene
-                ? _settings.MaximumAffectedTrafficVehicles
-                : Math.Min(1, _settings.MaximumAffectedTrafficVehicles);
+            int maximumInterventions = _settings.MaximumAffectedTrafficVehicles;
             if (maximumInterventions <= 0)
                 return;
+
+            _trafficDriversSeen.Clear();
+            int interventions = 0;
+            int anticipatoryBrakes = 0;
+            // Give an active custody/response position a bounded share of the
+            // intervention budget first, then reserve any remaining capacity
+            // for the Player's immediate area. Quiet patrol still caps at one.
+            int operationBudget = hasOperationAnchor
+                ? Math.Min(2, maximumInterventions)
+                : 0;
+            if (hasOperationAnchor && operationBudget > 0)
+            {
+                Ped[] operationSample = World.GetNearbyPeds(
+                    operationAnchor, ActiveSceneTrafficCautionRadius);
+                if (operationSample != null)
+                    interventions += ApplyTrafficSample(
+                        operationSample, player, ActiveSceneTrafficCautionRadius,
+                        now, true, false, operationBudget, ref anticipatoryBrakes);
+            }
+
+            int playerBudget = maximumInterventions - interventions;
+            if (!localPoliceScene)
+                playerBudget = Math.Min(1, playerBudget);
+            if (playerBudget > 0)
+            {
+                Ped[] playerSample = World.GetNearbyPeds(player, radius);
+                if (playerSample != null)
+                    interventions += ApplyTrafficSample(
+                        playerSample, player, radius, now, localPoliceScene,
+                        activeRoadScene,
+                        playerBudget, ref anticipatoryBrakes);
+            }
+        }
+
+        private int ApplyTrafficSample(
+            Ped[] nearby,
+            Ped player,
+            float radius,
+            DateTime now,
+            bool localPoliceScene,
+            bool activeRoadScene,
+            int maximumInterventions,
+            ref int anticipatoryBrakes)
+        {
+            int interventions = 0;
             foreach (Ped ped in nearby)
             {
-                if (!IsUsable(ped) || ped.Handle == player.Handle || !ped.IsInVehicle())
+                if (interventions >= maximumInterventions)
+                    break;
+                if (!IsUsable(ped) || ped.Handle == player.Handle
+                    || !ped.IsInVehicle() || !CanUseAsCivilian(ped, player)
+                    || !_trafficDriversSeen.Add(ped.Handle))
                     continue;
                 Vehicle vehicle = ped.CurrentVehicle;
                 if (!IsUsable(vehicle) || vehicle == _subjectVehicle
-                    || vehicle == playerVehicle || IsProtectedSceneVehicle(vehicle)
-                    || !IsDriver(ped, vehicle)
-                    || WasRecentlyReleased(vehicle))
+                    || vehicle == player.CurrentVehicle || IsProtectedSceneVehicle(vehicle)
+                    || !IsDriver(ped, vehicle) || WasRecentlyReleased(vehicle))
                     continue;
+
                 Entity collisionTarget;
                 float distance;
                 if (!TryGetNearestProtectedCollisionTarget(
-                    player,
-                    vehicle,
-                    radius,
-                    out collisionTarget,
-                    out distance)
-                    || !IsTrafficCollisionRisk(
-                        collisionTarget,
-                        vehicle,
-                        distance,
-                        localPoliceScene))
+                    player, vehicle, radius, out collisionTarget, out distance))
                     continue;
 
+                float impactSeconds = 0.0f;
+                float predictedMissDistance = float.MaxValue;
+                float requiredClearance = 0.0f;
+                bool hasPredictedConflict = distance > ImmediateCollisionGuardRadius
+                    && TryEstimateTrafficConflict(
+                        vehicle, collisionTarget, out impactSeconds,
+                        out predictedMissDistance, out requiredClearance);
+                bool brakeIssued = false;
+                if (hasPredictedConflict)
+                {
+                    DateTime nextBrake;
+                    if (!_recentTrafficApproachBrakes.TryGetValue(vehicle.Handle, out nextBrake)
+                        || now >= nextBrake)
+                    {
+                        try
+                        {
+                            // Action 27 is the existing short brake action used
+                            // by this owner. It ends on its own; ambient driving
+                            // is never permanently speed-capped or rerouted here.
+                            Function.Call(Hash.TASK_VEHICLE_TEMP_ACTION,
+                                ped, vehicle, 27, TrafficApproachBrakeMilliseconds);
+                            _recentTrafficApproachBrakes[vehicle.Handle] =
+                                now.AddMilliseconds(TrafficApproachBrakeCooldownMilliseconds);
+                            brakeIssued = true;
+                            anticipatoryBrakes++;
+                            _log.RuntimeThrottled(
+                                "NPC_TRAFFIC_APPROACH_BRAKE",
+                                "Driver=" + ped.Handle
+                                + "; Vehicle=" + vehicle.Handle
+                                + "; ModelHash=" + vehicle.Model.Hash
+                                + "; Target=" + collisionTarget.Handle
+                                + "; TargetType=" + (collisionTarget is Vehicle ? "Vehicle" : "Ped")
+                                + "; Distance=" + distance.ToString("0.0")
+                                + "; Speed=" + Math.Abs(vehicle.Speed).ToString("0.0")
+                                + "; TimeToClosest=" + impactSeconds.ToString("0.00")
+                                + "; MissDistance=" + predictedMissDistance.ToString("0.0")
+                                + "; RequiredClearance=" + requiredClearance.ToString("0.0")
+                                + "; Task=TASK_VEHICLE_TEMP_ACTION:27; DurationMs="
+                                + TrafficApproachBrakeMilliseconds,
+                                TimeSpan.FromSeconds(1));
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Exception("NPC_TRAFFIC_APPROACH_BRAKE_FAILED", ex);
+                        }
+                    }
+                }
+
+                bool imminentPredictedConflict = hasPredictedConflict
+                    && impactSeconds <= ImminentTrafficImpactWindowSeconds;
+                if (!imminentPredictedConflict && !IsTrafficCollisionRisk(
+                    collisionTarget, vehicle, distance, localPoliceScene))
+                {
+                    if (brakeIssued)
+                        interventions++;
+                    continue;
+                }
                 ApplyTrafficCollisionGuard(
-                    collisionTarget,
-                    ped,
-                    vehicle,
-                    distance,
-                    now,
-                    localPoliceScene);
+                    collisionTarget, ped, vehicle, distance, now,
+                    activeRoadScene, imminentPredictedConflict,
+                    impactSeconds, predictedMissDistance, requiredClearance);
                 interventions++;
-                if (interventions >= maximumInterventions)
-                    break;
             }
+            return interventions;
+        }
+
+        private bool TryGetNextTrafficOperationAnchor(Ped player, out Ped anchor)
+        {
+            anchor = null;
+            int total = _trafficOperationActors.Count + _trafficOperationVehicles.Count;
+            if (total <= 0)
+                return false;
+            for (int attempt = 0; attempt < total; attempt++)
+            {
+                int index = _trafficOperationAnchorCursor % total;
+                _trafficOperationAnchorCursor = (index + 1) % total;
+                if (index < _trafficOperationActors.Count)
+                {
+                    Ped candidate = _trafficOperationActors[index];
+                    if (IsUsable(candidate)
+                        && (player == null || candidate.Handle != player.Handle))
+                    {
+                        anchor = candidate;
+                        return true;
+                    }
+                    continue;
+                }
+
+                Vehicle vehicle = _trafficOperationVehicles[index - _trafficOperationActors.Count];
+                if (!IsUsable(vehicle))
+                    continue;
+                Ped driver = vehicle.Driver;
+                if (IsUsable(driver) && (player == null || driver.Handle != player.Handle))
+                {
+                    anchor = driver;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool TryEstimateTrafficConflict(
+            Vehicle trafficVehicle,
+            Entity target,
+            out float timeToClosest,
+            out float missDistance,
+            out float requiredClearance)
+        {
+            timeToClosest = 0.0f;
+            missDistance = float.MaxValue;
+            requiredClearance = 0.0f;
+            if (!IsUsable(trafficVehicle) || target == null || !target.Exists())
+                return false;
+
+            try
+            {
+                Vector3 relativeVelocity = trafficVehicle.Velocity - target.Velocity;
+                float relativeSpeedSquared = relativeVelocity.X * relativeVelocity.X
+                    + relativeVelocity.Y * relativeVelocity.Y;
+                if (relativeSpeedSquared < 4.0f)
+                    return false;
+
+                Vector3 separation = target.Position - trafficVehicle.Position;
+                float approachDot = separation.X * relativeVelocity.X
+                    + separation.Y * relativeVelocity.Y;
+                timeToClosest = approachDot / relativeSpeedSquared;
+                if (timeToClosest < 0.1f
+                    || timeToClosest > MaximumTrafficImpactLookAheadSeconds)
+                    return false;
+
+                float missX = separation.X - relativeVelocity.X * timeToClosest;
+                float missY = separation.Y - relativeVelocity.Y * timeToClosest;
+                missDistance = (float)Math.Sqrt(missX * missX + missY * missY);
+                float verticalSeparation = separation.Z
+                    - relativeVelocity.Z * timeToClosest;
+                if (Math.Abs(verticalSeparation) > MaximumTrafficVerticalSeparation)
+                    return false;
+                requiredClearance = GetTrafficSafetyRadius(trafficVehicle)
+                    + GetTrafficSafetyRadius(target) + 0.75f;
+                return missDistance <= requiredClearance;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private float GetTrafficSafetyRadius(Entity entity)
+        {
+            Vehicle vehicle = entity as Vehicle;
+            if (vehicle == null)
+            {
+                Ped ped = entity as Ped;
+                if (IsUsable(ped) && ped.IsInVehicle())
+                    vehicle = ped.CurrentVehicle;
+            }
+            if (!IsUsable(vehicle))
+                return 1.0f;
+
+            int modelHash = vehicle.Model.Hash;
+            float cached;
+            if (_trafficVehicleSafetyRadii.TryGetValue(modelHash, out cached))
+                return cached;
+
+            float radius = vehicle.Model.IsBike ? 1.8f : 3.5f;
+            try
+            {
+                using (OutputArgument minimumOutput = new OutputArgument())
+                using (OutputArgument maximumOutput = new OutputArgument())
+                {
+                    Function.Call(Hash.GET_MODEL_DIMENSIONS,
+                        modelHash, minimumOutput, maximumOutput);
+                    Vector3 minimum = minimumOutput.GetResult<Vector3>();
+                    Vector3 maximum = maximumOutput.GetResult<Vector3>();
+                    float width = Math.Abs(maximum.X - minimum.X);
+                    float length = Math.Abs(maximum.Y - minimum.Y);
+                    float measured = 0.5f * (float)Math.Sqrt(width * width + length * length);
+                    if (!float.IsNaN(measured) && !float.IsInfinity(measured) && measured > 0.0f)
+                        radius = Math.Max(radius, Math.Min(8.0f, measured));
+                }
+            }
+            catch
+            {
+                // Keep the conservative bike/car fallback if model bounds are
+                // unavailable; a failed optional size probe is not a hard gate.
+            }
+
+            if (_trafficVehicleSafetyRadii.Count < 64)
+                _trafficVehicleSafetyRadii[modelHash] = radius;
+            return radius;
         }
 
         private bool TryGetNearestProtectedCollisionTarget(
@@ -5139,6 +5451,8 @@ namespace LSImmersiveLife
         {
             if (IsUsable(player))
                 yield return player;
+            if (IsUsable(player) && IsUsable(player.CurrentVehicle))
+                yield return player.CurrentVehicle;
             // The active NPC contact is part of the same small local safety
             // bubble as the officer. Without this boundary, ordinary traffic
             // can hit a compliant citizen while Backup is staging or loading.
@@ -5154,36 +5468,52 @@ namespace LSImmersiveLife
                     yield return vehicle;
         }
 
-        private void ApplyActiveSceneCivilianReaction(Ped player, DateTime now, bool activeRoadScene)
+        private void ApplyPolicePresenceReaction(Ped player, DateTime now, bool activeRoadScene)
         {
-            // An offer or an en-route call is not a physical crowd scene. Only a
-            // confirmed roadside scene may cause a small number of ordinary
-            // civilians to react, and a held weapon alone never rolls the whole
-            // nearby crowd into a run animation.
-            if (!activeRoadScene || HasActiveInteraction
+            // Aiming alone is a calm stop/look response, not a random flee roll.
+            // Only nearby ordinary civilians are considered; protected incident
+            // actors, Police units, and active Gang threats remain with owners.
+            if (HasActiveInteraction
                 || now < _nextSceneReactionScan)
                 return;
             _nextSceneReactionScan = now.AddMilliseconds(SceneReactionScanMilliseconds);
 
-            Ped[] nearby = World.GetNearbyPeds(player, ActiveSceneCivilianRadius);
+            float radius = activeRoadScene
+                ? ActiveSceneCivilianRadius
+                : Math.Min(9.0f, ActiveSceneCivilianRadius);
+            Ped[] nearby = World.GetNearbyPeds(player, radius);
             if (nearby == null)
                 return;
 
-            bool nearbyGunfire = player.IsShooting || nearby.Any(ped =>
-                IsUsable(ped) && ped.IsShooting);
-            if (!nearbyGunfire && !player.IsAiming)
-                return;
+            Ped gunfireThreat = FindNearestGunfireSource(player, nearby);
+            bool nearbyGunfire = gunfireThreat != null;
+            bool aimingWithoutFire = !nearbyGunfire && player.IsAiming && !player.IsShooting;
+            _sceneReactionPedsSeen.Clear();
 
             int budget = nearbyGunfire
-                ? _settings.MaximumAffectedPedestrians
+                ? Math.Min(4, _settings.MaximumAffectedPedestrians)
                 : Math.Min(2, _settings.MaximumAffectedPedestrians);
             foreach (Ped ped in nearby)
             {
                 if (budget <= 0)
                     break;
-                if (!CanUseAsCivilian(ped, player) || ped.IsInVehicle() || ped.IsInCombat)
+                if (!CanUseAsCivilian(ped, player) || ped.IsInVehicle()
+                    || !_sceneReactionPedsSeen.Add(ped.Handle))
                     continue;
                 if (_subject != null && ped.Handle == _subject.Handle)
+                    continue;
+
+                bool attackedOfficer = ped.IsInCombatAgainst(player);
+                bool closeApproach = !nearbyGunfire && !aimingWithoutFire
+                    && !attackedOfficer && IsCivilianApproachingOfficer(ped, player);
+                float officerDistance = ped.Position.DistanceTo(player.Position);
+                bool presenceNotice = !nearbyGunfire && !aimingWithoutFire
+                    && !attackedOfficer && !closeApproach && !ped.IsInCombat
+                    && officerDistance <= CivilianPresenceNoticeRadius;
+                if (!nearbyGunfire && !aimingWithoutFire
+                    && !attackedOfficer && !closeApproach && !presenceNotice)
+                    continue;
+                if (ped.IsInCombat && !attackedOfficer)
                     continue;
 
                 DateTime nextReaction;
@@ -5191,33 +5521,118 @@ namespace LSImmersiveLife
                     && now < nextReaction)
                     continue;
                 _recentSceneReactions[ped.Handle] = now.AddMilliseconds(SceneReactionCooldownMilliseconds);
-
-                int reaction = _random.Next(100);
                 try
                 {
-                    if ((nearbyGunfire && reaction < 60)
-                        || (!nearbyGunfire && reaction < 25))
+                    string action;
+                    int duration;
+                    if (nearbyGunfire && ped.Handle != gunfireThreat.Handle)
                     {
-                        Function.Call(Hash.TASK_SMART_FLEE_PED, ped, player, 55.0f, -1, false, false);
-                        _log.Runtime("NPC_ACTIVE_SCENE_CIVILIAN_MOVED_AWAY", "Ped=" + ped.Handle);
+                        duration = CivilianRetreatMilliseconds;
+                        Function.Call(Hash.TASK_SMART_FLEE_PED,
+                            ped, gunfireThreat, 35.0f, duration, false, false);
+                        action = "RetreatFromGunfire";
                     }
-                    else if (reaction < 70)
+                    else if (aimingWithoutFire || attackedOfficer)
                     {
-                        ped.Task.LookAt(player, 1100);
-                        _log.Runtime("NPC_ACTIVE_SCENE_CIVILIAN_WATCHING", "Ped=" + ped.Handle);
+                        duration = CalmCivilianPauseMilliseconds;
+                        ped.Task.LookAt(player, duration);
+                        ped.Task.StandStill(duration);
+                        action = "CalmPauseAndAcknowledge";
+                    }
+                    else if (presenceNotice)
+                    {
+                        duration = CalmCivilianNoticeMilliseconds;
+                        ped.Task.LookAt(player, duration);
+                        action = "BriefPolicePresenceNotice";
                     }
                     else
                     {
-                        ped.Task.ReactAndFlee(player);
-                        _log.Runtime("NPC_ACTIVE_SCENE_CIVILIAN_FLED", "Ped=" + ped.Handle);
+                        duration = CalmCivilianStepBackMilliseconds;
+                        MoveCivilianOneStepBack(ped, player);
+                        action = "WalkOutOfOfficerSpace";
                     }
+                    _log.Runtime(
+                        "NPC_AUTHORITY_CIVILIAN_RESPONSE",
+                        "Ped=" + ped.Handle
+                        + "; Trigger=" + (nearbyGunfire ? "Gunfire" : aimingWithoutFire
+                            ? "AimWithoutFire" : attackedOfficer ? "CivilianAttack"
+                            : "CloseApproach")
+                        + "; Action=" + action
+                        + "; Threat=" + (gunfireThreat == null ? 0 : gunfireThreat.Handle)
+                        + "; TaskDurationMs=" + duration
+                        + "; Context=" + (activeRoadScene ? "ActiveRoadScene" : "PoliceDuty"));
                     budget--;
                 }
                 catch (Exception ex)
                 {
-                    _log.Exception("NPC_ACTIVE_SCENE_REACTION_FAILED", ex);
+                    _log.Exception(
+                        "NPC_AUTHORITY_CIVILIAN_RESPONSE_FAILED_PED_" + ped.Handle,
+                        ex);
                 }
             }
+        }
+
+        private Ped FindNearestGunfireSource(Ped player, Ped[] nearby)
+        {
+            if (IsUsable(player) && player.IsShooting)
+                return player;
+            Ped result = null;
+            float nearest = float.MaxValue;
+            foreach (Ped ped in nearby)
+            {
+                if (!IsUsable(ped) || !ped.IsShooting)
+                    continue;
+                float distance = player.Position.DistanceTo(ped.Position);
+                if (distance >= nearest)
+                    continue;
+                nearest = distance;
+                result = ped;
+            }
+            return result;
+        }
+
+        private bool IsCivilianApproachingOfficer(Ped ped, Ped player)
+        {
+            if (!IsUsable(ped) || !IsUsable(player) || player.IsInVehicle())
+                return false;
+            Vector3 towardPlayer = player.Position - ped.Position;
+            float distance = (float)Math.Sqrt(
+                towardPlayer.X * towardPlayer.X + towardPlayer.Y * towardPlayer.Y);
+            if (distance > CivilianInterferenceRadius || distance < 0.1f)
+                return false;
+            Vector3 velocity = ped.Velocity;
+            float speed = (float)Math.Sqrt(velocity.X * velocity.X + velocity.Y * velocity.Y);
+            if (speed < 0.35f)
+                return false;
+            float toward = (velocity.X * towardPlayer.X + velocity.Y * towardPlayer.Y)
+                / (speed * distance);
+            return toward >= 0.20f;
+        }
+
+        private void MoveCivilianOneStepBack(Ped ped, Ped player)
+        {
+            Vector3 away = ped.Position - player.Position;
+            float length = (float)Math.Sqrt(away.X * away.X + away.Y * away.Y);
+            if (length < 0.1f)
+            {
+                Vector3 forward = player.ForwardVector;
+                away = new Vector3(-forward.X, -forward.Y, 0.0f);
+                length = (float)Math.Sqrt(away.X * away.X + away.Y * away.Y);
+            }
+            if (length < 0.1f)
+                return;
+            Vector3 destination = ped.Position + new Vector3(
+                away.X / length * CivilianStepBackDistance,
+                away.Y / length * CivilianStepBackDistance,
+                0.0f);
+            Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
+                ped,
+                destination.X, destination.Y, destination.Z,
+                0.9f,
+                CalmCivilianStepBackMilliseconds,
+                0.35f,
+                false,
+                ped.Heading);
         }
 
         private void ApplyPoliceDeescalation(Ped player, DateTime now)
@@ -5235,17 +5650,23 @@ namespace LSImmersiveLife
                 _recentDeescalations[ped.Handle] = now.AddSeconds(6);
                 try
                 {
-                    ped.Task.ClearAll();
                     if (player.IsAiming && !player.IsShooting)
                     {
-                        ped.Task.HandsUp(5500);
-                        ped.Task.LookAt(player, 2500);
-                        _log.Runtime("NPC_POLICE_DEESCALATION", "Ped=" + ped.Handle + "; Civilian surrendered to the armed officer.");
+                        ped.Task.LookAt(player, CalmCivilianPauseMilliseconds);
+                        ped.Task.StandStill(CalmCivilianPauseMilliseconds);
+                        _log.Runtime("NPC_POLICE_DEESCALATION",
+                            "Ped=" + ped.Handle + "; Trigger=AttackStoppedByAim"
+                            + "; Action=CalmPause; TaskDurationMs="
+                            + CalmCivilianPauseMilliseconds);
                     }
                     else
                     {
-                        Function.Call(Hash.TASK_SMART_FLEE_PED, ped, player, 45.0f, -1, false, false);
-                        _log.Runtime("NPC_POLICE_DEESCALATION", "Ped=" + ped.Handle + "; Civilian aggression redirected into retreat.");
+                        Function.Call(Hash.TASK_SMART_FLEE_PED,
+                            ped, player, 25.0f, CivilianRetreatMilliseconds, false, false);
+                        _log.Runtime("NPC_POLICE_DEESCALATION",
+                            "Ped=" + ped.Handle + "; Trigger=ActualCivilianAttack"
+                            + "; Action=BoundedRetreat; TaskDurationMs="
+                            + CivilianRetreatMilliseconds);
                     }
                 }
                 catch (Exception ex) { _log.Exception("NPC_POLICE_DEESCALATION_FAILED", ex); }
@@ -5575,20 +5996,31 @@ namespace LSImmersiveLife
             Vehicle vehicle,
             float distance,
             DateTime now,
-            bool activeRoadScene)
+            bool activeRoadScene,
+            bool imminentPredictedConflict,
+            float impactSeconds,
+            float predictedMissDistance,
+            float requiredClearance)
         {
             try
             {
-                if (distance <= ImmediateCollisionGuardRadius)
+                if (distance <= ImmediateCollisionGuardRadius
+                    || imminentPredictedConflict)
                 {
                     // Do not slow every vehicle in the awareness radius.  A
                     // speed cap on the whole twelve-to-twenty-eight metre
                     // sample made normal traffic crawl whenever Police had an
-                    // active remote owner.  Only an imminent collision gets a
-                    // brief physical speed intervention.
-                    float cappedSpeed = activeRoadScene
-                        ? ActiveSceneTrafficCautionSpeed
-                        : LocalTrafficCautionSpeed;
+                    // active remote owner. Use the existing target-specific
+                    // guard either at immediate proximity or when the local
+                    // path prediction says impact is within 1.5 seconds.
+                    // A predicted convoy conflict creeps at walking pace until
+                    // the 500 ms sample no longer sees the protected target in
+                    // its path; ordinary traffic remains untouched.
+                    float cappedSpeed = imminentPredictedConflict
+                        ? PredictedTrafficCautionSpeed
+                        : activeRoadScene
+                            ? ActiveSceneTrafficCautionSpeed
+                            : LocalTrafficCautionSpeed;
                     vehicle.Speed = Math.Min(Math.Abs(vehicle.Speed), cappedSpeed);
                     Function.Call(Hash.SET_ENTITY_NO_COLLISION_ENTITY, vehicle, target, true);
                     _collisionGuards[vehicle.Handle] = new CollisionGuard
@@ -5602,32 +6034,25 @@ namespace LSImmersiveLife
                     // writing a disk record every scan/tick.
                     _log.RuntimeThrottled(
                         "NPC_TRAFFIC_COLLISION_GUARD",
-                        "Vehicle=" + vehicle.Handle + "; Distance=" + distance.ToString("0.0"),
+                        "Driver=" + driver.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; ModelHash=" + vehicle.Model.Hash
+                        + "; Target=" + target.Handle
+                        + "; TargetType=" + (target is Vehicle ? "Vehicle" : "Ped")
+                        + "; Distance=" + distance.ToString("0.0")
+                        + "; Speed=" + Math.Abs(vehicle.Speed).ToString("0.0")
+                        + "; Trigger=" + (imminentPredictedConflict
+                            ? "PredictedImpact" : "ImmediateProximity")
+                        + (imminentPredictedConflict
+                            ? "; TimeToClosest=" + impactSeconds.ToString("0.00")
+                                + "; MissDistance=" + predictedMissDistance.ToString("0.0")
+                                + "; RequiredClearance=" + requiredClearance.ToString("0.0")
+                            : string.Empty)
+                        + "; Task=EmergencySpeedCap+NoCollision; DurationMs="
+                        + CollisionGuardMilliseconds,
                         TimeSpan.FromSeconds(2));
                 }
 
-                // Traffic departure is an emergency scene-edge response, not a
-                // general active-activity behavior.  Keep it inside the close
-                // roadside space so ordinary passing cars retain their native
-                // route and are not repeatedly cleared/reassigned.
-                if (activeRoadScene && distance <= ActiveSceneTrafficDepartureRadius)
-                {
-                    DateTime nextDeparture;
-                    if (!_recentSceneVehicleDepartures.TryGetValue(vehicle.Handle, out nextDeparture)
-                        || now >= nextDeparture)
-                    {
-                        Vector3 destination = FindRoadDestinationAwayFrom(vehicle.Position, target.Position, 45.0f);
-                        Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, false);
-                        driver.Task.ClearAll();
-                        Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
-                            driver, vehicle,
-                            destination.X, destination.Y, destination.Z,
-                            10.0f, TrafficDrivingStyle, 8.0f);
-                        _recentSceneVehicleDepartures[vehicle.Handle] =
-                            now.AddSeconds(_settings.SceneReactionCooldownSeconds);
-                        _log.Runtime("NPC_ACTIVE_SCENE_TRAFFIC_DEPARTURE", "Vehicle=" + vehicle.Handle);
-                    }
-                }
             }
             catch (Exception ex)
             {
@@ -6399,6 +6824,22 @@ namespace LSImmersiveLife
                 _recentlyReleasedVehicles.Remove(handle);
         }
 
+        private void TrimTrafficApproachBrakeMemory(DateTime now)
+        {
+            if (now < _nextTrafficApproachBrakeTrim)
+                return;
+            _nextTrafficApproachBrakeTrim = now.AddSeconds(10);
+            if (_recentTrafficApproachBrakes.Count == 0)
+                return;
+
+            var expired = new List<int>();
+            foreach (KeyValuePair<int, DateTime> pair in _recentTrafficApproachBrakes)
+                if (now >= pair.Value)
+                    expired.Add(pair.Key);
+            foreach (int handle in expired)
+                _recentTrafficApproachBrakes.Remove(handle);
+        }
+
         private void TrimSceneReactionMemory(DateTime now)
         {
             if (_recentSceneReactions.Count == 0)
@@ -6433,18 +6874,6 @@ namespace LSImmersiveLife
                     expired.Add(pair.Key);
             foreach (int handle in expired)
                 _recentApproachCandidates.Remove(handle);
-        }
-
-        private void TrimSceneVehicleDepartureMemory(DateTime now)
-        {
-            if (_recentSceneVehicleDepartures.Count == 0)
-                return;
-            var expired = new List<int>();
-            foreach (KeyValuePair<int, DateTime> pair in _recentSceneVehicleDepartures)
-                if (now >= pair.Value)
-                    expired.Add(pair.Key);
-            foreach (int handle in expired)
-                _recentSceneVehicleDepartures.Remove(handle);
         }
 
         /// <summary>

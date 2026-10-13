@@ -327,7 +327,35 @@ namespace LSImmersiveLife
                 if (_hasPoliceRelationshipSnapshot
                     && _policePlayerRelationshipGroup == playerGroup
                     && _policeCopRelationshipGroup == copGroup)
+                {
+                    int currentPlayerToCop = Function.Call<int>(
+                        Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                        playerGroup, copGroup);
+                    int currentCopToPlayer = Function.Call<int>(
+                        Hash.GET_RELATIONSHIP_BETWEEN_GROUPS,
+                        copGroup, playerGroup);
+                    if (currentPlayerToCop != 1 || currentCopToPlayer != 1)
+                    {
+                        // Preserve the latest observed values if another runtime
+                        // owner changed the pair while Authority was active. The
+                        // original source still restores only this relationship
+                        // pair when Authority ends.
+                        _previousPlayerToCopRelationship = currentPlayerToCop;
+                        _previousCopToPlayerRelationship = currentCopToPlayer;
+                        Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                            1, playerGroup, copGroup);
+                        Function.Call(Hash.SET_RELATIONSHIP_BETWEEN_GROUPS,
+                            1, copGroup, playerGroup);
+                        _log.RuntimeThrottled(
+                            "POLICE_AUTHORITY_POLICE_RELATIONSHIP_REASSERTED",
+                            "Reapplied Police respect after the live relationship changed. PlayerGroup="
+                            + playerGroup + "; CopGroup=" + copGroup
+                            + "; PreviousLivePlayerToCop=" + currentPlayerToCop
+                            + "; PreviousLiveCopToPlayer=" + currentCopToPlayer,
+                            TimeSpan.FromSeconds(5));
+                    }
                     return;
+                }
 
                 RestorePoliceAllyRelationship();
                 _policePlayerRelationshipGroup = playerGroup;
@@ -448,7 +476,7 @@ namespace LSImmersiveLife
                 SuppressMilitaryHostility = true,
                 AuthorityControlRefreshMilliseconds = 750,
                 EnableGangReactionControl = false,
-                EnableCivilianReactionControl = false,
+                EnableCivilianReactionControl = true,
                 EnableWorldBehaviorChanges = true,
                 UseVerifiedInteriorsOnly = true
             };
