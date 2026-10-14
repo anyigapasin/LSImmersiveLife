@@ -33,6 +33,7 @@ namespace LSImmersiveLife
         private const float CitizenDocumentHandoffHeightDifference = 0.65f;
         private const float TrafficAimSurrenderMaximumDistance = 35.0f;
         private const float DefaultLocalTrafficCautionRadius = 12.0f;
+        private const int CurrentDamageRecordMaximumAgeMilliseconds = 1500;
         private const float DefaultActiveSceneTrafficCautionRadius = 18.0f;
         // Eight metres is useful as a caution area, but was far too large for
         // a frame-refreshed no-collision shield. Keep a small emergency bubble
@@ -90,6 +91,18 @@ namespace LSImmersiveLife
         private const int DeescalationScanMilliseconds = 1250;
         private const int ApproachScanMilliseconds = 1000;
         private const int ApproachCandidateMilliseconds = 4500;
+        private const int SuspiciousApproachObservationMaximumMilliseconds = 30000;
+        private const float SuspiciousApproachActivationDistance = 4.2f;
+        private const float SuspiciousApproachObservationRange = 9.0f;
+        private const float SuspiciousApproachFollowRange = 14.0f;
+        private const int SuspiciousTrafficObservationMaximumMilliseconds = 60000;
+        private const float SuspiciousTrafficObservationRange = 110.0f;
+        private const float SuspiciousTrafficExplicitContactRange = 20.0f;
+        private const float SuspiciousTrafficApproachRange = 45.0f;
+        private const float SuspiciousTrafficRoadTargetDistance = 28.0f;
+        private const float SuspiciousTrafficDriveSpeed = 8.5f;
+        private const float SuspiciousTrafficFollowMinimumTravel = 3.0f;
+        private const int SuspiciousTrafficFollowSamplesRequired = 2;
         private const int DefaultCollisionGuardMilliseconds = 900;
         private const int TrafficDrivingStyle = 786603;
         // Let GTA's physical arrest task finish, then confirm the actual cuff
@@ -222,9 +235,10 @@ namespace LSImmersiveLife
             internal int LastProcessedDamageWeaponHash;
             internal int LastProcessedDamageAttackerHandle;
             internal int LastProcessedDamageGameTime;
-            internal int LastProcessedDamageBone;
             internal bool OriginalCanSufferCriticalHits;
             internal bool OriginalCanSwitchWeapons;
+            internal bool DamageAttributionBaselineAvailable;
+            internal string DamageAttributionBaselineStatus;
             internal bool ControlledInjuryActive;
             internal bool HealthReconciliationLogged;
             internal bool Wounded;
@@ -235,6 +249,35 @@ namespace LSImmersiveLife
             internal bool MeleeReactionPending;
             internal DateTime MeleeReactionUntil = DateTime.MinValue;
             internal DateTime NextMeleeRecoveryCheckAt = DateTime.MinValue;
+        }
+
+        private sealed class SubjectDamageEvidence
+        {
+            internal Entity RecordAttacker;
+            internal int SampleGameTime;
+            internal int WeaponHash;
+            internal int AttackerHandle;
+            internal int RecordGameTime;
+            internal int RecordAgeMilliseconds = -1;
+            internal string RecordReadStatus = "NotRead";
+            internal string RawBoneReadStatus = "NotRead";
+            internal bool RecordAvailable;
+            internal bool RecordFresh;
+            internal bool RecordDuplicate;
+            internal bool AttributionBaselineAvailable;
+            internal string AttributionBaselineStatus;
+            internal bool NativeDamageCheckAvailable;
+            internal bool NativeReportsDamageByRecordAttacker;
+            internal bool DamageEventConfirmed;
+            internal bool CurrentDamageEvidence;
+            internal bool AttackerIsAssignedBackup;
+            internal ControlledDamageKind DamageKind;
+            internal string AttributionStatus = "Unknown";
+            internal string DamageSource = "UnknownOrUnconfirmed";
+            internal string AttackerContext = "Unavailable";
+            internal string CollisionContext = "Unavailable";
+            internal string PlayerContext = "Unavailable";
+            internal string BackupContext = "Unavailable";
         }
 
         private readonly LSImmersiveLog _log;
@@ -275,6 +318,7 @@ namespace LSImmersiveLife
             new Dictionary<int, Vehicle>();
         private readonly Dictionary<int, SubjectInjuryState> _subjectInjuries =
             new Dictionary<int, SubjectInjuryState>();
+        private Func<Ped, int, Tuple<bool, string>> _backupDamageEvidenceProvider;
         private readonly Random _random = new Random();
         private readonly LSPDControlBindings _controls;
         private readonly LSPoliceNpcResponseSettings _settings;
@@ -323,6 +367,11 @@ namespace LSImmersiveLife
         private bool _subjectVehiclePersistenceCaptured;
         private bool _subjectVehicleWasPersistent;
         private Ped _approachCandidate;
+        private Vehicle _approachCandidateTrafficVehicle;
+        private Vector3 _approachCandidateLastPlayerPosition = Vector3.Zero;
+        private Vector3 _approachCandidateLastSubjectPosition = Vector3.Zero;
+        private float _approachCandidateLastDistance = float.MaxValue;
+        private int _approachCandidateTrafficFollowSamples;
         private Ped _backupOfficer;
         private Vehicle _backupVehicle;
         private Blip _subjectBlip;
@@ -336,6 +385,7 @@ namespace LSImmersiveLife
         private DateTime _nextDeescalationScan = DateTime.MinValue;
         private DateTime _nextApproachScan = DateTime.MinValue;
         private DateTime _approachCandidateUntil = DateTime.MinValue;
+        private DateTime _approachCandidateObservedAt = DateTime.MinValue;
         private DateTime _animationHoldUntil = DateTime.MinValue;
         private DateTime _fleeStartedAt = DateTime.MinValue;
         private DateTime _lastFleeSampleAt = DateTime.MinValue;
@@ -400,6 +450,8 @@ namespace LSImmersiveLife
         private bool _approachCandidateSuspicious;
         private bool _approachCandidateTraffic;
         private bool _approachCandidateTrafficTaskIssued;
+        private bool _approachCandidateIntentConfirmed;
+        private int _approachCandidateCloseSamples;
         private bool _suspiciousTrafficContact;
         private bool _deferredDeadSubjectPersistenceCaptured;
         private bool _pullOverRecoveryIssued;
@@ -434,6 +486,7 @@ namespace LSImmersiveLife
         private bool _backupInterceptionInvestigationRequired;
         private bool _footPlayerArrested;
         private bool _footPlayerArrestPlaybackConfirmed;
+        private InteractionStage _playerArrestOriginStage = InteractionStage.None;
         private int _footPlayerArrestAttempts;
         private DateTime _footPlayerArrestDeadline = DateTime.MinValue;
         private bool _secureKeyDown;
@@ -634,6 +687,12 @@ namespace LSImmersiveLife
             _injurySettings.Normalize();
         }
 
+        internal void SetBackupDamageEvidenceProvider(
+            Func<Ped, int, Tuple<bool, string>> provider)
+        {
+            _backupDamageEvidenceProvider = provider;
+        }
+
         internal bool HasActiveInteraction
         {
             get { return _stage != InteractionStage.None && !_backupBackgroundTransport; }
@@ -659,7 +718,16 @@ namespace LSImmersiveLife
         {
             get
             {
-                return HasActiveInteraction && !_backupRequested
+                return !_backupRequested
+                    && CanBeginBackupTransportHandoff;
+            }
+        }
+
+        internal bool CanBeginBackupTransportHandoff
+        {
+            get
+            {
+                return HasActiveInteraction
                     && _footPlayerArrested
                     && (_stage == InteractionStage.FootAwaitingBackup
                         || _stage == InteractionStage.TrafficAwaitingBackup)
@@ -730,7 +798,13 @@ namespace LSImmersiveLife
 
         internal Ped ActiveSubject { get { return IsUsable(_subject) ? _subject : null; } }
         internal Ped CurrentSubject { get { return IsUsable(_subject) ? _subject : null; } }
+        internal string InteractionId { get { return _interactionAudioOccurrence ?? string.Empty; } }
+        internal string CurrentStageName { get { return _stage.ToString(); } }
         internal Vehicle OriginalContactVehicle { get { return IsUsable(_subjectVehicle) ? _subjectVehicle : null; } }
+        internal int OriginalContactVehicleHandle
+        {
+            get { return _subjectVehicle == null ? 0 : _subjectVehicle.Handle; }
+        }
         internal Vehicle ActiveSubjectVehicle { get { return IsUsable(_subjectVehicle) ? _subjectVehicle : null; } }
         internal Vehicle ActivePursuitVehicle
         {
@@ -870,7 +944,7 @@ namespace LSImmersiveLife
         {
             get
             {
-                if (!HasActiveInteraction || _backupRequested
+                if (!HasActiveInteraction
                     || !IsUsable(_subject) || _subject.IsDead || _subject.Health <= 0
                     || IsSubjectMeleeReactionPending(_subject))
                     return false;
@@ -890,14 +964,22 @@ namespace LSImmersiveLife
                 if (_stage == InteractionStage.FootAwaitingPlayerArrest)
                     return _subjectVehicle == null;
 
+                if (_stage == InteractionStage.FootBackupContained)
+                    return HasBackupAssignment && !_subject.IsInVehicle();
+
+                if (_stage == InteractionStage.TrafficBackupContained)
+                    return HasBackupAssignment && _trafficContactFled
+                        && IsSelectedTrafficDriverOutside();
+
                 if (_subjectVehicle != null)
                 {
                     if (!trafficFlightContainedOnFoot
                         && !IsSelectedTrafficDriverOutside())
                         return false;
                     if (_stage == InteractionStage.TrafficAwaitingBackup
-                        && IsTrafficStopAtSelectedRoadside()
-                        && _trafficDriverExitConfirmed)
+                        && IsConfirmedTrafficStopPosition()
+                        && _trafficDriverExitConfirmed
+                        && IsSelectedTrafficDriverOutside())
                         return true;
                     if (_stage != InteractionStage.TrafficRefused
                         && _stage != InteractionStage.TrafficResisting
@@ -1013,8 +1095,8 @@ namespace LSImmersiveLife
                             && IsSelectedTrafficDriverOutside()));
                 return HasActiveInteraction
                     && _footPlayerArrested
-                    && !_backupRequested
-                    && _stage == InteractionStage.FootAwaitingBackup
+                    && (_stage == InteractionStage.FootAwaitingBackup
+                        || _stage == InteractionStage.TrafficAwaitingBackup)
                     && subjectReadyForCustody;
             }
         }
@@ -1090,6 +1172,20 @@ namespace LSImmersiveLife
             }
         }
 
+        /// <summary>
+        /// True while the Player owns the selected Citizen's physical arrest.
+        /// Backup leaves its existing cover task in place and must not start
+        /// another custody task for the same subject.
+        /// </summary>
+        internal bool IsPlayerCustodyActionActive
+        {
+            get
+            {
+                return _stage == InteractionStage.FootPlayerArresting
+                    && IsUsable(_subject);
+            }
+        }
+
         internal bool IsBackupContainmentAwaitingPlayer
         {
             get
@@ -1154,14 +1250,16 @@ namespace LSImmersiveLife
             else if (_stage == InteractionStage.TrafficRefused)
                 _stage = InteractionStage.TrafficAwaitingBackup;
             EnsureSubjectBlip("NPC Contact");
+            bool physicallyArrested = _footPlayerArrested
+                && IsUsable(_subject) && IsPedPhysicallyCuffed(_subject);
             bool fleeing = IsFleeing || WasFleeingFootContact || WasFleeingTrafficContact;
             _log.Runtime("NPC_BACKUP_HANDOFF_REQUESTED",
                 "Ped=" + (_subject == null ? 0 : _subject.Handle)
                 + "; Stage=" + _stage + "; Fleeing=" + fleeing);
-            return fleeing
-                ? "Backup received the fleeing citizen's tracked position and will attempt an interception."
-                : _footPlayerArrested
-                    ? "Backup transport requested for the physically handcuffed citizen. Keep the subject at the contact until the unit arrives."
+            return physicallyArrested
+                ? "Backup transport requested for the physically handcuffed citizen. Keep the same subject at the contact until the unit arrives."
+                : fleeing
+                    ? "Backup received the fleeing citizen's tracked position and will attempt an interception."
                     : "Backup requested for the compliant citizen. Keep the subject at the contact until the unit arrives.";
         }
 
@@ -1227,9 +1325,11 @@ namespace LSImmersiveLife
                 return true;
 
             DateTime now = DateTime.UtcNow;
-            bool subjectWasFleeing = IsFleeing
+            bool playerAlreadySecured = _footPlayerArrested
+                && IsPedPhysicallyCuffed(_subject);
+            bool subjectWasFleeing = !playerAlreadySecured && (IsFleeing
                 || WasFleeingFootContact
-                || _trafficContactFled;
+                || _trafficContactFled);
             bool custodyRiskBranch = subjectWasFleeing
                 || _suspiciousFootContact
                 || _stage == InteractionStage.FootAwaitingPlayerArrest
@@ -1443,8 +1543,8 @@ namespace LSImmersiveLife
             {
                 if (_subject.Position.DistanceTo(officer.Position) > 3.2f)
                     return false;
-                bool playerAlreadySecured = _subjectVehicle == null
-                    && _footPlayerArrested && IsPedPhysicallyCuffed(_subject);
+                bool playerAlreadySecured = _footPlayerArrested
+                    && IsPedPhysicallyCuffed(_subject);
                 try
                 {
                     _subject.CanSwitchWeapons = false;
@@ -1705,9 +1805,21 @@ namespace LSImmersiveLife
                             Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
                                 _subject, escortTarget.X, escortTarget.Y, escortTarget.Z,
                                 0.85f, -1, 1.0f, 1, 0f);
+                            ObserveDeveloperTask(
+                                "TASK_FOLLOW_NAV_MESH_TO_COORD",
+                                _subject.Handle,
+                                officer.Handle,
+                                vehicle == null ? 0 : vehicle.Handle,
+                                "BackupEscortCitizenMovement");
                             Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY,
                                 officer, _subject, 0.0f, -0.75f, 0.0f,
                                 0.85f, -1, 0.4f, false);
+                            ObserveDeveloperTask(
+                                "TASK_FOLLOW_TO_OFFSET_OF_ENTITY",
+                                officer.Handle,
+                                _subject.Handle,
+                                vehicle == null ? 0 : vehicle.Handle,
+                                "BackupEscortOfficerFollow");
                             bool firstEscortTask = !_backupEscortTaskIssued;
                             _backupEscortTaskIssued = true;
                             _nextBackupSubjectTask = now.AddSeconds(
@@ -1746,6 +1858,12 @@ namespace LSImmersiveLife
                                     officer, vehicle, 1000);
                                 Function.Call(Hash.TASK_OPEN_VEHICLE_DOOR,
                                     officer, vehicle, 4000, 2, 1.0f);
+                                ObserveDeveloperTask(
+                                    "TASK_OPEN_VEHICLE_DOOR",
+                                    officer.Handle,
+                                    vehicle == null ? 0 : vehicle.Handle,
+                                    vehicle == null ? 0 : vehicle.Handle,
+                                    "BackupEscortRearDoor");
                                 _backupVehicleDoorTaskIssued = true;
                                 _backupVehicleDoorTaskIssuedAt = now;
                                 _nextBackupSubjectTask = now.AddMilliseconds(
@@ -2168,7 +2286,12 @@ namespace LSImmersiveLife
                             : "Backup has contained the fleeing citizen. Open Citizen Ped Response with "
                                 + _controls.InteractionKey + " to review custody.";
                     case InteractionStage.TrafficAwaitingBackup:
-                        return "Subject is compliant and waiting for Police Backup transport.";
+                        if (_footPlayerArrested)
+                            return "Driver is physically handcuffed and waiting for custody transport.";
+                        return _trafficDriverExitConfirmed
+                            ? "The same compliant Driver exited the stopped vehicle. Press "
+                                + _controls.SecureKey + " beside the Driver to complete the physical arrest."
+                            : "Subject is waiting for the documented traffic response.";
                     case InteractionStage.TrafficBackupContained:
                         return _backupInterceptionInvestigationRequired
                             ? "Backup stopped the fleeing driver. After the driver exits, "
@@ -2446,6 +2569,8 @@ namespace LSImmersiveLife
             if (HasActiveInteraction
                 && TryRetryFootGreeting(player, DateTime.UtcNow))
                 return StatusText;
+            if (TryBeginSelectedSuspiciousTrafficFlight(player))
+                return StatusText;
             BeginNearestInteraction(player);
             return HasActiveInteraction
                 ? StatusText
@@ -2487,6 +2612,9 @@ namespace LSImmersiveLife
                     return StatusText;
                 return StatusText;
             }
+
+            if (TryBeginSelectedSuspiciousTrafficFlight(player))
+                return StatusText;
 
             Vehicle playerVehicle = player.CurrentVehicle;
             Ped trafficDriver = FindTrafficDriver(
@@ -2652,7 +2780,7 @@ namespace LSImmersiveLife
             if (IsSubjectMeleeReactionPending(_subject))
                 return "Wait for the citizen's physical reaction to finish, then secure the same subject.";
             if (!CanArrestCitizen)
-                return "Arrest is available after the citizen complies and waits for physical arrest.";
+                return "Arrest is available after document review, physical compliance or containment, and any required Driver exit.";
             BeginFootPlayerArrest(Game.Player.Character, DateTime.UtcNow);
             return StatusText;
         }
@@ -2715,6 +2843,9 @@ namespace LSImmersiveLife
                 Notify(StatusText);
                 return;
             }
+
+            if (TryBeginSelectedSuspiciousTrafficFlight(player))
+                return;
 
             Vehicle playerVehicle = player.CurrentVehicle;
             // A generic interaction edge while riding must not select any
@@ -3053,7 +3184,11 @@ namespace LSImmersiveLife
             }
         }
 
-        private void BeginTrafficInteraction(Ped player, Ped driver, Vehicle vehicle)
+        private void BeginTrafficInteraction(
+            Ped player,
+            Ped driver,
+            Vehicle vehicle,
+            bool beginSuspiciousFlight = false)
         {
             if (!IsUsable(player) || !IsUsable(driver)
                 || !IsUsable(vehicle) || !IsDriver(driver, vehicle))
@@ -3095,6 +3230,8 @@ namespace LSImmersiveLife
             _suspiciousTrafficContact = IsUsable(_approachCandidate)
                 && _approachCandidateTraffic
                 && _approachCandidateSuspicious
+                && IsUsable(_approachCandidateTrafficVehicle)
+                && _approachCandidateTrafficVehicle.Handle == vehicle.Handle
                 && _approachCandidate.IsInVehicle();
             if (_suspiciousTrafficContact)
                 EnableControlledCitizenInjury(driver, "SuspiciousTrafficContact");
@@ -3114,6 +3251,31 @@ namespace LSImmersiveLife
             _nextTrafficDriverExitAttemptAt = DateTime.MinValue;
             _trafficDriverExitDeadline = DateTime.MinValue;
             SetSubjectPoliceAware(driver);
+            if (beginSuspiciousFlight && _suspiciousTrafficContact)
+            {
+                LSPDNPCRecord adverseRecord;
+                if (_database != null
+                    && _database.TryGetAdverseRecord(driver, true, out adverseRecord))
+                {
+                    _currentRecord = adverseRecord;
+                    _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_RECORD_READY",
+                        "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                        + "; " + RecordStatus("Database adverse record selected"));
+                }
+                else
+                {
+                    _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_RECORD_UNAVAILABLE",
+                        "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                        + "; Reason=NPC database could not provide an adverse record; ContactPreserved=true");
+                }
+
+                _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_CONTACT_STARTED",
+                    "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                    + "; Behavior=PlayerApproachOrFollow; StopTaskSkipped=true");
+                StartTrafficFlee(player);
+                return;
+            }
+
             if (!BeginTrafficPullOver(now))
             {
                 _log.Runtime("NPC_TRAFFIC_PULL_OVER_UNAVAILABLE",
@@ -4843,6 +5005,7 @@ namespace LSImmersiveLife
 
             try
             {
+                _playerArrestOriginStage = _stage;
                 _stage = InteractionStage.FootPlayerArresting;
                 _readyAt = DateTime.MaxValue;
                 _footPlayerArrestPlaybackConfirmed = false;
@@ -4949,14 +5112,16 @@ namespace LSImmersiveLife
                     + "; ScenePhase=" + GetScenePhaseText(arrestScene)
                     + "; HoldMilliseconds=" + arrestHoldMilliseconds
                     + "; Attempt=1"
-                    + "; DownedAlive=" + downedAlive);
+                    + "; DownedAlive=" + downedAlive
+                    + "; OriginStage=" + _playerArrestOriginStage
+                    + "; CitizenVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                    + "; BackupCover=" + _backupRequested);
                 Notify("Physical arrest in progress. Stay beside the citizen until the handcuffs are secured.");
             }
             catch (Exception ex)
             {
-                _stage = _subjectVehicle == null
-                    ? InteractionStage.FootAwaitingPlayerArrest
-                    : InteractionStage.TrafficAwaitingBackup;
+                _stage = ResolvePlayerArrestRetryStage();
+                _playerArrestOriginStage = InteractionStage.None;
                 _animationHoldUntil = DateTime.MinValue;
                 _footPlayerArrestAttempts = 0;
                 _footPlayerArrestDeadline = DateTime.MinValue;
@@ -4969,6 +5134,15 @@ namespace LSImmersiveLife
                 }
                 Notify("The physical arrest could not be started. Try again while standing beside the citizen.");
             }
+        }
+
+        private InteractionStage ResolvePlayerArrestRetryStage()
+        {
+            if (_playerArrestOriginStage != InteractionStage.None)
+                return _playerArrestOriginStage;
+            return _subjectVehicle == null
+                ? InteractionStage.FootAwaitingPlayerArrest
+                : InteractionStage.TrafficAwaitingBackup;
         }
 
         private void MaintainFootPlayerArrest(DateTime now, Ped player)
@@ -5105,9 +5279,8 @@ namespace LSImmersiveLife
                     }
                 }
 
-                _stage = _subjectVehicle == null
-                    ? InteractionStage.FootAwaitingPlayerArrest
-                    : InteractionStage.TrafficAwaitingBackup;
+                _stage = ResolvePlayerArrestRetryStage();
+                _playerArrestOriginStage = InteractionStage.None;
                 _animationHoldUntil = DateTime.MinValue;
                 _readyAt = DateTime.MaxValue;
                 _footPlayerArrestAttempts = 0;
@@ -5129,6 +5302,7 @@ namespace LSImmersiveLife
 
             try
             {
+                InteractionStage arrestOrigin = _playerArrestOriginStage;
                 _subject.Task.ClearAll();
                 Function.Call(Hash.SET_ENABLE_HANDCUFFS, _subject, true);
                 _subject.BlockPermanentEvents = true;
@@ -5143,16 +5317,19 @@ namespace LSImmersiveLife
                 EnsureSubjectBlip("Handcuffed Citizen");
                 BeginPendingAnimation(PendingAnimation.HandcuffedIdle, 1800, now);
                 _log.Runtime("NPC_FOOT_PLAYER_ARREST_COMPLETED",
-                    "Ped=" + _subject.Handle + "; Method=TaskArrestPed");
-                Notify("Citizen is handcuffed and secured. Open Citizen Ped Response and select "
-                    + "Request a Back Up For Citizen Transport for a nearby Backup escort.");
+                    "Ped=" + _subject.Handle + "; Method=TaskArrestPed"
+                    + "; OriginStage=" + arrestOrigin
+                    + "; CitizenVehicle=" + (_subjectVehicle == null ? 0 : _subjectVehicle.Handle)
+                    + "; PhysicalCuffsConfirmed=" + IsPedPhysicallyCuffed(_subject));
+                _playerArrestOriginStage = InteractionStage.None;
+                Notify("Citizen is handcuffed and secured. Open Citizen Ped Response to choose "
+                    + "personal Police Utility transport or a Backup custody transport.");
             }
             catch (Exception ex)
             {
                 _log.Exception("NPC_FOOT_PLAYER_ARREST_CONFIRM_FAILED", ex);
-                _stage = _subjectVehicle == null
-                    ? InteractionStage.FootAwaitingPlayerArrest
-                    : InteractionStage.TrafficAwaitingBackup;
+                _stage = ResolvePlayerArrestRetryStage();
+                _playerArrestOriginStage = InteractionStage.None;
                 _footPlayerArrested = false;
                 _footPlayerArrestAttempts = 0;
                 _footPlayerArrestDeadline = DateTime.MinValue;
@@ -5262,7 +5439,9 @@ namespace LSImmersiveLife
             }
             _nextTrafficDriverExitCheckAt = now.AddMilliseconds(200);
             if (!IsUsable(_subject) || !IsUsable(_subjectVehicle)
-                || !IsTrafficStopAtSelectedRoadside())
+                || !IsConfirmedTrafficStopPosition()
+                || (!IsSelectedTrafficDriverStillSeated()
+                    && !IsSelectedTrafficDriverOutside()))
             {
                 _trafficComplianceExitRequested = false;
                 _log.Runtime("NPC_TRAFFIC_COMPLIANCE_EXIT_NOT_CONFIRMED",
@@ -5487,7 +5666,13 @@ namespace LSImmersiveLife
                 _fleeRecoveryIssued = false;
                 _recentlyReleasedVehicles[vehicle.Handle] = now.AddMilliseconds(FleeMemoryMilliseconds);
                 LSPDNPCRecord adverseRecord;
-                if (_currentRecord == null && _database != null
+                if (_currentRecord != null)
+                {
+                    _log.Runtime("NPC_TRAFFIC_FLEE_RECORD_RETAINED",
+                        "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                        + "; " + RecordStatus("Selected Citizen record retained for post-flight review"));
+                }
+                else if (_database != null
                     && _database.TryGetAdverseRecord(driver, true, out adverseRecord))
                 {
                     _currentRecord = adverseRecord;
@@ -6022,10 +6207,9 @@ namespace LSImmersiveLife
             {
                 state.OriginalSelectedWeaponHash = Function.Call<int>(
                     Hash.GET_SELECTED_PED_WEAPON, subject);
-                try { Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, subject); }
-                catch { }
-                try { Function.Call(Hash.CLEAR_ENTITY_LAST_WEAPON_DAMAGE, subject); }
-                catch { }
+                state.DamageAttributionBaselineAvailable =
+                    ClearSubjectDamageRecords(subject,
+                        out state.DamageAttributionBaselineStatus);
             }
             catch (Exception ex)
             {
@@ -6039,7 +6223,11 @@ namespace LSImmersiveLife
                 + "; HealthBefore=" + originalHealth
                 + "; MaximumHealth=" + originalMaximumHealth
                 + "; HealthWritten=false; MaximumHealthWritten=false"
-                + "; CriticalHitSettingChanged=false; ReusedPed=true");
+                + "; CriticalHitSettingChanged=false; ReusedPed=true"
+                + "; DamageAttributionBaselineAvailable="
+                + state.DamageAttributionBaselineAvailable
+                + "; DamageAttributionBaselineStatus="
+                + state.DamageAttributionBaselineStatus);
         }
 
         private void EnableControlledCitizenInjury(Ped subject, string branch)
@@ -6072,7 +6260,9 @@ namespace LSImmersiveLife
                 state.LastHealth = Math.Max(1, subject.Health);
                 state.ManagedHealthAtProtectionStart = state.LastHealth;
                 state.HasLastProcessedDamageRecord = false;
-                ClearSubjectDamageRecords(subject);
+                state.DamageAttributionBaselineAvailable =
+                    ClearSubjectDamageRecords(subject,
+                        out state.DamageAttributionBaselineStatus);
                 _log.Runtime("NPC_SUBJECT_CONTROLLED_INJURY_ENABLED",
                     "Interaction=" + state.InteractionId
                     + "; RuntimeOwner=Citizen; Ped=" + subject.Handle
@@ -6083,6 +6273,10 @@ namespace LSImmersiveLife
                     + "; ManagedMaximum=" + state.ManagedMaximumHealth
                     + "; StartingHealthRatioPreserved=true"
                     + "; CanSufferCriticalHits=" + subject.CanSufferCriticalHits
+                    + "; DamageAttributionBaselineAvailable="
+                    + state.DamageAttributionBaselineAvailable
+                    + "; DamageAttributionBaselineStatus="
+                    + state.DamageAttributionBaselineStatus
                     + "; CooperativeContact=false");
             }
             catch (Exception ex)
@@ -6116,7 +6310,9 @@ namespace LSImmersiveLife
                 // Capture the native bone immediately after observing the
                 // health drop. Retain a recent nonzero bone when this hit
                 // reports Bone 0, then classify before clearing the records.
-                int rawBone = ReadSubjectLastDamageBone(subject);
+                string rawBoneReadStatus;
+                int rawBone = ReadSubjectLastDamageBone(
+                    subject, out rawBoneReadStatus);
                 int bone = rawBone;
                 bool retainedBone = false;
                 if (rawBone != 0)
@@ -6133,25 +6329,18 @@ namespace LSImmersiveLife
                     bone = state.LastValidDamageBone;
                     retainedBone = true;
                 }
-                int damageWeaponHash;
-                int damageAttackerHandle;
-                int damageGameTime;
-                bool damageRecordAvailable = TryReadSubjectDamageRecord(
-                    subject, out damageWeaponHash, out damageAttackerHandle,
-                    out damageGameTime);
-                state.LastDamageWeaponHash = damageWeaponHash;
-                state.LastDamageAttackerHandle = damageAttackerHandle;
-                state.LastDamageGameTime = damageGameTime;
-                ControlledDamageKind damageKind = ReadSubjectDamageKind(
-                    subject, damageWeaponHash, damageRecordAvailable);
+                SubjectDamageEvidence damageEvidence = CaptureSubjectDamageEvidence(
+                    subject, player, state, rawBone, rawBoneReadStatus);
+                state.LastDamageWeaponHash = damageEvidence.WeaponHash;
+                state.LastDamageAttackerHandle = damageEvidence.AttackerHandle;
+                state.LastDamageGameTime = damageEvidence.RecordGameTime;
+                ControlledDamageKind damageKind = damageEvidence.DamageKind;
                 int currentMaximumHealth = Math.Max(1, subject.MaxHealth);
                 if (TryReconcileCitizenHealthReset(
                     subject, state, currentHealth, currentMaximumHealth,
-                    rawBone, damageRecordAvailable, damageKind))
+                    rawBone, damageEvidence, damageKind))
                     return;
-                bool duplicateDamageEvent = IsDuplicateDamageRecord(
-                    state, damageRecordAvailable, damageWeaponHash,
-                    damageAttackerHandle, damageGameTime, rawBone);
+                bool duplicateDamageEvent = damageEvidence.RecordDuplicate;
                 SuspectHitZone hitZone = ClassifySuspectHitZone(bone);
                 SuspectHitZone rawHitZone = ClassifySuspectHitZone(rawBone);
                 bool physicalDown = false;
@@ -6162,9 +6351,13 @@ namespace LSImmersiveLife
                 }
                 catch { }
                 bool wasDowned = state.Wounded && physicalDown;
-                ClearSubjectDamageRecords(subject);
+                state.DamageAttributionBaselineAvailable =
+                    ClearSubjectDamageRecords(subject,
+                        out state.DamageAttributionBaselineStatus);
 
-                if (!duplicateDamageEvent)
+                bool confirmedUniqueDamageEvent = damageEvidence.DamageEventConfirmed
+                    && !duplicateDamageEvent;
+                if (confirmedUniqueDamageEvent)
                 {
                     state.DamageTaken += damage;
                     state.RegisteredHits++;
@@ -6178,34 +6371,36 @@ namespace LSImmersiveLife
                         if (damageKind == ControlledDamageKind.Weapon)
                             state.FatalDownedHits++;
                     }
-                    if (hitZone == SuspectHitZone.Head)
+                    if (rawHitZone == SuspectHitZone.Head)
                         state.HeadHits++;
-                    else if (hitZone == SuspectHitZone.Chest)
+                    else if (rawHitZone == SuspectHitZone.Chest)
                         state.ChestHits++;
-                    else if (hitZone == SuspectHitZone.Stomach)
+                    else if (rawHitZone == SuspectHitZone.Stomach)
                         state.StomachHits++;
 
-                    if (damageRecordAvailable && damageGameTime > 0)
-                    {
-                        state.HasLastProcessedDamageRecord = true;
-                        state.LastProcessedDamageWeaponHash = damageWeaponHash;
-                        state.LastProcessedDamageAttackerHandle = damageAttackerHandle;
-                        state.LastProcessedDamageGameTime = damageGameTime;
-                        state.LastProcessedDamageBone = rawBone;
-                    }
+                }
+
+                if (damageEvidence.RecordFresh && !duplicateDamageEvent)
+                {
+                    // Remember even an uncorroborated fresh record so it cannot
+                    // become a confirmed second hit on a later health sample.
+                    state.HasLastProcessedDamageRecord = true;
+                    state.LastProcessedDamageWeaponHash = damageEvidence.WeaponHash;
+                    state.LastProcessedDamageAttackerHandle = damageEvidence.AttackerHandle;
+                    state.LastProcessedDamageGameTime = damageEvidence.RecordGameTime;
                 }
 
                 bool engineTerminal = subject.IsDead || currentHealth <= 0;
-                bool fatalHeadOrNeck = !duplicateDamageEvent
+                bool fatalHeadOrNeck = confirmedUniqueDamageEvent
                     && damageKind == ControlledDamageKind.Weapon
                     && rawHitZone == SuspectHitZone.Head;
-                bool fatalRepeatedMelee = !duplicateDamageEvent
+                bool fatalRepeatedMelee = confirmedUniqueDamageEvent
                     && damageKind == ControlledDamageKind.Melee
                     && state.MeleeHits >= _injurySettings.CumulativeFatalHitThreshold;
-                bool fatalCumulative = !duplicateDamageEvent
+                bool fatalCumulative = confirmedUniqueDamageEvent
                     && damageKind == ControlledDamageKind.Weapon
                     && state.WeaponHits >= _injurySettings.CumulativeFatalHitThreshold;
-                bool fatalAfterDownedHits = !duplicateDamageEvent && wasDowned
+                bool fatalAfterDownedHits = confirmedUniqueDamageEvent && wasDowned
                     && damageKind == ControlledDamageKind.Weapon
                     && state.FatalDownedHits
                     >= _injurySettings.RepeatedDamageAfterDownedThreshold;
@@ -6222,14 +6417,33 @@ namespace LSImmersiveLife
                     + "; HealthAfter=" + currentHealth
                     + "; DamageDelta=" + damage
                     + "; RawBone=" + rawBone
+                    + "; RawBoneReadStatus=" + damageEvidence.RawBoneReadStatus
                     + "; EffectiveBone=" + bone
                     + "; RetainedBone=" + retainedBone
                     + "; Zone=" + hitZone
                     + "; DamageKind=" + damageKind
-                    + "; DamageRecordAvailable=" + damageRecordAvailable
-                    + "; DamageWeaponHash=" + damageWeaponHash
-                    + "; DamageAttackerHandle=" + damageAttackerHandle
-                    + "; DamageGameTime=" + damageGameTime
+                    + "; DamageRecordAvailable=" + damageEvidence.RecordAvailable
+                    + "; DamageRecordFresh=" + damageEvidence.RecordFresh
+                    + "; DamageRecordAgeMilliseconds=" + damageEvidence.RecordAgeMilliseconds
+                    + "; DamageRecordFreshnessWindowMilliseconds=" + CurrentDamageRecordMaximumAgeMilliseconds
+                    + "; DamageRecordStatus=" + damageEvidence.AttributionStatus
+                    + "; DamageRecordReadStatus=" + damageEvidence.RecordReadStatus
+                    + "; DamageAttributionBaselineAvailable=" + damageEvidence.AttributionBaselineAvailable
+                    + "; DamageAttributionBaselineStatus=" + damageEvidence.AttributionBaselineStatus
+                    + "; DamageEventConfirmed=" + damageEvidence.DamageEventConfirmed
+                    + "; DamageEventCounted=" + confirmedUniqueDamageEvent
+                    + "; DamageSource=" + damageEvidence.DamageSource
+                    + "; AttackerIsAssignedBackup=" + damageEvidence.AttackerIsAssignedBackup
+                    + "; DamageWeaponHash=" + damageEvidence.WeaponHash
+                    + "; DamageAttackerHandle=" + damageEvidence.AttackerHandle
+                    + "; DamageGameTime=" + damageEvidence.RecordGameTime
+                    + "; DamageSampleGameTime=" + damageEvidence.SampleGameTime
+                    + "; NativeDamageCheckAvailable=" + damageEvidence.NativeDamageCheckAvailable
+                    + "; NativeReportsDamageByRecordAttacker=" + damageEvidence.NativeReportsDamageByRecordAttacker
+                    + "; AttackerContext=" + damageEvidence.AttackerContext
+                    + "; PlayerContext=" + damageEvidence.PlayerContext
+                    + "; BackupContext=" + damageEvidence.BackupContext
+                    + "; CollisionContext=" + damageEvidence.CollisionContext
                     + "; DamageEventDuplicate=" + duplicateDamageEvent
                     + "; HeadHits=" + state.HeadHits
                     + "; ChestHits=" + state.ChestHits
@@ -6255,8 +6469,15 @@ namespace LSImmersiveLife
                         + "; RuntimeOwner=Citizen; Ped=" + subject.Handle
                         + "; DamageKind=" + damageKind
                         + "; Zone=" + hitZone
+                        + "; RawBone=" + rawBone
+                        + "; RawBoneReadStatus=" + damageEvidence.RawBoneReadStatus
+                        + "; DamageEventConfirmed=" + damageEvidence.DamageEventConfirmed
+                        + "; DamageRecordStatus=" + damageEvidence.AttributionStatus
+                        + "; DamageRecordAgeMilliseconds=" + damageEvidence.RecordAgeMilliseconds
+                        + "; DamageSource=" + damageEvidence.DamageSource
+                        + "; DamageAttackerHandle=" + damageEvidence.AttackerHandle
                         + "; Reason=" + (engineTerminal ? "EngineTerminal"
-                            : fatalHeadOrNeck ? "ConfirmedHeadOrNeckWeaponHit"
+                            : fatalHeadOrNeck ? "ConfirmedHeadWeaponHit"
                             : fatalRepeatedMelee ? "RepeatedMeleeHits"
                             : fatalAfterDownedHits ? "RepeatedDamageWhileDowned"
                             : "CumulativeHitThreshold")
@@ -6319,18 +6540,391 @@ namespace LSImmersiveLife
             }
         }
 
+        private SubjectDamageEvidence CaptureSubjectDamageEvidence(
+            Ped subject,
+            Ped player,
+            SubjectInjuryState state,
+            int rawBone,
+            string rawBoneReadStatus)
+        {
+            var evidence = new SubjectDamageEvidence();
+            evidence.RawBoneReadStatus = rawBoneReadStatus ?? "Unknown";
+            evidence.AttributionBaselineAvailable = state != null
+                && state.DamageAttributionBaselineAvailable;
+            evidence.AttributionBaselineStatus = state == null
+                ? "NoInjuryState"
+                : state.DamageAttributionBaselineStatus ?? "Unknown";
+            try { evidence.SampleGameTime = Game.GameTime; }
+            catch (Exception ex)
+            {
+                evidence.AttributionStatus = "GameClockUnavailable:" + ex.GetType().Name;
+            }
+
+            evidence.RecordAvailable = TryReadSubjectDamageRecord(
+                subject,
+                out evidence.WeaponHash,
+                out evidence.AttackerHandle,
+                out evidence.RecordGameTime,
+                out evidence.RecordAttacker,
+                out evidence.RecordReadStatus);
+            if (evidence.RecordAvailable && evidence.AttributionStatus == "Unknown")
+            {
+                evidence.RecordAgeMilliseconds = unchecked(
+                    evidence.SampleGameTime - evidence.RecordGameTime);
+                evidence.RecordFresh = evidence.RecordAgeMilliseconds >= 0
+                    && evidence.RecordAgeMilliseconds
+                        <= CurrentDamageRecordMaximumAgeMilliseconds;
+                evidence.RecordDuplicate = evidence.RecordFresh
+                    && IsDuplicateDamageRecord(
+                        state, evidence.RecordAvailable, evidence.WeaponHash,
+                        evidence.AttackerHandle, evidence.RecordGameTime);
+
+                if (evidence.RecordAgeMilliseconds < 0)
+                    evidence.AttributionStatus = "FutureTimestamp";
+                else if (!evidence.RecordFresh)
+                    evidence.AttributionStatus = "StaleRecord";
+                else if (evidence.RecordDuplicate)
+                    evidence.AttributionStatus = "PreviouslyProcessedRecord";
+                else if (evidence.AttackerHandle <= 0
+                    || evidence.RecordAttacker == null)
+                    evidence.AttributionStatus = "FreshRecordWithoutAttacker";
+                else if (!IsDamageEntityUsable(evidence.RecordAttacker))
+                    evidence.AttributionStatus = "FreshRecordAttackerUnavailable";
+                else if (!evidence.AttributionBaselineAvailable)
+                    evidence.AttributionStatus =
+                        "FreshRecordAttributionBaselineUnavailable";
+                else
+                {
+                    try
+                    {
+                        // The local SHVDN native catalog has no
+                        // GET_ENTITY_LAST_DAMAGE_ENTITY getter. Clearing the
+                        // entity's last-damage source at each sample boundary,
+                        // then querying this exact record attacker, is the
+                        // supported independent attribution check.
+                        evidence.NativeReportsDamageByRecordAttacker =
+                            Function.Call<bool>(
+                                Hash.HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY,
+                                subject,
+                                evidence.RecordAttacker);
+                        evidence.NativeDamageCheckAvailable = true;
+                        evidence.DamageEventConfirmed =
+                            evidence.NativeReportsDamageByRecordAttacker;
+                        evidence.AttributionStatus = evidence.DamageEventConfirmed
+                            ? "FreshRecordNativeCorroborated"
+                            : "FreshRecordNotNativeCorroborated";
+                    }
+                    catch (Exception ex)
+                    {
+                        evidence.AttributionStatus = "NativeDamageCheckUnavailable:"
+                            + ex.GetType().Name;
+                    }
+                }
+            }
+            else if (!evidence.RecordAvailable
+                && evidence.AttributionStatus == "Unknown")
+                evidence.AttributionStatus = evidence.RecordReadStatus != null
+                    && evidence.RecordReadStatus.StartsWith(
+                        "ReadFailed", StringComparison.Ordinal)
+                    ? evidence.RecordReadStatus
+                    : evidence.RecordReadStatus == "CitizenUnavailable"
+                        ? "CitizenUnavailableForDamageRecordRead"
+                        : "NoDamageRecord";
+
+            evidence.CurrentDamageEvidence = rawBone != 0 || evidence.RecordFresh
+                || (evidence.RecordAvailable && evidence.RecordAgeMilliseconds < 0)
+                || (evidence.RawBoneReadStatus.StartsWith(
+                    "ReadFailed", StringComparison.Ordinal))
+                || (evidence.RecordReadStatus != null
+                    && evidence.RecordReadStatus.StartsWith(
+                        "ReadFailed", StringComparison.Ordinal));
+            evidence.DamageKind = ReadSubjectDamageKind(
+                subject, evidence.WeaponHash, evidence.DamageEventConfirmed);
+
+            bool backupAttacker = false;
+            try
+            {
+                if (_backupDamageEvidenceProvider != null)
+                {
+                    Tuple<bool, string> backup = _backupDamageEvidenceProvider(
+                        subject, evidence.AttackerHandle);
+                    if (backup != null)
+                    {
+                        backupAttacker = backup.Item1;
+                        evidence.BackupContext = backup.Item2 ?? "SnapshotEmpty";
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                evidence.BackupContext = "SnapshotUnavailable:" + ex.GetType().Name;
+            }
+            evidence.AttackerIsAssignedBackup = backupAttacker;
+            evidence.AttackerContext = DescribeDamageAttacker(
+                evidence.RecordAttacker, subject);
+            evidence.PlayerContext = DescribeDamagePlayer(player, subject);
+
+            Vehicle currentSubjectVehicle = null;
+            string currentSubjectVehicleStatus = "Unknown";
+            try
+            {
+                if (subject.IsInVehicle())
+                {
+                    currentSubjectVehicle = subject.CurrentVehicle;
+                    currentSubjectVehicleStatus = currentSubjectVehicle == null
+                        ? "InVehicleCurrentHandleUnavailable"
+                        : "InVehicle";
+                }
+                else
+                    currentSubjectVehicleStatus = "OnFootAtSample";
+            }
+            catch (Exception ex)
+            {
+                currentSubjectVehicleStatus = "ReadFailed:" + ex.GetType().Name;
+            }
+            Vehicle originalVehicle = IsUsable(_subjectVehicle) ? _subjectVehicle : null;
+            Vehicle pursuitVehicle = IsUsable(_trafficPursuitVehicle)
+                ? _trafficPursuitVehicle : null;
+            bool subjectCollision;
+            bool currentVehicleCollision;
+            bool originalVehicleCollision;
+            bool pursuitVehicleCollision;
+            bool attackerVehicleCollision;
+            string collisionContext = "Citizen=" + FormatCollision(
+                subject, out subjectCollision);
+            collisionContext += "; CitizenVehicleState="
+                + currentSubjectVehicleStatus;
+            bool anyCollision = subjectCollision;
+            collisionContext += "; CurrentCitizenVehicle=" + FormatCollision(
+                currentSubjectVehicle, out currentVehicleCollision);
+            collisionContext += "; OriginalContactVehicle=" + FormatCollision(
+                originalVehicle, out originalVehicleCollision);
+            collisionContext += "; PursuitVehicle=" + FormatCollision(
+                pursuitVehicle, out pursuitVehicleCollision);
+            Vehicle attackerVehicle = null;
+            Ped attackerPed = evidence.RecordAttacker as Ped;
+            if (evidence.RecordAttacker is Vehicle)
+                attackerVehicle = evidence.RecordAttacker as Vehicle;
+            else if (attackerPed != null)
+            {
+                try
+                {
+                    if (attackerPed.IsInVehicle())
+                        attackerVehicle = attackerPed.CurrentVehicle;
+                }
+                catch { }
+            }
+            collisionContext += "; AttackerCurrentVehicle=" + FormatCollision(
+                attackerVehicle, out attackerVehicleCollision);
+            anyCollision = anyCollision || (currentVehicleCollision && currentSubjectVehicle != null)
+                || (originalVehicleCollision && originalVehicle != null)
+                || (pursuitVehicleCollision && pursuitVehicle != null)
+                || (attackerVehicleCollision && attackerVehicle != null);
+            evidence.CollisionContext = collisionContext
+                + "; CollisionObserved=" + anyCollision
+                + "; CollisionIsAttribution=false";
+            evidence.CurrentDamageEvidence = evidence.CurrentDamageEvidence
+                || anyCollision;
+            evidence.DamageSource = ClassifyDamageSource(
+                evidence.RecordAttacker, player, backupAttacker,
+                evidence.DamageEventConfirmed);
+            if (!evidence.DamageEventConfirmed && anyCollision)
+                evidence.DamageSource = "CollisionObservedButUnattributed";
+            else if (!evidence.DamageEventConfirmed
+                && evidence.AttackerHandle == 0 && rawBone == 0)
+                evidence.DamageSource = "WorldEnvironmentOrReconciliationUnresolved";
+            return evidence;
+        }
+
+        private static string ClassifyDamageSource(
+            Entity attacker,
+            Ped player,
+            bool assignedBackup,
+            bool confirmed)
+        {
+            if (!confirmed || attacker == null)
+                return attacker == null ? "UnknownOrUnconfirmed" : "RecordClaimUnconfirmed";
+            if (player != null && attacker.Handle == player.Handle)
+                return "Player";
+            if (assignedBackup)
+                return "BackupPed";
+            if (attacker is Ped)
+                return "OtherPed";
+            if (attacker is Vehicle)
+                return "VehicleEntity";
+            return "OtherEntity";
+        }
+
+        private static string DescribeDamagePlayer(Ped player, Ped subject)
+        {
+            if (!IsUsable(player))
+                return "Handle=" + (player == null ? 0 : player.Handle)
+                    + ",Unavailable";
+            try
+            {
+                int weapon = Function.Call<int>(Hash.GET_SELECTED_PED_WEAPON, player);
+                return "Handle=" + player.Handle
+                    + ",Distance=" + player.Position.DistanceTo(subject.Position)
+                        .ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                    + "m,SelectedWeaponHashAtSample=" + weapon;
+            }
+            catch (Exception ex)
+            {
+                return "Handle=" + player.Handle + ",SnapshotUnavailable="
+                    + ex.GetType().Name;
+            }
+        }
+
+        private static string DescribeDamageAttacker(Entity attacker, Ped subject)
+        {
+            if (!IsDamageEntityUsable(attacker))
+                return "Handle=" + (attacker == null ? 0 : attacker.Handle)
+                    + ",Unavailable";
+            string kind = attacker is Ped ? "Ped"
+                : attacker is Vehicle ? "Vehicle" : "OtherEntity";
+            float distance;
+            try { distance = attacker.Position.DistanceTo(subject.Position); }
+            catch { distance = float.NaN; }
+            string context = "Handle=" + attacker.Handle
+                + ",EntityType=" + kind
+                + ",Distance=" + distance.ToString(
+                    "0.0", System.Globalization.CultureInfo.InvariantCulture) + "m";
+            Ped ped = attacker as Ped;
+            if (ped == null)
+                return context;
+
+            bool inVehicle = false;
+            Vehicle vehicle = null;
+            string inVehicleStatus = "Unavailable";
+            try
+            {
+                inVehicle = ped.IsInVehicle();
+                inVehicleStatus = inVehicle.ToString();
+                if (inVehicle)
+                    vehicle = ped.CurrentVehicle;
+            }
+            catch (Exception ex) { inVehicleStatus = "Unavailable:" + ex.GetType().Name; }
+            string currentWeapon = "Unavailable";
+            string shooting = "Unavailable";
+            string inCombat = "Unavailable";
+            string arrestTask = "Unavailable";
+            string combatTarget = "Unavailable";
+            string taskStatus = "Unavailable";
+            try
+            {
+                currentWeapon = Function.Call<int>(Hash.GET_SELECTED_PED_WEAPON, ped)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex) { currentWeapon = "Unavailable:" + ex.GetType().Name; }
+            try { shooting = Function.Call<bool>(Hash.IS_PED_SHOOTING, ped).ToString(); }
+            catch (Exception ex) { shooting = "Unavailable:" + ex.GetType().Name; }
+            try { inCombat = Function.Call<bool>(Hash.IS_PED_IN_COMBAT, ped, 0).ToString(); }
+            catch (Exception ex) { inCombat = "Unavailable:" + ex.GetType().Name; }
+            try { arrestTask = Function.Call<bool>(Hash.IS_PED_RUNNING_ARREST_TASK, ped).ToString(); }
+            catch (Exception ex) { arrestTask = "Unavailable:" + ex.GetType().Name; }
+            try
+            {
+                combatTarget = Function.Call<int>(
+                    Hash.GET_PED_TARGET_FROM_COMBAT_PED, ped, true)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex) { combatTarget = "Unavailable:" + ex.GetType().Name; }
+            taskStatus = "VehicleChaseRaw=" + ReadDamageTaskStatus(
+                    ped, Hash.TASK_VEHICLE_CHASE)
+                + ",AimGunRaw=" + ReadDamageTaskStatus(
+                    ped, Hash.TASK_AIM_GUN_AT_ENTITY)
+                + ",CombatPedRaw=" + ReadDamageTaskStatus(
+                    ped, Hash.TASK_COMBAT_PED);
+            string vehicleContext = !IsDamageEntityUsable(vehicle)
+                ? inVehicle ? "Unavailable,Seat=Unknown" : "0,Seat=NotInVehicle"
+                : vehicle.Handle + ",Seat=" + ReadDamageAttackerSeat(ped, vehicle);
+            return context
+                + ",InVehicleAtSample=" + inVehicleStatus
+                + ",CurrentVehicle=" + vehicleContext
+                + ",CurrentWeaponHash=" + currentWeapon
+                + ",ObservedShootingNow=" + shooting
+                + ",ObservedInCombatNow=" + inCombat
+                + ",CombatTarget=" + combatTarget
+                + ",RunningArrestTask=" + arrestTask
+                + ",TaskStatusNativeRaw=[" + taskStatus + "]";
+        }
+
+        private static string ReadDamageAttackerSeat(Ped ped, Vehicle vehicle)
+        {
+            try
+            {
+                if (Function.Call<int>(Hash.GET_PED_IN_VEHICLE_SEAT,
+                        vehicle, -1, false) == ped.Handle)
+                    return "Driver(-1)";
+                int passengers = Math.Max(0, Math.Min(16,
+                    Function.Call<int>(Hash.GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS,
+                        vehicle)));
+                for (int seat = 0; seat < passengers; seat++)
+                    if (Function.Call<int>(Hash.GET_PED_IN_VEHICLE_SEAT,
+                            vehicle, seat, false) == ped.Handle)
+                        return "Passenger(" + seat + ")";
+                return "UnknownWithinBoundedSeatScan(" + passengers + ")";
+            }
+            catch (Exception ex)
+            {
+                return "Unavailable:" + ex.GetType().Name;
+            }
+        }
+
+        private static string ReadDamageTaskStatus(Ped ped, Hash task)
+        {
+            try
+            {
+                return Function.Call<int>(Hash.GET_SCRIPT_TASK_STATUS, ped, task)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex)
+            {
+                return "Unavailable:" + ex.GetType().Name;
+            }
+        }
+
+        private static bool IsDamageEntityUsable(Entity entity)
+        {
+            try { return entity != null && entity.Exists(); }
+            catch { return false; }
+        }
+
+        private static string FormatCollision(Entity entity, out bool collided)
+        {
+            bool available = TryReadCollision(entity, out collided);
+            return entity == null ? "NoEntity"
+                : available ? entity.Handle + ":" + collided
+                : entity.Handle + ":Unavailable";
+        }
+
+        private static bool TryReadCollision(Entity entity, out bool collided)
+        {
+            collided = false;
+            if (!IsDamageEntityUsable(entity))
+                return false;
+            try
+            {
+                collided = Function.Call<bool>(
+                    Hash.HAS_ENTITY_COLLIDED_WITH_ANYTHING, entity);
+                return true;
+            }
+            catch { return false; }
+        }
+
         private bool TryReconcileCitizenHealthReset(
             Ped subject,
             SubjectInjuryState state,
             int currentHealth,
             int currentMaximumHealth,
             int rawBone,
-            bool damageRecordAvailable,
+            SubjectDamageEvidence damageEvidence,
             ControlledDamageKind damageKind)
         {
             if (state == null || !IsUsable(subject)
                 || currentHealth <= 0 || subject.IsDead
-                || rawBone != 0 || damageRecordAvailable
+                || rawBone != 0 || damageEvidence == null
+                || damageEvidence.CurrentDamageEvidence
                 || damageKind != ControlledDamageKind.Unknown)
                 return false;
 
@@ -6378,7 +6972,9 @@ namespace LSImmersiveLife
             int observedMaximum = Math.Max(1, subject.MaxHealth);
             int observedHealth = Math.Max(1, subject.Health);
             state.LastHealth = observedHealth;
-            ClearSubjectDamageRecords(subject);
+            state.DamageAttributionBaselineAvailable =
+                ClearSubjectDamageRecords(subject,
+                    out state.DamageAttributionBaselineStatus);
             state.HasLastProcessedDamageRecord = false;
             if (!state.HealthReconciliationLogged)
             {
@@ -6394,7 +6990,15 @@ namespace LSImmersiveLife
                     + "; ManagedMaximum=" + state.ManagedMaximumHealth
                     + "; HealthAfter=" + observedHealth
                     + "; MaximumAfter=" + observedMaximum
-                    + "; Bone=0; DamageRecordAvailable=false"
+                    + "; Bone=0; CurrentDamageEvidence=false"
+                    + "; DamageRecordAvailable=" + damageEvidence.RecordAvailable
+                    + "; DamageRecordReadStatus=" + damageEvidence.RecordReadStatus
+                    + "; DamageRecordStatus=" + damageEvidence.AttributionStatus
+                    + "; DamageRecordAgeMilliseconds=" + damageEvidence.RecordAgeMilliseconds
+                    + "; DamageRecordFreshnessWindowMilliseconds=" + CurrentDamageRecordMaximumAgeMilliseconds
+                    + "; RawBoneReadStatus=" + damageEvidence.RawBoneReadStatus
+                    + "; DamageSource=HealthResetReconciliationCandidate"
+                    + "; CollisionContext=" + damageEvidence.CollisionContext
                     + "; DamageKind=Unknown; DamageDeltaNotClassifiedAsInjury=true"
                     + "; ControlledHealthWritten=" + state.ControlledInjuryActive
                     + "; ContactContinues=true; ArrestAuthorized=false"
@@ -6409,17 +7013,14 @@ namespace LSImmersiveLife
             bool damageRecordAvailable,
             int weaponHash,
             int attackerHandle,
-            int gameTime,
-            int rawBone)
+            int gameTime)
         {
             return state != null
                 && damageRecordAvailable
-                && gameTime > 0
                 && state.HasLastProcessedDamageRecord
                 && state.LastProcessedDamageWeaponHash == weaponHash
                 && state.LastProcessedDamageAttackerHandle == attackerHandle
-                && state.LastProcessedDamageGameTime == gameTime
-                && state.LastProcessedDamageBone == rawBone;
+                && state.LastProcessedDamageGameTime == gameTime;
         }
 
         private void InterruptCitizenPresentationForInjury(
@@ -6476,24 +7077,18 @@ namespace LSImmersiveLife
         private ControlledDamageKind ReadSubjectDamageKind(
             Ped subject,
             int damageWeaponHash,
-            bool damageRecordAvailable)
+            bool damageEventConfirmed)
         {
-            if (!IsUsable(subject))
+            if (!damageEventConfirmed || !IsUsable(subject)
+                || damageWeaponHash == 0)
                 return ControlledDamageKind.Unknown;
             try
             {
-                if (damageRecordAvailable && damageWeaponHash != 0)
-                {
-                    WeaponGroup group = Function.Call<WeaponGroup>(
-                        Hash.GET_WEAPONTYPE_GROUP, unchecked((uint)damageWeaponHash));
-                    return group == WeaponGroup.Melee || group == WeaponGroup.Unarmed
-                        ? ControlledDamageKind.Melee
-                        : ControlledDamageKind.Weapon;
-                }
-                if (subject.HasBeenDamagedByAnyMeleeWeapon())
-                    return ControlledDamageKind.Melee;
-                if (subject.HasBeenDamagedByAnyWeapon())
-                    return ControlledDamageKind.Weapon;
+                WeaponGroup group = Function.Call<WeaponGroup>(
+                    Hash.GET_WEAPONTYPE_GROUP, unchecked((uint)damageWeaponHash));
+                return group == WeaponGroup.Melee || group == WeaponGroup.Unarmed
+                    ? ControlledDamageKind.Melee
+                    : ControlledDamageKind.Weapon;
             }
             catch { }
             return ControlledDamageKind.Unknown;
@@ -6503,55 +7098,112 @@ namespace LSImmersiveLife
             Ped subject,
             out int weaponHash,
             out int attackerHandle,
-            out int gameTime)
+            out int gameTime,
+            out Entity attacker,
+            out string readStatus)
         {
             weaponHash = 0;
             attackerHandle = 0;
             gameTime = 0;
+            attacker = null;
+            readStatus = "Unavailable";
             if (!IsUsable(subject))
+            {
+                readStatus = "CitizenUnavailable";
                 return false;
+            }
             try
             {
                 EntityDamageRecord[] records = subject.DamageRecords.GetAllDamageRecords();
                 if (records == null || records.Length == 0)
+                {
+                    readStatus = "NoRecordsReturned";
                     return false;
+                }
                 EntityDamageRecord latest = records[0];
                 for (int i = 1; i < records.Length; i++)
                     if (records[i].GameTime >= latest.GameTime)
                         latest = records[i];
                 weaponHash = (int)latest.WeaponHash;
-                attackerHandle = latest.Attacker == null ? 0 : latest.Attacker.Handle;
+                attacker = latest.Attacker;
+                attackerHandle = attacker == null ? 0 : attacker.Handle;
                 gameTime = latest.GameTime;
+                readStatus = "LatestOf" + records.Length.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture);
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                readStatus = "ReadFailed:" + ex.GetType().Name;
                 return false;
             }
         }
 
-        private static int ReadSubjectLastDamageBone(Ped subject)
+        private static int ReadSubjectLastDamageBone(Ped subject, out string status)
         {
             int bone = 0;
+            status = "Unavailable";
             try
             {
                 using (OutputArgument output = new OutputArgument())
                 {
-                    if (Function.Call<bool>(
-                        Hash.GET_PED_LAST_DAMAGE_BONE, subject, output))
+                    bool found = Function.Call<bool>(
+                        Hash.GET_PED_LAST_DAMAGE_BONE, subject, output);
+                    if (found)
+                    {
                         bone = output.GetResult<int>();
+                        status = bone == 0 ? "BoneReturnedAsZero" : "BoneFound";
+                    }
+                    else
+                        status = "NoDamageBoneReturned";
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                status = "ReadFailed:" + ex.GetType().Name;
+            }
             return bone;
         }
 
-        private static void ClearSubjectDamageRecords(Ped subject)
+        private static bool ClearSubjectDamageRecords(
+            Ped subject,
+            out string status)
         {
-            try { Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, subject); }
-            catch { }
-            try { Function.Call(Hash.CLEAR_ENTITY_LAST_WEAPON_DAMAGE, subject); }
-            catch { }
+            bool boneCleared = false;
+            bool weaponCleared = false;
+            bool attackerCleared = false;
+            string failures = string.Empty;
+            try
+            {
+                Function.Call(Hash.CLEAR_PED_LAST_DAMAGE_BONE, subject);
+                boneCleared = true;
+            }
+            catch (Exception ex)
+            {
+                failures += "Bone:" + ex.GetType().Name + ",";
+            }
+            try
+            {
+                Function.Call(Hash.CLEAR_ENTITY_LAST_WEAPON_DAMAGE, subject);
+                weaponCleared = true;
+            }
+            catch (Exception ex)
+            {
+                failures += "Weapon:" + ex.GetType().Name + ",";
+            }
+            try
+            {
+                Function.Call(Hash.CLEAR_ENTITY_LAST_DAMAGE_ENTITY, subject);
+                attackerCleared = true;
+            }
+            catch (Exception ex)
+            {
+                failures += "Attacker:" + ex.GetType().Name + ",";
+            }
+            bool success = boneCleared && weaponCleared && attackerCleared;
+            status = success ? "AllDamageAttributionCleared"
+                : "ClearFailure=" + failures;
+            return success;
         }
 
         private void DisableWoundedSubjectWeapon(
@@ -8324,13 +8976,35 @@ namespace LSImmersiveLife
                 return;
             }
 
-            if (IsUsable(_approachCandidate) && now < _approachCandidateUntil)
+            if (_approachCandidateTraffic)
             {
-                if (_approachCandidateSuspicious)
+                MaintainSuspiciousTrafficApproachCandidate(player, now);
+                return;
+            }
+
+            if (IsUsable(_approachCandidate) && _approachCandidateSuspicious)
+            {
+                float distance = _approachCandidate.Position.DistanceTo(player.Position);
+                bool observationStillBounded = _approachCandidateObservedAt != DateTime.MinValue
+                    && (now - _approachCandidateObservedAt).TotalMilliseconds
+                        < SuspiciousApproachObservationMaximumMilliseconds;
+                if (now >= _approachCandidateUntil)
+                {
+                    if (observationStillBounded
+                        && distance <= SuspiciousApproachObservationRange)
+                        _approachCandidateUntil = now.AddMilliseconds(
+                            ApproachCandidateMilliseconds);
+                    else
+                        ReleaseApproachCandidate();
+                }
+                if (IsUsable(_approachCandidate) && now < _approachCandidateUntil)
                 {
                     MaintainSuspiciousApproachCandidate(player, now);
                     return;
                 }
+            }
+            else if (IsUsable(_approachCandidate) && now < _approachCandidateUntil)
+            {
                 if (!_approachCandidateStopped
                     && _approachCandidate.Position.DistanceTo(player.Position) <= 4.5f)
                 {
@@ -8379,7 +9053,14 @@ namespace LSImmersiveLife
                 < _settings.SuspiciousEncounterChancePercent;
             _nextSuspiciousApproachActionAt = now;
             _approachCandidateUntil = now.AddMilliseconds(ApproachCandidateMilliseconds);
-            _recentApproachCandidates[best.Handle] = now.AddSeconds(10);
+            _approachCandidateObservedAt = now;
+            _approachCandidateLastDistance = bestDistance;
+            _approachCandidateLastPlayerPosition = player.Position;
+            _approachCandidateLastSubjectPosition = best.Position;
+            _approachCandidateCloseSamples = 0;
+            _approachCandidateIntentConfirmed = false;
+            _recentApproachCandidates[best.Handle] = now.AddSeconds(
+                _approachCandidateSuspicious ? 30 : 10);
             try
             {
                 if (!_approachCandidateSuspicious && bestDistance <= 4.5f)
@@ -8396,20 +9077,17 @@ namespace LSImmersiveLife
 
         private void MaintainTrafficApproachCandidate(Ped player, DateTime now)
         {
+            if (_approachCandidateTraffic)
+            {
+                MaintainSuspiciousTrafficApproachCandidate(player, now);
+                return;
+            }
+
             Vehicle patrolVehicle = player.CurrentVehicle;
             if (!IsUsable(patrolVehicle) || !IsDriver(player, patrolVehicle)
                 || Math.Abs(patrolVehicle.Speed) > 14.0f)
             {
                 ReleaseApproachCandidate();
-                return;
-            }
-
-            if (IsUsable(_approachCandidate) && _approachCandidateTraffic
-                && now < _approachCandidateUntil
-                && _approachCandidate.IsInVehicle()
-                && IsUsable(_approachCandidate.CurrentVehicle))
-            {
-                MaintainSuspiciousTrafficApproachCandidate(player, now);
                 return;
             }
 
@@ -8458,8 +9136,15 @@ namespace LSImmersiveLife
             _approachCandidateTrafficTaskIssued = false;
             _approachCandidateSuspicious = true;
             _approachCandidateStopped = false;
+            _approachCandidateTrafficVehicle = bestVehicle;
             _nextSuspiciousApproachActionAt = now;
             _approachCandidateUntil = now.AddMilliseconds(ApproachCandidateMilliseconds);
+            _approachCandidateObservedAt = now;
+            _approachCandidateLastDistance = bestDistance;
+            _approachCandidateLastPlayerPosition = player.Position;
+            _approachCandidateLastSubjectPosition = bestVehicle.Position;
+            _approachCandidateTrafficFollowSamples = 0;
+            _approachCandidateCloseSamples = 0;
             _recentApproachCandidates[best.Handle] = now.AddSeconds(10);
             _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_APPROACH_CANDIDATE",
                 "Driver=" + best.Handle + "; Vehicle=" + bestVehicle.Handle
@@ -8470,55 +9155,146 @@ namespace LSImmersiveLife
 
         private void MaintainSuspiciousTrafficApproachCandidate(Ped player, DateTime now)
         {
+            if (now < _nextSuspiciousApproachActionAt)
+                return;
+            _nextSuspiciousApproachActionAt = now.AddMilliseconds(
+                SuspiciousApproachTaskRecoveryMilliseconds);
+
             Ped driver = _approachCandidate;
-            Vehicle vehicle = driver == null ? null : driver.CurrentVehicle;
+            Vehicle vehicle = _approachCandidateTrafficVehicle;
             if (!IsUsable(driver) || !IsUsable(vehicle) || !driver.IsInVehicle()
-                || !IsDriver(driver, vehicle) || !IsUsable(player))
+                || !IsDriver(driver, vehicle) || !IsUsable(player)
+                || !CanUseAsCivilian(driver, player))
             {
+                _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_CANDIDATE_ENDED",
+                    "Driver=" + (driver == null ? 0 : driver.Handle)
+                    + "; Vehicle=" + (vehicle == null ? 0 : vehicle.Handle)
+                    + "; Reason=SelectedDriverOrVehicleNoLongerUsable");
                 ReleaseApproachCandidate();
                 return;
             }
 
             float distance = vehicle.Position.DistanceTo(player.Position);
-            if (now >= _nextSuspiciousApproachActionAt)
+            long observationMilliseconds = _approachCandidateObservedAt == DateTime.MinValue
+                ? 0L
+                : Math.Max(0L, (long)(now - _approachCandidateObservedAt).TotalMilliseconds);
+            if (distance > SuspiciousTrafficObservationRange
+                || observationMilliseconds >= SuspiciousTrafficObservationMaximumMilliseconds)
             {
-                _nextSuspiciousApproachActionAt = now.AddMilliseconds(
-                    SuspiciousApproachTaskRecoveryMilliseconds);
-                try
-                {
-                    Function.Call(Hash.SET_PED_MOVE_RATE_OVERRIDE, driver, 1.08f);
-                    if (!_approachCandidateTrafficTaskIssued)
-                    {
-                        Vector3 destination = FindRoadDestinationAwayFrom(
-                            vehicle.Position, player.Position, 65.0f);
-                        Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, false);
-                        Function.Call(Hash.SET_DRIVER_ABILITY, driver, 0.82f);
-                        Function.Call(Hash.SET_DRIVER_AGGRESSIVENESS, driver, 0.18f);
-                        Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
-                            driver, vehicle,
-                            destination.X, destination.Y, destination.Z,
-                            11.0f, TrafficDrivingStyle, 8.0f);
-                        _approachCandidateTrafficTaskIssued = true;
-                        _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_DRIVER_MOVED_AWAY",
-                            "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
-                            + "; RoadTarget=" + destination);
-                    }
-                    _log.RuntimeThrottled(
-                        "NPC_TRAFFIC_SUSPICIOUS_DRIVER_WATCHING",
-                        "Driver=" + driver.Handle + "; Distance=" + distance.ToString("0.0"),
-                        TimeSpan.FromSeconds(3));
-                }
-                catch (Exception ex)
-                {
-                    _log.Exception("NPC_TRAFFIC_SUSPICIOUS_BEHAVIOR_FAILED", ex);
-                }
+                _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_CANDIDATE_ENDED",
+                    "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                    + "; Distance=" + distance.ToString("0.0")
+                    + "; ObservationMs=" + observationMilliseconds
+                    + "; Reason=" + (distance > SuspiciousTrafficObservationRange
+                        ? "PlayerLostBoundedProximity" : "ObservationWindowExpired"));
+                ReleaseApproachCandidate();
+                return;
             }
 
-            // Suspicious traffic can behave cautiously during normal patrol,
-            // but proximity alone is not the Player's decision to start a stop.
-            // BeginTrafficInteraction remains on the explicit E/controller/
-            // horn paths so a passing driver cannot claim Citizen ownership
-            // and block a Dispatch request.
+            if (now >= _approachCandidateUntil)
+                _approachCandidateUntil = now.AddMilliseconds(ApproachCandidateMilliseconds);
+
+            Vector3 vehiclePosition = vehicle.Position;
+            Vector3 playerPosition = player.Position;
+            Vector3 vehicleMovement = vehiclePosition - _approachCandidateLastSubjectPosition;
+            Vector3 playerMovement = playerPosition - _approachCandidateLastPlayerPosition;
+            float vehicleTravel = vehicleMovement.Length();
+            float playerTravel = playerMovement.Length();
+            float previousDistance = _approachCandidateLastDistance;
+            bool movingTogether = distance <= SuspiciousTrafficApproachRange
+                && distance <= previousDistance + 3.0f
+                && vehicleTravel >= SuspiciousTrafficFollowMinimumTravel
+                && playerTravel >= SuspiciousTrafficFollowMinimumTravel
+                && Vector3.Dot(vehicleMovement, playerMovement)
+                    >= vehicleTravel * playerTravel * 0.35f;
+            _approachCandidateTrafficFollowSamples = movingTogether
+                ? _approachCandidateTrafficFollowSamples + 1 : 0;
+            bool closingOnDriver = distance <= SuspiciousTrafficApproachRange
+                && previousDistance - distance >= 2.0f;
+            _approachCandidateCloseSamples = closingOnDriver
+                ? _approachCandidateCloseSamples + 1 : 0;
+            _approachCandidateLastDistance = distance;
+            _approachCandidateLastPlayerPosition = playerPosition;
+            _approachCandidateLastSubjectPosition = vehiclePosition;
+
+            if (_approachCandidateTrafficFollowSamples
+                    >= SuspiciousTrafficFollowSamplesRequired
+                || _approachCandidateCloseSamples
+                    >= SuspiciousTrafficFollowSamplesRequired)
+            {
+                string evidence = _approachCandidateTrafficFollowSamples
+                        >= SuspiciousTrafficFollowSamplesRequired
+                    ? "SustainedPlayerFollow" : "SustainedPlayerApproach";
+                _approachCandidateIntentConfirmed = true;
+                _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_APPROACH_CONFIRMED",
+                    "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                    + "; Distance=" + distance.ToString("0.0")
+                    + "; Evidence=" + evidence
+                    + "; ObservationMs=" + observationMilliseconds);
+                BeginTrafficInteraction(player, driver, vehicle, true);
+                ReleaseApproachCandidate();
+                return;
+            }
+
+            try
+            {
+                if (!_approachCandidateTrafficTaskIssued)
+                {
+                    _approachCandidateTrafficTaskIssued = true;
+                    Vector3 destination = FindRoadDestinationAwayFrom(
+                        vehicle.Position, player.Position,
+                        SuspiciousTrafficRoadTargetDistance);
+                    Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, false);
+                    Function.Call(Hash.SET_DRIVER_ABILITY, driver, 0.82f);
+                    Function.Call(Hash.SET_DRIVER_AGGRESSIVENESS, driver, 0.18f);
+                    Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
+                        driver, vehicle,
+                        destination.X, destination.Y, destination.Z,
+                        SuspiciousTrafficDriveSpeed, TrafficDrivingStyle, 8.0f);
+                    _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_DRIVER_MOVED_AWAY",
+                        "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                        + "; RoadTarget=" + destination);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("NPC_TRAFFIC_SUSPICIOUS_BEHAVIOR_FAILED", ex);
+            }
+
+            // Keep one selected suspicious Driver/vehicle long enough to detect
+            // deliberate follow/approach input. Incidental proximity alone does
+            // not create an active interaction or expose a document result.
+        }
+
+        private bool TryBeginSelectedSuspiciousTrafficFlight(Ped player)
+        {
+            Ped driver = _approachCandidate;
+            Vehicle vehicle = _approachCandidateTrafficVehicle;
+            if (!_approachCandidateTraffic || !_approachCandidateSuspicious
+                || !IsUsable(player) || !IsUsable(driver) || !IsUsable(vehicle)
+                || !driver.IsInVehicle() || !IsDriver(driver, vehicle)
+                || !CanUseAsCivilian(driver, player))
+                return false;
+
+            if (_approachCandidateObservedAt == DateTime.MinValue
+                || (DateTime.UtcNow - _approachCandidateObservedAt).TotalMilliseconds
+                    >= SuspiciousTrafficObservationMaximumMilliseconds)
+            {
+                ReleaseApproachCandidate();
+                return false;
+            }
+
+            float distance = vehicle.Position.DistanceTo(player.Position);
+            if (distance > SuspiciousTrafficExplicitContactRange)
+                return false;
+
+            _log.Runtime("NPC_TRAFFIC_SUSPICIOUS_APPROACH_CONFIRMED",
+                "Driver=" + driver.Handle + "; Vehicle=" + vehicle.Handle
+                + "; Distance=" + distance.ToString("0.0")
+                + "; Evidence=ExplicitInteractionInput");
+            BeginTrafficInteraction(player, driver, vehicle, true);
+            ReleaseApproachCandidate();
+            return true;
         }
 
         private void MaintainSuspiciousApproachCandidate(Ped player, DateTime now)
@@ -8526,11 +9302,63 @@ namespace LSImmersiveLife
             if (!IsUsable(_approachCandidate) || !IsUsable(player))
                 return;
 
-            float distance = _approachCandidate.Position.DistanceTo(player.Position);
             if (now >= _nextSuspiciousApproachActionAt)
             {
                 _nextSuspiciousApproachActionAt = now.AddMilliseconds(
                     SuspiciousApproachTaskRecoveryMilliseconds);
+                Vector3 subjectPosition = _approachCandidate.Position;
+                Vector3 playerPosition = player.Position;
+                float distance = subjectPosition.DistanceTo(playerPosition);
+                float previousDistance = _approachCandidateLastDistance;
+                Vector3 subjectMovement = subjectPosition
+                    - _approachCandidateLastSubjectPosition;
+                Vector3 playerMovement = playerPosition
+                    - _approachCandidateLastPlayerPosition;
+                float subjectTravel = subjectMovement.Length();
+                float playerTravel = playerMovement.Length();
+                bool movingTogether = distance <= SuspiciousApproachFollowRange
+                    && subjectTravel >= 1.2f && playerTravel >= 1.2f
+                    && Vector3.Dot(subjectMovement, playerMovement)
+                        >= subjectTravel * playerTravel * 0.25f;
+
+                string approachEvidence = string.Empty;
+                if (distance <= SuspiciousApproachActivationDistance
+                    && previousDistance - distance >= 0.65f)
+                {
+                    _approachCandidateIntentConfirmed = true;
+                    approachEvidence = "DecreasingDistance";
+                }
+                _approachCandidateCloseSamples = distance
+                    <= SuspiciousApproachActivationDistance
+                    ? _approachCandidateCloseSamples + 1 : 0;
+                if (!_approachCandidateIntentConfirmed
+                    && _approachCandidateCloseSamples >= 2)
+                {
+                    _approachCandidateIntentConfirmed = true;
+                    approachEvidence = "SustainedProximity";
+                }
+                if (!_approachCandidateIntentConfirmed && movingTogether)
+                {
+                    _approachCandidateIntentConfirmed = true;
+                    approachEvidence = "FollowingDirection";
+                }
+                _approachCandidateLastDistance = distance;
+                _approachCandidateLastPlayerPosition = playerPosition;
+                _approachCandidateLastSubjectPosition = subjectPosition;
+
+                if (_approachCandidateIntentConfirmed)
+                {
+                    _log.Runtime("NPC_FOOT_SUSPICIOUS_APPROACH_CONFIRMED",
+                        "Ped=" + _approachCandidate.Handle
+                        + "; Distance=" + distance.ToString("0.0")
+                        + "; Evidence=" + (approachEvidence.Length == 0
+                            ? "PreviouslyConfirmed" : approachEvidence)
+                        + "; ObservationMs=" + Math.Max(0,
+                            (long)(now - _approachCandidateObservedAt).TotalMilliseconds));
+                    BeginFootInteraction(player, _approachCandidate);
+                    return;
+                }
+
                 try
                 {
                     // Keep the ambient walking task alive, but make the
@@ -8570,11 +9398,19 @@ namespace LSImmersiveLife
                 catch { }
             }
             _approachCandidate = null;
+            _approachCandidateTrafficVehicle = null;
             _approachCandidateUntil = DateTime.MinValue;
+            _approachCandidateObservedAt = DateTime.MinValue;
+            _approachCandidateLastPlayerPosition = Vector3.Zero;
+            _approachCandidateLastSubjectPosition = Vector3.Zero;
+            _approachCandidateLastDistance = float.MaxValue;
             _approachCandidateStopped = false;
             _approachCandidateSuspicious = false;
             _approachCandidateTraffic = false;
             _approachCandidateTrafficTaskIssued = false;
+            _approachCandidateIntentConfirmed = false;
+            _approachCandidateCloseSamples = 0;
+            _approachCandidateTrafficFollowSamples = 0;
             _nextSuspiciousApproachActionAt = DateTime.MinValue;
         }
 
@@ -9520,7 +10356,9 @@ namespace LSImmersiveLife
 
         private void PresentCitizenRecord()
         {
-            if (IsBackupInterceptionInvestigationActive)
+            bool backupInterception = IsBackupInterceptionInvestigationActive;
+            bool trafficInterception = IsTrafficOnFootInterceptionInvestigationActive;
+            if (backupInterception || trafficInterception)
             {
                 LSPDNPCRecord revalidatedRecord;
                 if (_database == null || !_database.TryApplyAdverseRevalidation(
@@ -9529,13 +10367,20 @@ namespace LSImmersiveLife
                     CitizenRecordVisible = false;
                     _dispatcherValidationReceived = false;
                     _citizenRecordReviewed = false;
-                    _log.Runtime("NPC_BACKUP_INTERCEPTION_VALIDATION_UNAVAILABLE",
+                    _log.Runtime(backupInterception
+                            ? "NPC_BACKUP_INTERCEPTION_VALIDATION_UNAVAILABLE"
+                            : "NPC_TRAFFIC_INTERCEPTION_VALIDATION_UNAVAILABLE",
                         "Ped=" + (_subject == null ? 0 : _subject.Handle)
                         + "; Database=" + (_database == null ? "Unavailable" : "NoAdverseStatus"));
                     Notify("The document handoff completed, but Dispatcher could not return the required post-flight status. Retry validation when the citizen database is available.");
                     return;
                 }
                 _currentRecord = revalidatedRecord;
+                _log.Runtime(backupInterception
+                        ? "NPC_BACKUP_INTERCEPTION_VALIDATION_READY"
+                        : "NPC_TRAFFIC_INTERCEPTION_VALIDATION_READY",
+                    "Ped=" + _subject.Handle + "; "
+                    + RecordStatus("Same Citizen post-flight status returned"));
             }
             else if (_currentRecord == null && _database != null)
                 _database.TryGetRecord(_subject, _subjectVehicle != null, out _currentRecord);
@@ -9687,6 +10532,7 @@ namespace LSImmersiveLife
             _citizenDocumentDecisionResolved = false;
             _backupBackgroundTransport = false;
             _footPlayerArrested = false;
+            _playerArrestOriginStage = InteractionStage.None;
             _footPlayerArrestAttempts = 0;
             _footPlayerArrestDeadline = DateTime.MinValue;
             _footPlayerArrestPlaybackConfirmed = false;
@@ -10047,8 +10893,13 @@ namespace LSImmersiveLife
 
         private bool IsTrafficStopAtSelectedRoadside()
         {
+            return IsConfirmedTrafficStopPosition()
+                && IsSelectedTrafficDriverStillSeated();
+        }
+
+        private bool IsConfirmedTrafficStopPosition()
+        {
             if (!_trafficStopConfirmed || !IsUsable(_subjectVehicle)
-                || !IsSelectedTrafficDriverStillSeated()
                 || Math.Abs(_subjectVehicle.Speed) > 0.75f)
                 return false;
 

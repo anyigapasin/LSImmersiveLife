@@ -21,4 +21,5 @@
   showLiveNotifications="true"
   showDetailedNotifications="false"
   writeLifecycleMarkers="true"
-  writeTraceFile="true" />
+  writeTraceFile="true"
+  writeHumanReadableReport="true" />

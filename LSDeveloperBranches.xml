@@ -1,65 +1,592 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LSDeveloperBranches version="1">
-  <TestEvent id="npc-interaction" name="NPC Interaction" sourceSection="NPCFootInteraction; NPCVehicleRoadInteraction" sourceLines="2-265">
-    <Branch id="npc-foot-validation-release" name="Foot Citizen: Validation and Release" sourceSection="NPCFootInteraction" sourceLines="6-13" expectedBehavior="The Player approaches the selected Foot Citizen, requests and receives the validation document, then releases the Citizen when the document is accepted." />
-    <Branch id="npc-foot-compliance-custody" name="Foot Citizen: Compliance and Custody" sourceSection="NPCFootInteraction / ComplianceNPC" sourceLines="15-27" expectedBehavior="The compliant Citizen is physically secured, escorted and loaded into the Player's Utility, then received by the Station Standby Officer before any documented Prison continuation." />
-    <Branch id="npc-foot-aggressive" name="Foot Citizen: Aggressive Citizen" sourceSection="NPCFootInteraction / AggresiveNPC" sourceLines="30-46" expectedBehavior="The Citizen becomes physically aggressive; the documented alternatives are Backup containment and custody or the Player resolving the active threat." />
-    <Branch id="npc-foot-fleeing" name="Foot Citizen: Rejected Document and Fleeing" sourceSection="NPCFootInteraction / FleeingNPC" sourceLines="48-69" expectedBehavior="After the rejected document, the Citizen flees; Backup may intercept and contain the Citizen for physical custody, or the Player may resolve the fleeing threat." />
-    <Branch id="npc-foot-suspicious" name="Foot Citizen: Suspicious Behavior" sourceSection="NPCFootInteraction / NPCSuspiciousBehavior" sourceLines="71-97" expectedBehavior="A wary Citizen flees, Backup may intercept, and the Player checks the Citizen's validation before the documented custody or Player-resolution outcome." />
-    <Branch id="npc-vehicle-validation-release" name="Vehicle Citizen: Validation and Release" sourceSection="NPCVehicleRoadInteraction" sourceLines="99-129" expectedBehavior="The Player approaches the Vehicle Citizen, requests and receives the validation document, then releases the Citizen when the document is accepted." />
-    <Branch id="npc-vehicle-compliance-foot-patrol" name="Vehicle Citizen: Compliance on Foot Patrol" sourceSection="NPCVehicleRoadInteraction / ComplianceNPC / IFPLAYERONWALKEDFOOTROADMODE" sourceLines="131-147" expectedBehavior="The Vehicle Citizen exits and complies; the Player requests Backup, and the Backup Officer physically secures, loads and transports the Citizen." />
-    <Branch id="npc-vehicle-compliance-supported-utility" name="Vehicle Citizen: Supported Utility Custody" sourceSection="NPCVehicleRoadInteraction / ComplianceNPC / IF Player is on Vehicle Utility" sourceLines="149-169" expectedBehavior="The Player uses the saved supported four-seat Utility, physically secures and transports the Citizen, and completes the documented Station and optional Prison handoff." />
-    <Branch id="npc-vehicle-compliance-backup" name="Vehicle Citizen: Unsupported Utility Backup Custody" sourceSection="NPCVehicleRoadInteraction / ComplianceNPC / else if Player not using the Preferred four-seat Supported Utility" sourceLines="171-177" expectedBehavior="The Player requests Backup; the Backup Officer physically secures and loads the Citizen, then transports the Citizen while the Player is released from the interaction." />
-    <Branch id="npc-vehicle-aggressive" name="Vehicle Citizen: Aggressive Driver" sourceSection="NPCVehicleRoadInteraction / AggresiveVehiclePed" sourceLines="180-206" expectedBehavior="The Driver exits and becomes aggressive during the document interaction; the Player resolves the active threat and the Citizen interaction ends." />
-    <Branch id="npc-vehicle-fleeing" name="Vehicle Citizen: Rejected Document and Fleeing" sourceSection="NPCVehicleRoadInteraction / FledVehiclePed" sourceLines="208-235" expectedBehavior="The Driver flees after document validation; Backup pursues and blocks the vehicle, then the Driver exits for custody and escort, or the Player resolves the threat." />
-    <Branch id="npc-vehicle-suspicious" name="Vehicle Citizen: Suspicious Vehicle" sourceSection="NPCVehicleRoadInteraction / SuspiciousVehiclePed" sourceLines="237-264" expectedBehavior="The wary vehicle flees, Backup intercepts, and the Player checks the Driver's status before the documented escort or Player-resolution outcome." />
+  <TestEvent id="npc-interaction" name="NPC Interaction" sourceSection="NPCFootInteraction; NPCVehicleRoadInteraction" sourceLines="2-265" flowConnection="Start after normal Police Authority and Patrol. Player-Utility custody continues through Station handoff and the documented Prison continuation. Backup custody continues independently after Player release; follow the vehicle toward Station. A physical Standby Officer receipt must remain Unknown unless the runtime exposes evidence.">
+    <Branch id="npc-foot-validation-release" name="Foot Citizen: Validation and Release" sourceSection="NPCFootInteraction" sourceLines="6-13" expectedBehavior="The Player approaches the selected Foot Citizen, requests and receives the validation document, then releases the Citizen when the document is accepted.">
+      <ExpectedSteps>
+        <Step name="Foot Citizen contact begins" categories="NPC_FOOT_CONTACT_STARTED" />
+        <Step name="Citizen greeting completes" categories="NPC_FOOT_GREETING_COMPLETED" />
+        <Step name="Citizen waits for the document request" categories="NPC_FOOT_AWAITING_DOCUMENT_REQUEST" />
+        <Step name="Player requests the document" categories="NPC_FOOT_DOCUMENT_REQUESTED" />
+        <Step name="Document review is confirmed" categories="NPC_DOCUMENT_REVIEW_CONFIRMED" />
+        <Step name="Accepted document continues the release branch" categories="NPC_FOOT_DOCUMENT_BRANCH_CONTINUED" />
+        <Step name="Foot Citizen interaction is released" categories="NPC_FOOT_CONTACT_RELEASED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-foot-compliance-custody" name="Foot Citizen: Compliance and Custody" sourceSection="NPCFootInteraction / ComplianceNPC" sourceLines="15-27" expectedBehavior="The compliant Citizen is physically secured, escorted and loaded into the Player's Utility, then received by the Station Standby Officer before any separately selected Prison continuation." flowConnection="After Station custody handoff, continue with the separate NPC Interaction test Citizen Custody — Prison Continuation when the documented Prison stage begins.">
+      <ExpectedSteps>
+        <Step name="Citizen enters the compliance branch" categories="NPC_FOOT_COMPLIANCE_STARTED" />
+        <Step name="Player arrest interaction starts" categories="NPC_FOOT_PLAYER_ARREST_STARTED" />
+        <Step name="Physical arrest is confirmed" categories="NPC_FOOT_PLAYER_ARREST_COMPLETED" />
+        <Step name="Custody is assigned to the Police custody owner" categories="POLICE_CUSTODY_STARTED" />
+        <Step name="Player Utility is selected for custody" categories="POLICE_CUSTODY_PLAYER_VEHICLE_SELECTED" />
+        <Step name="Prisoner loading interaction begins" categories="POLICE_CONVOY_PLAYER_PRISONER_LOAD_REQUESTED|POLICE_CONVOY_PLAYER_PRISONER_LOADING_STARTED" />
+        <Step name="Prisoner is confirmed loaded" categories="POLICE_CONVOY_PRISONER_LOADED" />
+        <Step name="Station custody handoff is confirmed" categories="POLICE_CONVOY_STATION_HANDOFF_CONFIRMED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-foot-aggressive" name="Foot Citizen: Aggressive Citizen" sourceSection="NPCFootInteraction / AggresiveNPC" sourceLines="30-46" expectedBehavior="The Citizen becomes physically aggressive. The analyzer identifies the documented Backup-custody route or Player-resolution route from the observed runtime outcome.">
+      <ExpectedRoutes>
+        <Route name="Backup contains and transports the Citizen" selectOn="NPC_BACKUP_INTERVENTION_STARTED">
+          <Step name="Citizen resistance begins" categories="NPC_FOOT_RESISTANCE_STARTED" />
+          <Step name="Player requests Backup" categories="POLICE_BACKUP_REQUESTED" />
+          <Step name="Backup arrives" categories="POLICE_BACKUP_ARRIVED" />
+          <Step name="Backup intervention begins" categories="NPC_BACKUP_INTERVENTION_STARTED" />
+          <Step name="Citizen is physically secured" categories="NPC_BACKUP_SUBJECT_SECURED" />
+          <Step name="Backup transport begins" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+          <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+          <Step name="Backup departs with the Citizen" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+          <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+        </Route>
+        <Route name="Player resolves the active threat" selectOn="NPC_SUBJECT_FATAL_INJURY">
+          <Step name="Citizen resistance begins" categories="NPC_FOOT_RESISTANCE_STARTED" />
+          <Step name="Fatal outcome is recorded" categories="NPC_SUBJECT_FATAL_INJURY" />
+          <Step name="NPC interaction ends" categories="NPC_INTERACTION_ENDED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
+    <Branch id="npc-foot-fleeing" name="Foot Citizen: Rejected Document and Fleeing" sourceSection="NPCFootInteraction / FleeingNPC" sourceLines="48-69" expectedBehavior="After the rejected document, the Citizen flees. The analyzer identifies the documented Backup-interception route or Player-resolution route from the observed runtime outcome.">
+      <ExpectedRoutes>
+        <Route name="Backup intercepts and transports the Citizen" selectOn="NPC_BACKUP_FLEEING_CONTAINMENT_CONFIRMED">
+          <Step name="Document refusal is recorded" categories="NPC_FOOT_NEGATIVE_DECISION" />
+          <Step name="Citizen flee task is attempted" categories="NPC_FOOT_FLEE_ATTEMPT" />
+          <Step name="Fleeing movement is physically confirmed" categories="NPC_FOOT_FLEE_MOVEMENT_CONFIRMED" />
+          <Step name="Player requests Backup" categories="POLICE_BACKUP_REQUESTED" />
+          <Step name="Backup arrives" categories="POLICE_BACKUP_ARRIVED" />
+          <Step name="Backup containment is confirmed" categories="NPC_BACKUP_FLEEING_CONTAINMENT_CONFIRMED" />
+          <Step name="Citizen is physically secured" categories="NPC_BACKUP_SUBJECT_SECURED" />
+          <Step name="Backup transport begins" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+          <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+          <Step name="Backup departs with the Citizen" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+          <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+        </Route>
+        <Route name="Player resolves the fleeing threat" selectOn="NPC_SUBJECT_FATAL_INJURY">
+          <Step name="Document refusal is recorded" categories="NPC_FOOT_NEGATIVE_DECISION" />
+          <Step name="Citizen flee task is attempted" categories="NPC_FOOT_FLEE_ATTEMPT" />
+          <Step name="Fleeing movement is physically confirmed" categories="NPC_FOOT_FLEE_MOVEMENT_CONFIRMED" />
+          <Step name="Fatal outcome is recorded" categories="NPC_SUBJECT_FATAL_INJURY" />
+          <Step name="NPC interaction ends" categories="NPC_INTERACTION_ENDED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
+    <Branch id="npc-foot-suspicious" name="Foot Citizen: Suspicious Behavior" sourceSection="NPCFootInteraction / NPCSuspiciousBehavior" sourceLines="71-97" expectedBehavior="A wary Citizen flees. The analyzer identifies Backup interception and validation or Player resolution from the observed runtime outcome.">
+      <ExpectedRoutes>
+        <Route name="Backup intercepts, then Player checks validation" selectOn="NPC_FOOT_SUSPICIOUS_RECORD_READY">
+          <Step name="Suspicious behavior begins" categories="NPC_FOOT_SUSPICIOUS_BEHAVIOR_STARTED" />
+          <Step name="Suspicious approach is confirmed" categories="NPC_FOOT_SUSPICIOUS_APPROACH_CONFIRMED" />
+          <Step name="Citizen flee behavior is attempted" categories="NPC_FOOT_FLEE_ATTEMPT" />
+          <Step name="Player requests Backup" categories="POLICE_BACKUP_REQUESTED" />
+          <Step name="Backup arrives" categories="POLICE_BACKUP_ARRIVED" />
+          <Step name="Suspicious validation record becomes available" categories="NPC_FOOT_SUSPICIOUS_RECORD_READY" />
+          <Step name="Player reviews the Citizen's document" categories="NPC_DOCUMENT_REVIEW_CONFIRMED" />
+          <Step name="Backup custody offer is accepted" categories="NPC_BACKUP_CUSTODY_OFFER_ACCEPTED" />
+          <Step name="Backup transport begins" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+          <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+          <Step name="Backup departs with the Citizen" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+          <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+        </Route>
+        <Route name="Player resolves the fleeing threat" selectOn="NPC_SUBJECT_FATAL_INJURY">
+          <Step name="Suspicious behavior begins" categories="NPC_FOOT_SUSPICIOUS_BEHAVIOR_STARTED" />
+          <Step name="Suspicious approach is confirmed" categories="NPC_FOOT_SUSPICIOUS_APPROACH_CONFIRMED" />
+          <Step name="Citizen flee behavior is attempted" categories="NPC_FOOT_FLEE_ATTEMPT" />
+          <Step name="Fatal outcome is recorded" categories="NPC_SUBJECT_FATAL_INJURY" />
+          <Step name="NPC interaction ends" categories="NPC_INTERACTION_ENDED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
+    <Branch id="npc-vehicle-validation-release" name="Vehicle Citizen: Validation and Release" sourceSection="NPCVehicleRoadInteraction" sourceLines="99-129" expectedBehavior="The Player approaches the Vehicle Citizen, requests and receives the validation document, then releases the Citizen when the document is accepted.">
+      <ExpectedSteps>
+        <Step name="Traffic Citizen contact begins" categories="NPC_TRAFFIC_CONTACT_STARTED" />
+        <Step name="Driver documents are ready for review" categories="NPC_TRAFFIC_DOCUMENTS_READY" />
+        <Step name="Document review is confirmed" categories="NPC_DOCUMENT_REVIEW_CONFIRMED" />
+        <Step name="Accepted document continues the release branch" categories="NPC_TRAFFIC_DOCUMENT_BRANCH_CONTINUED" />
+        <Step name="Traffic interaction is released" categories="NPC_TRAFFIC_CONTACT_RELEASED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-vehicle-compliance-foot-patrol" name="Vehicle Citizen: Compliance on Foot Patrol" sourceSection="NPCVehicleRoadInteraction / ComplianceNPC / IFPLAYERONWALKEDFOOTROADMODE" sourceLines="131-147" expectedBehavior="The Vehicle Citizen exits and complies; the Player requests Backup, and the Backup Officer physically secures, loads and transports the Citizen.">
+      <ExpectedSteps>
+        <Step name="Traffic Citizen contact begins" categories="NPC_TRAFFIC_CONTACT_STARTED" />
+        <Step name="Driver complies with the interaction" categories="NPC_TRAFFIC_COMPLIANT_RESPONSE_STARTED" />
+        <Step name="Driver exit is requested" categories="NPC_TRAFFIC_DRIVER_EXIT_REQUESTED" />
+        <Step name="Driver physically exits the vehicle" categories="NPC_TRAFFIC_DRIVER_EXIT_CONFIRMED" />
+        <Step name="Backup custody offer is accepted" categories="NPC_BACKUP_CUSTODY_OFFER_ACCEPTED" />
+        <Step name="Backup unit is assigned to the Citizen" categories="POLICE_BACKUP_NPC_REQUESTED" />
+        <Step name="Backup arrives" categories="POLICE_BACKUP_ARRIVED" />
+        <Step name="Citizen is physically secured" categories="NPC_BACKUP_SUBJECT_SECURED" />
+        <Step name="Citizen transport begins" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+        <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+        <Step name="Backup departs with the Citizen" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+        <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-vehicle-compliance-supported-utility" name="Vehicle Citizen: Supported Utility Custody" sourceSection="NPCVehicleRoadInteraction / ComplianceNPC / IF Player is on Vehicle Utility" sourceLines="149-169" expectedBehavior="The Player uses the saved supported four-seat Utility, physically secures and transports the Citizen, and completes the documented Station handoff; the Prison continuation is a separate follow-on test." flowConnection="After Station custody handoff, continue with the separate NPC Interaction test Citizen Custody — Prison Continuation when the documented Prison stage begins.">
+      <ExpectedSteps>
+        <Step name="Traffic Citizen contact begins" categories="NPC_TRAFFIC_CONTACT_STARTED" />
+        <Step name="Driver complies with the interaction" categories="NPC_TRAFFIC_COMPLIANT_RESPONSE_STARTED" />
+        <Step name="Driver physically exits the vehicle" categories="NPC_TRAFFIC_DRIVER_EXIT_CONFIRMED" />
+        <Step name="Player arrest interaction starts" categories="NPC_FOOT_PLAYER_ARREST_STARTED" />
+        <Step name="Physical arrest is confirmed" categories="NPC_FOOT_PLAYER_ARREST_COMPLETED" />
+        <Step name="Custody is assigned to the Police custody owner" categories="POLICE_CUSTODY_STARTED" />
+        <Step name="Player Utility is selected for custody" categories="POLICE_CUSTODY_PLAYER_VEHICLE_SELECTED" />
+        <Step name="Prisoner loading interaction begins" categories="POLICE_CONVOY_PLAYER_PRISONER_LOAD_REQUESTED|POLICE_CONVOY_PLAYER_PRISONER_LOADING_STARTED" />
+        <Step name="Prisoner is confirmed loaded" categories="POLICE_CONVOY_PRISONER_LOADED" />
+        <Step name="Station custody handoff is confirmed" categories="POLICE_CONVOY_STATION_HANDOFF_CONFIRMED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-citizen-prison-continuation" name="Citizen Custody — Prison Continuation" sourceSection="NPCFootInteraction / ComplianceNPC; NPCVehicleRoadInteraction / ComplianceNPC" sourceLines="24-27;166-168" expectedBehavior="Starting from completed Station custody, continue the documented Citizen flow by transporting the secured Citizen to Prison and confirming the physical Prison handoff through the existing Convoy owner." flowConnection="Entry condition: Station custody handoff has completed and the Prison stage begins. Follow this test through physical Prison arrival and handoff; preserve Unknown if the current runtime does not expose Standby Officer receipt.">
+      <ExpectedSteps>
+        <Step name="Prison Convoy request or custody continuation begins" categories="POLICE_CONVOY_REQUEST_STARTED|POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_CHOICE_READY" />
+        <Step name="Prison transport is staged" categories="POLICE_CONVOY_TRANSPORT_STAGED|POLICE_CONVOY_TRANSPORT_READY" />
+        <Step name="Citizen is physically loaded for Prison transport" categories="POLICE_CONVOY_PRISONER_LOADED" />
+        <Step name="Prison handoff is physically confirmed" categories="POLICE_CONVOY_PRISON_HANDOFF_CONFIRMED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-vehicle-compliance-backup" name="Vehicle Citizen: Unsupported Utility Backup Custody" sourceSection="NPCVehicleRoadInteraction / ComplianceNPC / unsupported Utility; Gameplay Flow / NPC Backup station continuation" sourceLines="171-177; NPC Interaction flow" expectedBehavior="The Player requests Backup; the Backup Officer physically secures and loads the Citizen, releases the Player interaction after departure, and independently continues toward Station custody as described in Gameplay Flow." flowConnection="Follow the Backup vehicle after it leaves the scene. The flow expects station transport to complete; the current source has no explicit physical Standby Officer receipt event for this Backup route, so that final handoff remains Unknown unless runtime evidence records it.">
+      <ExpectedSteps>
+        <Step name="Backup handoff requested" categories="NPC_BACKUP_HANDOFF_REQUESTED" />
+        <Step name="Backup accepts the Citizen assignment" categories="POLICE_BACKUP_NPC_REQUESTED" />
+        <Step name="Backup vehicle and officer assets are ready" categories="POLICE_BACKUP_ASSETS_READY" />
+        <Step name="Backup vehicle and officer are staged" categories="POLICE_BACKUP_UNIT_STAGED" />
+        <Step name="Backup arrives at the contact" categories="POLICE_BACKUP_ARRIVED" />
+        <Step name="Officer begins the physical handoff" categories="NPC_BACKUP_INTERVENTION_STARTED" />
+        <Step name="Citizen is physically secured" categories="NPC_BACKUP_SUBJECT_SECURED" />
+        <Step name="Officer begins escort movement to the vehicle" categories="NPC_BACKUP_ESCORT_TO_VEHICLE_STARTED" />
+        <Step name="Officer issues the rear-door opening task" categories="NPC_BACKUP_PRISONER_DOOR_OPEN_TASK" />
+        <Step name="Rear vehicle door is physically open" categories="NPC_BACKUP_PRISONER_DOOR_OPENED" />
+        <Step name="Citizen entry task is issued" categories="NPC_BACKUP_PRISONER_ENTRY_TASK_ISSUED" />
+        <Step name="Citizen is confirmed inside; transport starts" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+        <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+        <Step name="Backup physically departs with the Citizen" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+        <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-vehicle-aggressive" name="Vehicle Citizen: Aggressive Driver" sourceSection="NPCVehicleRoadInteraction / AggresiveVehiclePed" sourceLines="180-206" expectedBehavior="The Driver exits and becomes aggressive during the document interaction; the Player resolves the active threat and the Citizen interaction ends.">
+      <ExpectedSteps>
+        <Step name="Traffic Citizen contact begins" categories="NPC_TRAFFIC_CONTACT_STARTED" />
+        <Step name="Driver documents are ready for review" categories="NPC_TRAFFIC_DOCUMENTS_READY" />
+        <Step name="Document refusal is recorded" categories="NPC_TRAFFIC_NEGATIVE_DECISION" />
+        <Step name="Driver resistance begins" categories="NPC_TRAFFIC_RESISTANCE_STARTED" />
+        <Step name="Driver is physically neutralized" categories="NPC_TRAFFIC_SUBJECT_DOWN|NPC_SUBJECT_FATAL_INJURY" />
+        <Step name="NPC interaction ends" categories="NPC_INTERACTION_ENDED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="npc-vehicle-fleeing" name="Vehicle Citizen: Rejected Document and Fleeing" sourceSection="NPCVehicleRoadInteraction / FledVehiclePed" sourceLines="208-235" expectedBehavior="The Driver flees after document validation. The analyzer identifies Backup pursuit and custody or the Player-resolution outcome from the observed runtime markers.">
+      <ExpectedRoutes>
+        <Route name="Backup pursues, intercepts and transports the Driver" selectOn="POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED|POLICE_BACKUP_NPC_VEHICLE_INTERCEPTION_TRACKING">
+          <Step name="Traffic Citizen contact begins" categories="NPC_TRAFFIC_CONTACT_STARTED" />
+          <Step name="Document refusal is recorded" categories="NPC_TRAFFIC_NEGATIVE_DECISION" />
+          <Step name="Vehicle flee task is attempted" categories="NPC_TRAFFIC_FLEE_ATTEMPT" />
+          <Step name="Vehicle fleeing movement is physically confirmed" categories="NPC_TRAFFIC_FLEE_MOVEMENT_CONFIRMED" />
+          <Step name="Backup pursuit begins" categories="POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED" />
+          <Step name="Backup tracks the fleeing vehicle" categories="POLICE_BACKUP_NPC_VEHICLE_INTERCEPTION_TRACKING" />
+          <Step name="Vehicle stop is confirmed" categories="NPC_TRAFFIC_PURSUIT_VEHICLE_STOP_CONFIRMED" />
+          <Step name="Driver exits the stopped vehicle" categories="NPC_TRAFFIC_PURSUIT_DRIVER_EXIT_REQUESTED|NPC_TRAFFIC_PURSUIT_DRIVER_EXIT_PENDING" />
+          <Step name="Driver is physically secured" categories="NPC_BACKUP_SUBJECT_SECURED|NPC_BACKUP_FLEEING_CONTAINMENT_CONFIRMED" />
+          <Step name="Backup transport begins" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+          <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+          <Step name="Backup departs with the Driver" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+          <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+        </Route>
+        <Route name="Player resolves the fleeing threat" selectOn="NPC_SUBJECT_FATAL_INJURY">
+          <Step name="Traffic Citizen contact begins" categories="NPC_TRAFFIC_CONTACT_STARTED" />
+          <Step name="Document refusal is recorded" categories="NPC_TRAFFIC_NEGATIVE_DECISION" />
+          <Step name="Vehicle flee task is attempted" categories="NPC_TRAFFIC_FLEE_ATTEMPT" />
+          <Step name="Vehicle fleeing movement is physically confirmed" categories="NPC_TRAFFIC_FLEE_MOVEMENT_CONFIRMED" />
+          <Step name="Fatal outcome is recorded" categories="NPC_SUBJECT_FATAL_INJURY" />
+          <Step name="NPC interaction ends" categories="NPC_INTERACTION_ENDED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
+    <Branch id="npc-vehicle-suspicious" name="Vehicle Citizen: Suspicious Vehicle" sourceSection="NPCVehicleRoadInteraction / SuspiciousVehiclePed" sourceLines="237-264" expectedBehavior="The wary vehicle flees. The analyzer identifies Backup interception and validation or Player resolution from the observed runtime outcome.">
+      <ExpectedRoutes>
+        <Route name="Backup intercepts, then Player checks the Driver" selectOn="NPC_TRAFFIC_SUSPICIOUS_RECORD_READY">
+          <Step name="Suspicious vehicle behavior begins" categories="NPC_TRAFFIC_SUSPICIOUS_CONTACT_STARTED" />
+          <Step name="Suspicious approach is confirmed" categories="NPC_TRAFFIC_SUSPICIOUS_APPROACH_CONFIRMED" />
+          <Step name="Vehicle flee task is attempted" categories="NPC_TRAFFIC_FLEE_ATTEMPT" />
+          <Step name="Player requests Backup" categories="POLICE_BACKUP_REQUESTED" />
+          <Step name="Backup vehicle pursuit begins" categories="POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED" />
+          <Step name="Backup tracks the fleeing vehicle" categories="POLICE_BACKUP_NPC_VEHICLE_INTERCEPTION_TRACKING" />
+          <Step name="Vehicle stop is confirmed" categories="NPC_TRAFFIC_PURSUIT_VEHICLE_STOP_CONFIRMED" />
+          <Step name="Suspicious validation record becomes available" categories="NPC_TRAFFIC_SUSPICIOUS_RECORD_READY" />
+          <Step name="Player reviews the Driver's document" categories="NPC_DOCUMENT_REVIEW_CONFIRMED" />
+          <Step name="Backup custody offer is accepted" categories="NPC_BACKUP_CUSTODY_OFFER_ACCEPTED" />
+          <Step name="Backup transport begins" categories="NPC_BACKUP_TRANSPORT_STARTED" />
+          <Step name="Player interaction is released" categories="NPC_BACKUP_PLAYER_SESSION_RELEASED" />
+          <Step name="Backup departs with the Driver" categories="POLICE_BACKUP_NPC_PHYSICAL_DEPARTURE_CONFIRMED" />
+          <Step name="Backup reports completion of the Station transport" categories="NPC_BACKUP_TRANSPORT_COMPLETED" />
+        </Route>
+        <Route name="Player resolves the fleeing threat" selectOn="NPC_SUBJECT_FATAL_INJURY">
+          <Step name="Suspicious vehicle behavior begins" categories="NPC_TRAFFIC_SUSPICIOUS_CONTACT_STARTED" />
+          <Step name="Suspicious approach is confirmed" categories="NPC_TRAFFIC_SUSPICIOUS_APPROACH_CONFIRMED" />
+          <Step name="Vehicle flee task is attempted" categories="NPC_TRAFFIC_FLEE_ATTEMPT" />
+          <Step name="Fatal outcome is recorded" categories="NPC_SUBJECT_FATAL_INJURY" />
+          <Step name="NPC interaction ends" categories="NPC_INTERACTION_ENDED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
   </TestEvent>
-  <TestEvent id="police-interaction" name="Police Interaction" sourceSection="PolicePatrolPlayerMode" sourceLines="266-289">
-    <Branch id="police-patrol-player-mode" name="Police Patrol Player Mode" sourceSection="PolicePatrolPlayerMode" sourceLines="266-289" expectedBehavior="The Player enters the Police role, selects the documented Station, Officer, Agency and Utility, then begins Police Duty and Patrol." />
+  <TestEvent id="police-interaction" name="Police Interaction" sourceSection="PolicePatrolPlayerMode" sourceLines="266-289" flowConnection="This is the normal player-owned setup prerequisite. Complete Police role, profile, Authority, Duty, and Patrol through existing menus, then start the chosen NPC or Dispatch Branch Test. Developer Mode does not activate these states.">
+    <Branch id="police-patrol-player-mode" name="Police Patrol Player Mode" sourceSection="PolicePatrolPlayerMode" sourceLines="266-289" expectedBehavior="The Player enters the Police role, selects the documented Station, Officer, Agency and Utility, then begins Police Duty and Patrol.">
+      <ExpectedSteps>
+        <Step name="Police Authority is activated by the Player" categories="POLICE_AUTHORITY_ACTIVATED" />
+        <Step name="Station setup completes" categories="POLICE_STATION_SETUP_COMPLETED" />
+        <Step name="Saved Police profile is applied" categories="POLICE_PROFILE_APPLIED" />
+        <Step name="Patrol vehicle becomes ready" categories="POLICE_PATROL_VEHICLE_READY" />
+        <Step name="Player begins the documented Patrol activity" categories="POLICE_PATROL_INITIAL_ACTIVITY" />
+      </ExpectedSteps>
+    </Branch>
   </TestEvent>
-  <TestEvent id="gang-member-interaction" name="Gang Member Interaction" sourceSection="VanillaGangIntegration" sourceLines="1415">
-    <Branch id="vanilla-gang-integration" name="Vanilla Gang Integration" sourceSection="VanillaGangIntegration" sourceLines="1415" expectedBehavior="The Branch document names this integration but gives no expected test sequence." />
+  <TestEvent id="gang-member-interaction" name="Gang Member Interaction" sourceSection="VanillaGangIntegration" sourceLines="1412" flowConnection="No detailed test sequence or follow-on branch is specified in the official Gameplay Branch or Flow documents. Capture evidence only; do not interpret this as a pass/fail comparison.">
+    <Branch id="vanilla-gang-integration" name="Vanilla Gang Integration — Observation Only" sourceSection="VanillaGangIntegration" sourceLines="1412" expectedBehavior="The official Branch and Flow documents name this integration but specify no expected gameplay sequence. Capture available evidence only; the result cannot compare a documented pass or failure." />
   </TestEvent>
-  <TestEvent id="gang-pool-mod-interaction" name="Gang Pool Mod Interaction" sourceSection="GangModPoolIntegration" sourceLines="1417">
-    <Branch id="gang-mod-pool-integration" name="Gang Mod Pool Integration" sourceSection="GangModPoolIntegration" sourceLines="1417" expectedBehavior="The Branch document names this integration but gives no expected test sequence." />
+  <TestEvent id="gang-pool-mod-interaction" name="Gang Pool Mod Interaction" sourceSection="GangModPoolIntegration" sourceLines="1414" flowConnection="No detailed test sequence or follow-on branch is specified in the official Gameplay Branch or Flow documents. Capture evidence only; do not interpret this as a pass/fail comparison.">
+    <Branch id="gang-mod-pool-integration" name="Gang Pool Mod Integration — Observation Only" sourceSection="GangModPoolIntegration" sourceLines="1414" expectedBehavior="The official Branch and Flow documents name this integration but specify no expected gameplay sequence. Capture available evidence only; the result cannot compare a documented pass or failure." />
   </TestEvent>
-  <TestEvent id="dispatch-activity" name="Dispatch Activity Event" sourceSection="DispatchEventActivity" sourceLines="291-1410">
-    <Branch id="dispatch-team-backup-group" name="Backup with Group Suspects at Scene" sourceSection="DispatchEventActivity / TeamBackUPEvent+PlusGroupofSuspectonScene" sourceLines="305-325" expectedBehavior="The Player responds to a group-suspect scene; Backup supports the Player through the documented group confrontation and custody flow." />
-    <Branch id="dispatch-single-suspect-escalation" name="One Suspect Escalates — Player Handles Alone" sourceSection="DispatchEventActivity / OneSuspectEvent+SuspectEscalated+PlayerAcceptedSinglehandledly" sourceLines="326-348" expectedBehavior="The Player accepts a single-suspect Dispatch and handles the documented escalation alone." />
-    <Branch id="dispatch-vehicle-suspect-escalation" name="Vehicle Suspect Escalates — Player Handles Alone" sourceSection="DispatchEventActivity / OneVehicleSuspectEscalatedEvent+PlayerAcceptedSinglehandledly" sourceLines="349-362" expectedBehavior="The Player accepts a vehicle-suspect Dispatch and handles the documented escalation alone." />
-    <Branch id="dispatch-vehicle-pursuit-unreachable" name="Vehicle Pursuit — Player Cannot Reach Suspect" sourceSection="DispatchEventActivity / ifPlayerUnabletoReachonPursuitModeoftheVehicleSuspectPursuit" sourceLines="363-377" expectedBehavior="The Player cannot reach the fleeing suspect vehicle alone and follows the documented pursuit-support branch." />
-    <Branch id="dispatch-vehicle-pursuit-survives-stop" name="Vehicle Pursuit — Suspect Survives Crash or Tire Stop" sourceSection="DispatchEventActivity / If Player Crash and Shoot the Vehicle Suspect's Car Tires or Crashes and Suspect Alive" sourceLines="378-407" expectedBehavior="The suspect survives the crash or tire stop and continues through the documented physical custody and transport outcome." />
-    <Branch id="dispatch-foot-suspect-solo" name="Foot Suspect — Player Handles Alone" sourceSection="DispatchEventActivity / DispatchFootOneSuspectSingleHandledlyPlayerDispatch" sourceLines="408-418" expectedBehavior="The Player accepts a single Foot Suspect Dispatch and follows the documented solo response." />
-    <Branch id="dispatch-player-shoots-fleeing-suspect" name="Player Shoots the Fleeing Suspect" sourceSection="DispatchEventActivity / PlayerShoottheFledSuspect" sourceLines="419-425" expectedBehavior="The Player resolves the fleeing suspect through the documented force outcome." />
-    <Branch id="dispatch-player-cannot-pursue" name="Player Cannot Continue the Pursuit" sourceSection="DispatchEventActivity / PlayerDidNotAbletoPursuit" sourceLines="426-441" expectedBehavior="The Player cannot continue the pursuit and follows the documented alternate response." />
-    <Branch id="dispatch-bank-robbery-escape" name="Bank Robbery — One Suspect Escapes" sourceSection="DispatchEventActivity / Bank One Suspect Robbery + Escape Suspect" sourceLines="442-493" expectedBehavior="The Player responds to a bank robbery with one suspect escaping and follows the documented pursuit and resolution branches." />
-    <Branch id="dispatch-bank-robbery-gunfire" name="Bank Robbery — Gunfire Inside Store" sourceSection="DispatchEventActivity / Bank One Suspect Shot Fired Inside Store + PlayerSingleHandledly" sourceLines="494-538" expectedBehavior="The Player responds to gunfire inside the store, resolves the active threat and proceeds to documented custody or scene completion." />
-    <Branch id="dispatch-armed-disturbance" name="Armed Disturbance Outside Business" sourceSection="DispatchEventActivity / Disturbance Armed Suspect Outside Business" sourceLines="539-583" expectedBehavior="The Player responds to an armed disturbance outside a business and follows the documented threat and custody response." />
-    <Branch id="dispatch-store-robbery-fleeing-foot" name="Store Robbery — Fleeing Foot Suspect" sourceSection="DispatchEventActivity / Fleeing Foot Suspect from Store Robbery" sourceLines="584-627" expectedBehavior="The Player responds to a fleeing Foot Suspect from a store robbery and follows the documented pursuit, Backup and custody branches." />
-    <Branch id="dispatch-store-robbery-group-gunfire" name="Store Robbery — Group Suspects Fire Shots" sourceSection="DispatchEventActivity / Store Robbery Group Suspect Shot Fired" sourceLines="628-679" expectedBehavior="The Player responds to a group-suspect store robbery with gunfire and follows the documented Backup, confrontation and custody branches." />
-    <Branch id="dispatch-carjacking-vehicle-pursuit" name="Carjacking — Vehicle Suspect Pursuit" sourceSection="DispatchEventActivity / Vehicle Suspect Pursuit After Carjacking" sourceLines="680-740" expectedBehavior="The Player pursues the vehicle suspect after a carjacking, with the documented Backup, stop and custody outcomes." />
-    <Branch id="dispatch-road-gang-ambush" name="Road Gang Ambush — Group Suspects" sourceSection="DispatchEventActivity / Group Suspect Gang Ambush on Road" sourceLines="741-766" expectedBehavior="The Player responds to a group-suspect gang ambush on the road and follows the documented escalation and resolution flow." />
-    <Branch id="dispatch-alley-drug-deal" name="Alley Drug Deal — Several Suspects" sourceSection="DispatchEventActivity / Drug Deal Several Suspect on Alley" sourceLines="767-815" expectedBehavior="The Player responds to several suspects dealing drugs in an alley and follows the documented confrontation and resolution branches." />
-    <Branch id="dispatch-alley-criminal-meeting" name="Alley Criminal Meeting — Several Suspects" sourceSection="DispatchEventActivity / Criminal Meeting Several Suspect on Alley" sourceLines="816-865" expectedBehavior="The Player responds to a criminal meeting involving several suspects and follows the documented confrontation, Backup and custody branches." />
-    <Branch id="dispatch-reckless-driver" name="Reckless Driver — One Vehicle Suspect" sourceSection="DispatchEventActivity / Reckless Driver One Vehicle Suspect" sourceLines="866-901" expectedBehavior="The Player responds to one reckless vehicle suspect and follows the documented stop, pursuit and resolution branches." />
-    <Branch id="dispatch-vehicle-theft" name="Vehicle Theft in Progress — One Vehicle Suspect" sourceSection="DispatchEventActivity / Vehicle Theft in Progress One Vehicle Suspect" sourceLines="902-941" expectedBehavior="The Player responds to one vehicle-theft suspect and follows the documented pursuit and resolution branches." />
-    <Branch id="dispatch-carjacking-single-suspect" name="Carjacking — One Vehicle Suspect" sourceSection="DispatchEventActivity / Carjacking One Vehicle Suspect" sourceLines="942-986" expectedBehavior="The Player responds to a carjacking involving one vehicle suspect and follows the documented pursuit and resolution branches." />
-    <Branch id="dispatch-alley-money-armory-deal" name="Alley Money or Armory Deal — Group Suspects" sourceSection="DispatchEventActivity / Group Suspect dealtaMoneyArmoryonAlley" sourceLines="987-1038" expectedBehavior="The Player responds to a group-suspect money or armory deal in an alley and follows the documented escalation and custody branches." />
-    <Branch id="dispatch-road-snatch-victim" name="Suspect Snatches Victim on Road" sourceSection="DispatchEventActivity / SuspectSnatchOnVictiminRoad" sourceLines="1039-1081" expectedBehavior="The Player responds to a suspect snatching a victim on the road and follows the documented rescue and suspect-resolution branches." />
-    <Branch id="dispatch-interior-clerk-assault" name="Barber Shop Clerk Assault — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / BarberShop clerk assault" sourceLines="N/A" expectedBehavior="A data-authored unarmed suspect physically attacks one shop-clerk participant inside a mapped BarberShop; the Player enters through the mapped public doorway and resolves compliance, resistance, or flight." />
-    <Branch id="dispatch-interior-clerk-snatch" name="Barber Shop Clerk Snatch — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / BarberShop clerk snatch" sourceLines="N/A" expectedBehavior="An armed suspect performs a paired clerk-snatch activity inside a mapped BarberShop; on flight, the clerk can attempt escape or remain with the suspect, and each moving actor uses the existing mapped doorway and physical pathing before pursuit continues." />
-    <Branch id="dispatch-convenience-liquor-clerk-assault" name="Convenience or Liquor Store Clerk Assault — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore clerk assault" sourceLines="N/A" expectedBehavior="A data-authored unarmed suspect physically attacks the shop-clerk victim inside a compatible mapped convenience or liquor store; the Player enters the selected building and resolves compliance, resistance, or foot flight. Optional customer scene participants are separate from the offender and custody counts." />
-    <Branch id="dispatch-convenience-liquor-customer-assault" name="Convenience or Liquor Store Customer Assault — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore customer assault" sourceLines="N/A" expectedBehavior="A data-authored unarmed suspect physically attacks a shop-customer victim while a shop clerk is prepared as a separate scene participant inside a compatible mapped convenience or liquor store; the Player enters and resolves compliance, resistance, or foot flight." />
-    <Branch id="dispatch-convenience-liquor-clerk-snatch" name="Convenience or Liquor Store Clerk Snatch — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore clerk snatch" sourceLines="N/A" expectedBehavior="An armed suspect performs the existing paired shop-snatch activity inside a mapped convenience or liquor store; the clerk can attempt escape or remain threatened, and moving actors use the existing mapped doorway and physical navigation before pursuit continues." />
-    <Branch id="dispatch-convenience-liquor-customer-snatch" name="Convenience or Liquor Store Customer Snatch — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore customer snatch" sourceLines="N/A" expectedBehavior="An armed suspect performs the existing paired shop-snatch activity with a customer victim while a clerk is present as a separate participant; victim escape and suspect flight use the existing physical doorway and navigation path." />
-    <Branch id="dispatch-alley-murder-victim" name="Suspect Seen at Murder Victim in Alley" sourceSection="DispatchEventActivity / SuspectSeenonMurderVictimOnAlley" sourceLines="1082-1125" expectedBehavior="The Player responds to a suspect seen at a murder victim in an alley and follows the documented investigation and suspect-resolution branches." />
-    <Branch id="dispatch-road-vehicle-speed-chaos" name="Road Vehicle Speed Chaos" sourceSection="DispatchEventActivity / Vehicle Suspect on Road Doing Car Speed Chaos" sourceLines="1126-1167" expectedBehavior="The Player responds to a vehicle suspect causing speed chaos on the road and follows the documented stop or pursuit flow." />
-    <Branch id="dispatch-road-foot-shot-fired" name="Road Foot Suspect — Shots Fired" sourceSection="DispatchEventActivity / Foot Suspect on Road Doing Shot Fired Chaos" sourceLines="1168-1210" expectedBehavior="The Player responds to a Foot Suspect firing shots on the road and follows the documented threat and custody flow." />
-    <Branch id="dispatch-alley-shot-fired-single" name="Narrow Alley — Shots Fired, One Suspect" sourceSection="DispatchEventActivity / Narrow Alley Shot Fired Suspect + OneSuspect" sourceLines="1211-1253" expectedBehavior="The Player responds to one suspect firing shots in a narrow alley and follows the documented Backup, threat and custody branches." />
-    <Branch id="dispatch-alley-kidnapping" name="Narrow Alley Kidnapping — Victim Present" sourceSection="DispatchEventActivity / Narrow Alley Kidnapping Suspect + VictimPresent" sourceLines="1254-1307" expectedBehavior="The Player responds to a kidnapping suspect in a narrow alley with the victim present and follows the documented rescue and suspect-resolution flow." />
-    <Branch id="dispatch-one-suspect-transport" name="One Suspect — Escort and Transport" sourceSection="Player Escort and Transport Convoy Gameplay / One Suspect on the Dispatch Activity" sourceLines="1308-1369" expectedBehavior="After a single suspect is secured, the documented physical escort, loading, transport and Station handoff occur, with the separate optional Prison continuation." />
-    <Branch id="dispatch-group-suspect-transport" name="Two to Three Suspects — Group Escort and Transport" sourceSection="Player Escort and Transport Convoy Gameplay / TwotoThreeDispatchSuspectofCompliant/FledPursuitfromFootScenario" sourceLines="1370-1410" expectedBehavior="After two or three suspects are secured, Police officers physically escort and load the group, then complete the documented transport and Station handoff." />
+  <TestEvent id="dispatch-activity" name="Dispatch Activity Event" sourceSection="DispatchEventActivity" sourceLines="291-1410" flowConnection="If a living suspect is secured, continue with One Suspect — Escort and Transport (1 suspect) or Two to Three Suspects — Group Escort and Transport (2–3). Start before requesting transport. After Station handoff, use Custody — Optional Prison Convoy Decision. No custody follow-on for fatal or terminal outcomes.">
+    <CommonSteps>
+      <Step name="Dispatch offer is recorded" categories="POLICE_DISPATCH_OFFERED" />
+      <Step name="Player accepts the Dispatch" categories="POLICE_DISPATCH_ACCEPTED" />
+      <Step name="Dispatch scene behavior begins" categories="POLICE_DISPATCH_SCENE_STARTED" />
+    </CommonSteps>
+    <Branch id="dispatch-team-backup-group" name="Backup with Group Suspects at Scene" sourceSection="DispatchEventActivity / TeamBackUPEvent+PlusGroupofSuspectonScene" sourceLines="305-325" expectedBehavior="The Player responds to a group-suspect scene; Backup supports the Player through the documented group confrontation and custody flow.">
+      <ExpectedSteps>
+        <Step name="Backup is requested for the group scene" categories="POLICE_BACKUP_REQUESTED" />
+        <Step name="Backup arrives at the scene" categories="POLICE_BACKUP_ARRIVED|POLICE_BACKUP_GROUP_SCENE_UNIT_ARRIVED" />
+        <Step name="Group suspects comply or are contained" categories="POLICE_BACKUP_GROUP_COMPLIANCE|POLICE_BACKUP_GROUP_FOOT_SUSPECT_CONTAINED" />
+        <Step name="Group custody is recorded" categories="POLICE_GROUP_SUSPECT_SECURED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-single-suspect-escalation" name="One Suspect Escalates — Player Handles Alone" sourceSection="DispatchEventActivity / OneSuspectEvent+SuspectEscalated+PlayerAcceptedSinglehandledly" sourceLines="326-348" expectedBehavior="The Player accepts a single-suspect Dispatch and handles the documented escalation alone.">
+      <ExpectedSteps>
+        <Step name="Scene awaits the Player's response" categories="POLICE_DISPATCH_SCENE_RESPONSE_AWAITING_PLAYER" />
+        <Step name="Suspect threat or resistance is recorded" categories="POLICE_DISPATCH_SHOP_PARTICIPANT_THREATENED|POLICE_DISPATCH_SUSPECT_MELEE_REACTION|POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Player secures or neutralizes the suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-vehicle-suspect-escalation" name="Vehicle Suspect Escalates — Player Handles Alone" sourceSection="DispatchEventActivity / OneVehicleSuspectEscalatedEvent+PlayerAcceptedSinglehandledly" sourceLines="349-362" expectedBehavior="The Player accepts a vehicle-suspect Dispatch and handles the documented escalation alone.">
+      <ExpectedSteps>
+        <Step name="Vehicle suspect threat approach begins" categories="POLICE_DISPATCH_CARJACKING_APPROACH_STARTED|POLICE_DISPATCH_CARJACKING_THREAT_STARTED" />
+        <Step name="Vehicle suspect escalates" categories="POLICE_DISPATCH_SUSPECT_MELEE_REACTION|POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED|POLICE_DISPATCH_CARJACKING_THREAT_STARTED" />
+        <Step name="Player secures or neutralizes the suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-vehicle-pursuit-unreachable" name="Vehicle Pursuit — Player Cannot Reach Suspect" sourceSection="DispatchEventActivity / ifPlayerUnabletoReachonPursuitModeoftheVehicleSuspectPursuit" sourceLines="363-377" expectedBehavior="The Player cannot reach the fleeing suspect vehicle alone and follows the documented pursuit-support branch.">
+      <ExpectedSteps>
+        <Step name="Backup pursuit support is selected" categories="POLICE_BACKUP_DISPATCH_PURSUIT_SUPPORT_SELECTED" />
+        <Step name="Backup vehicle pursuit begins" categories="POLICE_BACKUP_VEHICLE_PURSUIT|POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Backup interception is confirmed" categories="POLICE_BACKUP_INTERCEPTION_CONFIRMED|POLICE_BACKUP_INTERCEPTION_TRACKING" />
+        <Step name="Suspect is secured by the Player or Backup" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_BACKUP_DISPATCH_ARREST_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-vehicle-pursuit-survives-stop" name="Vehicle Pursuit — Suspect Survives Crash or Tire Stop" sourceSection="DispatchEventActivity / If Player Crash and Shoot the Vehicle Suspect's Car Tires or Crashes and Suspect Alive" sourceLines="378-407" expectedBehavior="The suspect survives the crash or tire stop and continues through the documented physical custody and transport outcome.">
+      <ExpectedSteps>
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Stopped-vehicle exit is requested" categories="POLICE_DISPATCH_PURSUIT_STOPPED_VEHICLE_EXIT_REQUESTED" />
+        <Step name="Driver exits the stopped vehicle" categories="POLICE_DISPATCH_PURSUIT_DRIVER_EXITED_STOPPED_VEHICLE" />
+        <Step name="Player physical arrest is completed" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch continues to completion or custody" categories="POLICE_DISPATCH_COMPLETED|POLICE_CUSTODY_HANDOFF|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-foot-suspect-solo" name="Foot Suspect — Player Handles Alone" sourceSection="DispatchEventActivity / DispatchFootOneSuspectSingleHandledlyPlayerDispatch" sourceLines="408-418" expectedBehavior="The Player accepts a single Foot Suspect Dispatch and follows the documented solo response.">
+      <ExpectedSteps>
+        <Step name="Scene awaits the Player's response" categories="POLICE_DISPATCH_SCENE_RESPONSE_AWAITING_PLAYER" />
+        <Step name="Player handcuff action begins" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_STARTED" />
+        <Step name="Player physical arrest is completed" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-player-shoots-fleeing-suspect" name="Player Shoots the Fleeing Suspect" sourceSection="DispatchEventActivity / PlayerShoottheFledSuspect" sourceLines="419-425" expectedBehavior="The Player resolves the fleeing suspect through the documented force outcome.">
+      <ExpectedSteps>
+        <Step name="Suspect fleeing movement is observed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Suspect fatal outcome is recorded" categories="POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch terminal state is recorded" categories="POLICE_DISPATCH_TERMINAL|POLICE_DISPATCH_COMPLETED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-player-cannot-pursue" name="Player Cannot Continue the Pursuit" sourceSection="DispatchEventActivity / PlayerDidNotAbletoPursuit" sourceLines="426-441" expectedBehavior="The Player requests Backup; two Backup vehicles intercept the suspect, the suspect complies, and the Player continues into transport and custody.">
+      <ExpectedSteps>
+        <Step name="Player requests Backup" categories="POLICE_BACKUP_REQUESTED" />
+        <Step name="Backup pursuit support is selected" categories="POLICE_BACKUP_DISPATCH_PURSUIT_SUPPORT_SELECTED" />
+        <Step name="Backup vehicles arrive on the suspect route" categories="POLICE_BACKUP_ARRIVED|POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Suspect is surrounded or intercepted" categories="POLICE_BACKUP_INTERCEPTION_CONFIRMED|POLICE_BACKUP_INTERCEPTION_TRACKING" />
+        <Step name="Suspect compliance or custody is recorded" categories="POLICE_BACKUP_SUSPECT_COMPLIANT|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Transport or custody continuation is observed" categories="POLICE_CUSTODY_STARTED|POLICE_CONVOY_TRANSPORT_STAGED|POLICE_DISPATCH_COMPLETED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-bank-robbery-escape" name="Bank Robbery — One Suspect Escapes" sourceSection="DispatchEventActivity / Bank One Suspect Robbery + Escape Suspect" sourceLines="442-493" expectedBehavior="The Player responds to a bank robbery with one suspect escaping and follows the documented pursuit and resolution branches.">
+      <ExpectedSteps>
+        <Step name="Interior robbery flight is triggered" categories="POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED" />
+        <Step name="Suspect reaches or enters the getaway vehicle" categories="POLICE_DISPATCH_INTERIOR_GETAWAY_VEHICLE_ENTERED" />
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Suspect is recovered or the incident reaches its terminal state" categories="POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED|POLICE_DISPATCH_SUSPECT_RELEASED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-bank-robbery-gunfire" name="Bank Robbery — Gunfire Inside Store" sourceSection="DispatchEventActivity / Bank One Suspect Shot Fired Inside Store + PlayerSingleHandledly" sourceLines="494-538" expectedBehavior="The Player responds to gunfire inside the store, resolves the active threat and proceeds to documented custody or scene completion.">
+      <ExpectedSteps>
+        <Step name="Gunfire is reported" categories="POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Writhe or injury task is issued when applicable" categories="POLICE_DISPATCH_SUSPECT_WRITHE_TASK_ISSUED|POLICE_DISPATCH_SUSPECT_INJURY_RECORDED" />
+        <Step name="Player secures or neutralizes the suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-armed-disturbance" name="Armed Disturbance Outside Business" sourceSection="DispatchEventActivity / Disturbance Armed Suspect Outside Business" sourceLines="539-583" expectedBehavior="The Player responds to an armed disturbance outside a business and follows the documented threat and custody response.">
+      <ExpectedSteps>
+        <Step name="Scene awaits the Player's response" categories="POLICE_DISPATCH_SCENE_RESPONSE_AWAITING_PLAYER" />
+        <Step name="Threat at the business is recorded" categories="POLICE_DISPATCH_SHOP_PARTICIPANT_THREATENED|POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED|POLICE_DISPATCH_SUSPECT_MELEE_REACTION" />
+        <Step name="Player secures or neutralizes the suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-store-robbery-fleeing-foot" name="Store Robbery — Fleeing Foot Suspect" sourceSection="DispatchEventActivity / Fleeing Foot Suspect from Store Robbery" sourceLines="584-627" expectedBehavior="The Player responds to a fleeing Foot Suspect from a store robbery and follows the documented pursuit, Backup and custody branches.">
+      <ExpectedSteps>
+        <Step name="Interior robbery flight is triggered" categories="POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED" />
+        <Step name="Suspect pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Backup interception is confirmed when requested" categories="POLICE_BACKUP_INTERCEPTION_CONFIRMED|POLICE_BACKUP_INTERCEPTION_TRACKING" />
+        <Step name="Suspect is secured or neutralized" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-store-robbery-group-gunfire" name="Store Robbery — Group Suspects Fire Shots" sourceSection="DispatchEventActivity / Store Robbery Group Suspect Shot Fired" sourceLines="628-679" expectedBehavior="The Player responds to a group-suspect store robbery with gunfire and follows the documented Backup, confrontation and custody branches.">
+      <ExpectedSteps>
+        <Step name="Group-suspect gunfire is reported" categories="POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Backup supports group containment" categories="POLICE_BACKUP_GROUP_COMPLIANCE|POLICE_BACKUP_GROUP_FOOT_INTERCEPTOR_ASSIGNED|POLICE_BACKUP_GROUP_FOOT_SUSPECT_CONTAINED" />
+        <Step name="Group custody is recorded" categories="POLICE_GROUP_SUSPECT_SECURED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-carjacking-vehicle-pursuit" name="Carjacking — Vehicle Suspect Pursuit" sourceSection="DispatchEventActivity / Vehicle Suspect Pursuit After Carjacking" sourceLines="680-740" expectedBehavior="The Player pursues the vehicle suspect after a carjacking, with the documented Backup, stop and custody outcomes.">
+      <ExpectedSteps>
+        <Step name="Carjacking approach begins" categories="POLICE_DISPATCH_CARJACKING_APPROACH_STARTED" />
+        <Step name="Vehicle pursuit starts" categories="POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_STARTED|POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Carjacked vehicle is recovered or stopped" categories="POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED|POLICE_BACKUP_INTERCEPTION_CONFIRMED" />
+        <Step name="Suspect is secured or the Dispatch completes" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_BACKUP_DISPATCH_ARREST_COMPLETED|POLICE_DISPATCH_COMPLETED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-road-gang-ambush" name="Road Gang Ambush — Group Suspects" sourceSection="DispatchEventActivity / Group Suspect Gang Ambush on Road" sourceLines="741-766" expectedBehavior="The Player responds to a group-suspect gang ambush on the road and follows the documented escalation and resolution flow.">
+      <ExpectedSteps>
+        <Step name="Gang-response Backup is requested" categories="POLICE_BACKUP_GANG_REQUESTED|POLICE_BACKUP_REQUESTED" />
+        <Step name="Gang-response unit arrives or deploys" categories="POLICE_BACKUP_GANG_VEHICLE_ARRIVED|POLICE_BACKUP_GANG_OFFICER_READY" />
+        <Step name="Gang engagement begins" categories="POLICE_BACKUP_GANG_COMBAT_STARTED|POLICE_BACKUP_GANG_COMBAT_CONFIRMED" />
+        <Step name="Gang engagement ends or the incident resolves" categories="POLICE_BACKUP_GANG_COMBAT_ENDED|POLICE_BACKUP_GANG_COMBAT_TARGET_DEAD|POLICE_DISPATCH_COMPLETED" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-alley-drug-deal" name="Alley Drug Deal — Several Suspects" sourceSection="DispatchEventActivity / Drug Deal Several Suspect on Alley" sourceLines="767-815" expectedBehavior="The Player responds to several suspects dealing drugs in an alley and follows the documented confrontation and resolution branches.">
+      <ExpectedSteps>
+        <Step name="Suspect scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Scene response is selected and begins" categories="POLICE_DISPATCH_SCENE_RESPONSES_SELECTED|POLICE_DISPATCH_SCENE_ANIMATION_STARTED" />
+        <Step name="Player secures or neutralizes a suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY|POLICE_GROUP_SUSPECT_SECURED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-alley-criminal-meeting" name="Alley Criminal Meeting — Several Suspects" sourceSection="DispatchEventActivity / Criminal Meeting Several Suspect on Alley" sourceLines="816-865" expectedBehavior="The Player responds to a criminal meeting involving several suspects and follows the documented confrontation, Backup and custody branches.">
+      <ExpectedSteps>
+        <Step name="Suspect scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Scene response is selected and begins" categories="POLICE_DISPATCH_SCENE_RESPONSES_SELECTED|POLICE_DISPATCH_SCENE_ANIMATION_STARTED" />
+        <Step name="Backup is requested or group custody is recorded" categories="POLICE_BACKUP_REQUESTED|POLICE_GROUP_SUSPECT_SECURED" />
+        <Step name="Player secures or neutralizes a suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY|POLICE_GROUP_SUSPECT_SECURED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-reckless-driver" name="Reckless Driver — One Vehicle Suspect" sourceSection="DispatchEventActivity / Reckless Driver One Vehicle Suspect" sourceLines="866-901" expectedBehavior="The Player responds to one reckless vehicle suspect and follows the documented stop, pursuit and resolution branches.">
+      <ExpectedSteps>
+        <Step name="Vehicle activity pursuit starts when the driver flees" categories="POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_STARTED|POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Vehicle is stopped or recovered" categories="POLICE_DISPATCH_PURSUIT_DRIVER_EXITED_STOPPED_VEHICLE|POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED" />
+        <Step name="Suspect is secured or the Dispatch completes" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-vehicle-theft" name="Vehicle Theft in Progress — One Vehicle Suspect" sourceSection="DispatchEventActivity / Vehicle Theft in Progress One Vehicle Suspect" sourceLines="902-941" expectedBehavior="The Player responds to one vehicle-theft suspect and follows the documented pursuit and resolution branches.">
+      <ExpectedSteps>
+        <Step name="Parked vehicle theft scene begins" categories="POLICE_DISPATCH_PARKED_VEHICLE_THEFT_STARTED" />
+        <Step name="Vehicle activity pursuit starts when the suspect flees" categories="POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_STARTED|POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Vehicle is recovered or the incident terminates" categories="POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-carjacking-single-suspect" name="Carjacking — One Vehicle Suspect" sourceSection="DispatchEventActivity / Carjacking One Vehicle Suspect" sourceLines="942-986" expectedBehavior="The Player responds to a carjacking involving one vehicle suspect and follows the documented pursuit and resolution branches.">
+      <ExpectedSteps>
+        <Step name="Carjacking approach begins" categories="POLICE_DISPATCH_CARJACKING_APPROACH_STARTED" />
+        <Step name="Carjacking threat begins" categories="POLICE_DISPATCH_CARJACKING_THREAT_STARTED" />
+        <Step name="Vehicle activity pursuit starts when applicable" categories="POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_STARTED|POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Carjacked vehicle is recovered or the incident terminates" categories="POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-alley-money-armory-deal" name="Alley Money or Armory Deal — Group Suspects" sourceSection="DispatchEventActivity / Group Suspect dealtaMoneyArmoryonAlley" sourceLines="987-1038" expectedBehavior="The Player responds to a group-suspect money or armory deal in an alley and follows the documented escalation and custody branches.">
+      <ExpectedSteps>
+        <Step name="Group suspect scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Scene response is selected and begins" categories="POLICE_DISPATCH_SCENE_RESPONSES_SELECTED|POLICE_DISPATCH_SCENE_ANIMATION_STARTED" />
+        <Step name="Backup or suspect escalation is recorded" categories="POLICE_BACKUP_REQUESTED|POLICE_DISPATCH_SUSPECT_MELEE_REACTION|POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Group custody or neutralization is recorded" categories="POLICE_GROUP_SUSPECT_SECURED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-road-snatch-victim" name="Suspect Snatches Victim on Road" sourceSection="DispatchEventActivity / SuspectSnatchOnVictiminRoad" sourceLines="1039-1081" expectedBehavior="The Player responds to a suspect snatching a victim on the road and follows the documented rescue and suspect-resolution branches.">
+      <ExpectedSteps>
+        <Step name="Victim response begins" categories="POLICE_DISPATCH_VICTIM_RESPONSE_STARTED" />
+        <Step name="Suspect threat or movement is observed" categories="POLICE_DISPATCH_CARJACKING_APPROACH_STARTED|POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED|POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Suspect is secured or neutralized" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-interior-clerk-assault" name="Barber Shop Clerk Assault — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / BarberShop clerk assault" sourceLines="N/A" expectedBehavior="A data-authored unarmed suspect physically attacks one shop-clerk participant inside a mapped BarberShop; the Player enters through the mapped public doorway and resolves compliance, resistance, or flight.">
+      <ExpectedSteps>
+        <Step name="Mapped interior scene is prepared" categories="POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED|POLICE_DISPATCH_SCENE_ENTITIES_CREATED" />
+        <Step name="Player's mapped interior route is observed" categories="POLICE_DISPATCH_INTERIOR_DOOR_CROSSING_TASK_STARTED|POLICE_DISPATCH_INTERIOR_DOOR_CROSSING_CONFIRMED" />
+        <Step name="Clerk assault behavior begins" categories="POLICE_DISPATCH_INTERIOR_CLERK_ASSAULT_STARTED" />
+        <Step name="Suspect escalates, flees, or is secured" categories="POLICE_DISPATCH_INTERIOR_SUSPECT_ESCALATED|POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-interior-clerk-snatch" name="Barber Shop Clerk Snatch — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / BarberShop clerk snatch" sourceLines="N/A" expectedBehavior="An armed suspect performs a paired clerk-snatch activity inside a mapped BarberShop; on flight, the clerk can attempt escape or remain with the suspect, and each moving actor uses the existing mapped doorway and physical pathing before pursuit continues.">
+      <ExpectedSteps>
+        <Step name="Mapped interior scene is prepared" categories="POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED|POLICE_DISPATCH_SCENE_ENTITIES_CREATED" />
+        <Step name="Clerk-snatch activity begins" categories="POLICE_DISPATCH_INTERIOR_CLERK_SNATCH_STARTED" />
+        <Step name="Clerk mapped doorway route is issued or confirmed" categories="POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_DOOR_CROSSING_STARTED|POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_DOOR_CROSSING_CONFIRMED|POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_NAVIGATION_STARTED" />
+        <Step name="Suspect getaway or scene resolution is observed" categories="POLICE_DISPATCH_INTERIOR_GETAWAY_VEHICLE_ENTERED|POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-convenience-liquor-clerk-assault" name="Convenience or Liquor Store Clerk Assault — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore clerk assault" sourceLines="N/A" expectedBehavior="A data-authored unarmed suspect physically attacks the shop-clerk victim inside a compatible mapped convenience or liquor store; the Player enters the selected building and resolves compliance, resistance, or foot flight. Optional customer scene participants are separate from the offender and custody counts.">
+      <ExpectedSteps>
+        <Step name="Compatible convenience or liquor interior is selected" categories="POLICE_DISPATCH_CONVENIENCE_LIQUOR_INTERIOR_ONLY_CANDIDATES_READY|POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED" />
+        <Step name="Interior scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Player's mapped interior route is observed" categories="POLICE_DISPATCH_INTERIOR_DOOR_CROSSING_TASK_STARTED|POLICE_DISPATCH_INTERIOR_DOOR_CROSSING_CONFIRMED" />
+        <Step name="Clerk assault behavior begins" categories="POLICE_DISPATCH_INTERIOR_CLERK_ASSAULT_STARTED" />
+        <Step name="Suspect escalates, flees, or is secured" categories="POLICE_DISPATCH_INTERIOR_SUSPECT_ESCALATED|POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-convenience-liquor-customer-assault" name="Convenience or Liquor Store Customer Assault — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore customer assault" sourceLines="N/A" expectedBehavior="A data-authored unarmed suspect physically attacks a shop-customer victim while a shop clerk is prepared as a separate scene participant inside a compatible mapped convenience or liquor store; the Player enters and resolves compliance, resistance, or foot flight.">
+      <ExpectedSteps>
+        <Step name="Compatible convenience or liquor interior is selected" categories="POLICE_DISPATCH_CONVENIENCE_LIQUOR_INTERIOR_ONLY_CANDIDATES_READY|POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED" />
+        <Step name="Customer and clerk scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Player's mapped interior route is observed" categories="POLICE_DISPATCH_INTERIOR_DOOR_CROSSING_TASK_STARTED|POLICE_DISPATCH_INTERIOR_DOOR_CROSSING_CONFIRMED" />
+        <Step name="Clerk-assault scene behavior begins" categories="POLICE_DISPATCH_INTERIOR_CLERK_ASSAULT_STARTED" />
+        <Step name="Suspect escalates, flees, or is secured" categories="POLICE_DISPATCH_INTERIOR_SUSPECT_ESCALATED|POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-convenience-liquor-clerk-snatch" name="Convenience or Liquor Store Clerk Snatch — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore clerk snatch" sourceLines="N/A" expectedBehavior="An armed suspect performs the existing paired shop-snatch activity inside a mapped convenience or liquor store; the clerk can attempt escape or remain threatened, and moving actors use the existing mapped doorway and physical navigation before pursuit continues.">
+      <ExpectedSteps>
+        <Step name="Compatible convenience or liquor interior is selected" categories="POLICE_DISPATCH_CONVENIENCE_LIQUOR_INTERIOR_ONLY_CANDIDATES_READY|POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED" />
+        <Step name="Clerk-snatch activity begins" categories="POLICE_DISPATCH_INTERIOR_CLERK_SNATCH_STARTED" />
+        <Step name="Clerk mapped doorway route is issued or confirmed" categories="POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_DOOR_CROSSING_STARTED|POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_DOOR_CROSSING_CONFIRMED|POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_NAVIGATION_STARTED" />
+        <Step name="Suspect getaway or scene resolution is observed" categories="POLICE_DISPATCH_INTERIOR_GETAWAY_VEHICLE_ENTERED|POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-convenience-liquor-customer-snatch" name="Convenience or Liquor Store Customer Snatch — Mapped Interior" sourceSection="UserAuthorizedInteriorExtension / ConvenienceStore and LiquorStore customer snatch" sourceLines="N/A" expectedBehavior="An armed suspect performs the existing paired shop-snatch activity with a customer victim while a clerk is present as a separate participant; victim escape and suspect flight use the existing physical doorway and navigation path.">
+      <ExpectedSteps>
+        <Step name="Compatible convenience or liquor interior is selected" categories="POLICE_DISPATCH_CONVENIENCE_LIQUOR_INTERIOR_ONLY_CANDIDATES_READY|POLICE_DISPATCH_MAPPED_INTERIOR_SCENE_STARTED" />
+        <Step name="Customer and clerk scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Mapped doorway route is issued or confirmed" categories="POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_DOOR_CROSSING_STARTED|POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_DOOR_CROSSING_CONFIRMED|POLICE_DISPATCH_INTERIOR_SNATCH_CLERK_NAVIGATION_STARTED" />
+        <Step name="Suspect getaway or scene resolution is observed" categories="POLICE_DISPATCH_INTERIOR_GETAWAY_VEHICLE_ENTERED|POLICE_DISPATCH_INTERIOR_ROBBERY_FLIGHT_TRIGGERED|POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-alley-murder-victim" name="Suspect Seen at Murder Victim in Alley" sourceSection="DispatchEventActivity / SuspectSeenonMurderVictimOnAlley" sourceLines="1082-1125" expectedBehavior="The Player responds to a suspect seen at a murder victim in an alley and follows the documented investigation and suspect-resolution branches.">
+      <ExpectedSteps>
+        <Step name="Murder-scene victim is prepared" categories="POLICE_DISPATCH_MURDER_VICTIM_SCENE_CREATED" />
+        <Step name="Player investigates the victim" categories="POLICE_DISPATCH_MURDER_VICTIM_INVESTIGATED" />
+        <Step name="Suspect is secured, flees, or escalates" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED|POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-road-vehicle-speed-chaos" name="Road Vehicle Speed Chaos" sourceSection="DispatchEventActivity / Vehicle Suspect on Road Doing Car Speed Chaos" sourceLines="1126-1167" expectedBehavior="The Player responds to a vehicle suspect causing speed chaos on the road and follows the documented stop or pursuit flow.">
+      <ExpectedSteps>
+        <Step name="Vehicle activity is selected for the incident" categories="POLICE_DISPATCH_VEHICLE_ACTIVITY_PURSUIT_STARTED|POLICE_DISPATCH_GROUP_VEHICLE_PURSUIT_STARTED" />
+        <Step name="Pursuit movement is physically confirmed" categories="POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Vehicle is stopped or its driver exits" categories="POLICE_DISPATCH_PURSUIT_DRIVER_EXITED_STOPPED_VEHICLE|POLICE_DISPATCH_CARJACKED_VEHICLE_RECOVERED" />
+        <Step name="Driver is secured or the Dispatch terminates" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-road-foot-shot-fired" name="Road Foot Suspect — Shots Fired" sourceSection="DispatchEventActivity / Foot Suspect on Road Doing Shot Fired Chaos" sourceLines="1168-1210" expectedBehavior="The Player responds to a Foot Suspect firing shots on the road and follows the documented threat and custody flow.">
+      <ExpectedSteps>
+        <Step name="Gunfire is reported" categories="POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Suspect injury or writhe response is recorded when applicable" categories="POLICE_DISPATCH_SUSPECT_WRITHE_TASK_ISSUED|POLICE_DISPATCH_SUSPECT_INJURY_RECORDED" />
+        <Step name="Player secures or neutralizes the suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-alley-shot-fired-single" name="Narrow Alley — Shots Fired, One Suspect" sourceSection="DispatchEventActivity / Narrow Alley Shot Fired Suspect + OneSuspect" sourceLines="1211-1253" expectedBehavior="The Player responds to one suspect firing shots in a narrow alley and follows the documented Backup, threat and custody branches.">
+      <ExpectedSteps>
+        <Step name="Gunfire is reported" categories="POLICE_DISPATCH_SUSPECT_GUNFIRE_REPORTED" />
+        <Step name="Player requests Backup when required" categories="POLICE_BACKUP_REQUESTED|POLICE_BACKUP_DISPATCH_PURSUIT_SUPPORT_SELECTED" />
+        <Step name="Backup arrives or defense support is assigned" categories="POLICE_BACKUP_ARRIVED|POLICE_BACKUP_DISPATCH_DEFENSE_COMBAT_ASSIGNED" />
+        <Step name="Suspect is secured or neutralized" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-alley-kidnapping" name="Narrow Alley Kidnapping — Victim Present" sourceSection="DispatchEventActivity / Narrow Alley Kidnapping Suspect + VictimPresent" sourceLines="1254-1307" expectedBehavior="The Player responds to a kidnapping suspect in a narrow alley with the victim present and follows the documented rescue and suspect-resolution flow.">
+      <ExpectedSteps>
+        <Step name="Victim response begins" categories="POLICE_DISPATCH_VICTIM_RESPONSE_STARTED" />
+        <Step name="Scene participants are prepared" categories="POLICE_DISPATCH_SCENE_ENTITIES_CREATED|POLICE_DISPATCH_SCENE_PARTICIPANT_CREATED" />
+        <Step name="Player investigates and resolves the suspect" categories="POLICE_DISPATCH_PLAYER_HANDCUFF_COMPLETED|POLICE_DISPATCH_SUSPECT_FATAL_INJURY|POLICE_DISPATCH_PURSUIT_MOVEMENT_CONFIRMED" />
+        <Step name="Dispatch reaches a terminal completion record" categories="POLICE_DISPATCH_COMPLETED|POLICE_DISPATCH_TERMINAL" />
+      </ExpectedSteps>
+    </Branch>
+    <Branch id="dispatch-one-suspect-transport" name="One Suspect — Escort and Transport" sourceSection="Player Escort and Transport Convoy Gameplay / One Suspect on the Dispatch Activity" sourceLines="1308-1369" skipCommonSteps="true" expectedBehavior="After a single suspect is secured, the documented physical escort, loading, transport and Station handoff occur. The report distinguishes the Player's Utility route from an external Transport Escort route." flowConnection="Entry condition: one living suspect is physically secured in the active Dispatch before transport is requested. This test follows custody through Station handoff. If the optional Prison choice appears, continue with Custody — Optional Prison Convoy Decision.">
+      <ExpectedRoutes>
+        <Route name="Player transports in the selected Police Utility" selectOn="POLICE_CUSTODY_PLAYER_VEHICLE_SELECTED">
+          <Step name="Dispatch custody begins" categories="POLICE_CUSTODY_STARTED" />
+          <Step name="Player's Police Utility is selected" categories="POLICE_CUSTODY_PLAYER_VEHICLE_SELECTED" />
+          <Step name="Player escort begins" categories="POLICE_CONVOY_PLAYER_ESCORT_STARTED|POLICE_CONVOY_PLAYER_PRISONER_LOAD_REQUESTED" />
+          <Step name="Prisoner is physically loaded" categories="POLICE_CONVOY_PRISONER_LOADED" />
+          <Step name="Station handoff is physically confirmed" categories="POLICE_CONVOY_STATION_HANDOFF_CONFIRMED|POLICE_CONVOY_DISPATCH_CREW_STATION_HANDOFF_COMPLETED" />
+        </Route>
+        <Route name="External Transport Escort collects the suspect" selectOn="POLICE_CONVOY_TRANSPORT_STAGED">
+          <Step name="Dispatch custody begins" categories="POLICE_CUSTODY_STARTED" />
+          <Step name="External Transport Escort is staged" categories="POLICE_CONVOY_TRANSPORT_STAGED" />
+          <Step name="Transport is ready for custody" categories="POLICE_CONVOY_TRANSPORT_READY" />
+          <Step name="Escort begins physical movement" categories="POLICE_CONVOY_ESCORT_STARTED|POLICE_CONVOY_ESCORT_MOVEMENT_STARTED" />
+          <Step name="Prisoner is physically loaded" categories="POLICE_CONVOY_PRISONER_LOADED" />
+          <Step name="Station handoff is physically confirmed" categories="POLICE_CONVOY_STATION_HANDOFF_CONFIRMED|POLICE_CONVOY_DISPATCH_CREW_STATION_HANDOFF_COMPLETED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
+    <Branch id="dispatch-group-suspect-transport" name="Two to Three Suspects — Group Escort and Transport" sourceSection="Player Escort and Transport Convoy Gameplay / TwotoThreeDispatchSuspectofCompliant/FledPursuitfromFootScenario" sourceLines="1370-1410" skipCommonSteps="true" expectedBehavior="After two or three suspects are secured, Police officers physically escort and load the group, then complete the documented transport and Station handoff." flowConnection="Entry condition: two or three living suspects are physically secured in the active Dispatch before transport is requested. This test follows group custody through Station handoff. If the optional Prison choice appears, continue with Custody — Optional Prison Convoy Decision.">
+      <ExpectedRoutes>
+        <Route name="Player and Police officers transport the group" selectOn="POLICE_CUSTODY_PLAYER_VEHICLE_SELECTED">
+          <Step name="Group custody begins" categories="POLICE_CUSTODY_STARTED|POLICE_CONVOY_DISPATCH_GROUP_PICKUP_PLAN_READY" />
+          <Step name="Player's Police Utility is selected" categories="POLICE_CUSTODY_PLAYER_VEHICLE_SELECTED" />
+          <Step name="Group escort begins" categories="POLICE_CONVOY_PLAYER_ESCORT_STARTED|POLICE_CONVOY_ESCORT_STARTED|POLICE_CONVOY_ESCORT_MOVEMENT_STARTED" />
+          <Step name="Group prisoners are loaded" categories="POLICE_CONVOY_PRISONER_LOADED|POLICE_CONVOY_DISPATCH_GROUP_PICKUP_ARRIVED" />
+          <Step name="Station group handoff is confirmed" categories="POLICE_CONVOY_STATION_HANDOFF_CONFIRMED|POLICE_CONVOY_DISPATCH_CREW_STATION_HANDOFF_COMPLETED" />
+        </Route>
+        <Route name="External Transport Escort collects the group" selectOn="POLICE_CONVOY_TRANSPORT_STAGED">
+          <Step name="Group custody begins" categories="POLICE_CUSTODY_STARTED|POLICE_CONVOY_DISPATCH_GROUP_PICKUP_PLAN_READY" />
+          <Step name="External Transport Escort is staged" categories="POLICE_CONVOY_TRANSPORT_STAGED" />
+          <Step name="Group transport is ready" categories="POLICE_CONVOY_TRANSPORT_READY" />
+          <Step name="Group escort movement begins" categories="POLICE_CONVOY_ESCORT_STARTED|POLICE_CONVOY_ESCORT_MOVEMENT_STARTED" />
+          <Step name="Group prisoners are loaded" categories="POLICE_CONVOY_PRISONER_LOADED" />
+          <Step name="Station group handoff is confirmed" categories="POLICE_CONVOY_STATION_HANDOFF_CONFIRMED|POLICE_CONVOY_DISPATCH_CREW_STATION_HANDOFF_COMPLETED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
+    <Branch id="dispatch-prison-convoy-continuation" name="Custody — Optional Prison Convoy Decision" sourceSection="DispatchEventActivity / Player Escort and Transport Convoy Gameplay / Optional Prison continuation" sourceLines="1341-1347;1360-1363;1398-1404" skipCommonSteps="true" expectedBehavior="After Station custody, the Player receives the documented Prison Convoy choice. The report distinguishes accepted transport and completed Prison handoff from a documented decline and Dispatch closure." flowConnection="Entry condition: the one-suspect or group custody test confirmed Station handoff and the Prison decision is offered. Accept to follow the physical Prison handoff route; decline to follow the documented Dispatch closure and return to Police Duty.">
+      <ExpectedRoutes>
+        <Route name="Player accepts Prison Convoy" selectOn="POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_ACCEPTED">
+          <Step name="Prison transport decision becomes available" categories="POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_CHOICE_READY|POLICE_CONVOY_REQUEST_STARTED" />
+          <Step name="Player accepts Prison transport" categories="POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_ACCEPTED" />
+          <Step name="Prisoner is secured inside the transport" categories="POLICE_CONVOY_PRISONER_LOADED" />
+          <Step name="Prison handoff is physically confirmed" categories="POLICE_CONVOY_PRISON_HANDOFF_CONFIRMED" />
+        </Route>
+        <Route name="Player declines Prison Convoy" selectOn="POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_DECLINED">
+          <Step name="Prison transport decision becomes available" categories="POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_CHOICE_READY|POLICE_CONVOY_REQUEST_STARTED" />
+          <Step name="Player declines Prison transport" categories="POLICE_CONVOY_DISPATCH_STATION_TRANSPORT_DECLINED" />
+          <Step name="Dispatch closes and Police Duty continues" categories="POLICE_CONVOY_REQUEST_CLOSED|POLICE_DISPATCH_COMPLETED" />
+        </Route>
+      </ExpectedRoutes>
+    </Branch>
   </TestEvent>
-  <TestEvent id="crime-activity" name="Crime Activity Event" sourceSection="CrimeEventActivity" sourceLines="1413" />
-  <TestEvent id="convoy-activity" name="Convoy Activity Event" sourceSection="ConvoyActivity" sourceLines="1411" />
+  <TestEvent id="crime-activity" name="Crime Activity Event" sourceSection="CrimeEventActivity" sourceLines="1410" flowConnection="No detailed test sequence or follow-on branch is specified in the official Gameplay Branch or Flow documents. Capture evidence only; Crime Activity remains outside this implementation scope.">
+    <Branch id="crime-observation-only" name="Crime Activity — Observation Only" sourceSection="CrimeEventActivity" sourceLines="1410" expectedBehavior="The official Branch and Flow documents name Crime Activity but specify no expected test sequence. Capture available evidence only; this Developer test does not alter or analyze ownership of the Crime Activity gameplay system." />
+  </TestEvent>
+  <TestEvent id="convoy-activity" name="Convoy Activity Event" sourceSection="ConvoyActivity" sourceLines="1408" flowConnection="No detailed standalone test sequence or follow-on branch is specified in the official documents. Dispatch custody transport is tested in its own linked Dispatch branches; standalone Convoy remains unchanged.">
+    <Branch id="convoy-observation-only" name="Standalone Convoy Activity — Observation Only" sourceSection="ConvoyActivity" sourceLines="1408" expectedBehavior="The official Branch and Flow documents name standalone Convoy Activity but specify no expected test sequence. Capture available evidence only; documented Dispatch custody transport remains covered by its own Dispatch branches." />
+  </TestEvent>
 </LSDeveloperBranches>

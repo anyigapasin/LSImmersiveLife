@@ -54,8 +54,32 @@ namespace LSImmersiveLife
         private NativeItem _captureBranchTestItem;
         private NativeItem _showCheckpointTestItem;
         private NativeItem _endCheckpointTaskItem;
+        private NativeMenu _testResultMenu;
+        private NativeMenu _testTimelineMenu;
+        private NativeMenu _testUnknownMenu;
+        private NativeItem _testResultSummaryItem;
+        private readonly List<NativeItem> _testResultFields = new List<NativeItem>();
 
         internal NativeMenu Menu { get; private set; }
+
+        internal IEnumerable<NativeMenu> Menus
+        {
+            get
+            {
+                yield return Menu;
+                yield return _testResultMenu;
+                yield return _testTimelineMenu;
+                yield return _testUnknownMenu;
+            }
+        }
+
+        internal bool IsAnyMenuVisible
+        {
+            get { return Menu.Visible
+                || _testResultMenu.Visible
+                || _testTimelineMenu.Visible
+                || _testUnknownMenu.Visible; }
+        }
 
         internal LSImmersiveDeveloper(LSIMMERSIVEPATH paths, LSImmersiveLog log)
         {
@@ -80,7 +104,19 @@ namespace LSImmersiveLife
             Menu = LSImmersiveMenuFactory.Create(
                 "Developer",
                 "Inspect the Development Session");
+            _testResultMenu = LSImmersiveMenuFactory.Create(
+                "Developer Test Result",
+                "Review the captured test evidence");
+            _testTimelineMenu = LSImmersiveMenuFactory.Create(
+                "Evidence Timeline",
+                "First divergence and recent events");
+            _testUnknownMenu = LSImmersiveMenuFactory.Create(
+                "What Remains Unknown",
+                "Evidence not exposed by the runtime");
             Menu.NoItemsText = "Developer Mode is disabled in LSDeveloper.xml.";
+            _testResultMenu.NoItemsText = "Analyze a completed or active test to populate this report.";
+            _testTimelineMenu.NoItemsText = "No test evidence has been analyzed.";
+            _testUnknownMenu.NoItemsText = "No unknown evidence has been analyzed.";
             BuildMenu();
             LSDeveloperRuntime.Attach(this);
 
@@ -288,16 +324,55 @@ namespace LSImmersiveLife
 
             _captureBranchTestItem = AddAction(
                 "Capture and Conclude the Test",
-                "Capture the current test checkpoint for review.",
+                "Capture a final flow checkpoint and end the active test.",
                 CaptureCheckpoint);
             _showCheckpointTestItem = AddAction(
                 "Show Checkpoint Test",
-                "Show the human-readable result from the captured test.",
+                "Open the readable result for the latest captured or concluded test.",
                 AnalyzeCurrentTest);
             _endCheckpointTaskItem = AddAction(
                 "End the Checkpoint Task",
-                "End the active Developer observation session.",
-                delegate { EndTestInternal("Player ended the checkpoint task", true); });
+                "End the active Developer test without recording a final checkpoint.",
+                delegate { EndTestInternal("Player ended the test without a final checkpoint", true); });
+
+            _testResultSummaryItem = new NativeItem(
+                "Test Result: Not analyzed",
+                "Select Show Checkpoint Test to display the latest readable report.");
+            _testResultSummaryItem.Enabled = false;
+            _testResultMenu.Add(_testResultSummaryItem);
+
+            string[] reportFields =
+            {
+                "Test Event / Branch",
+                "Test ID",
+                "Runtime Session ID",
+                "Expected Event",
+                "Flow Connection",
+                "Observed Event",
+                "Actor",
+                "Owner System File",
+                "Target",
+                "State",
+                "Task",
+                "Physical Behavior",
+                "First Divergence",
+                "Source",
+                "Result"
+            };
+            foreach (string field in reportFields)
+            {
+                NativeItem row = new NativeItem(field, "No test result has been analyzed.");
+                row.Enabled = false;
+                _testResultFields.Add(row);
+                _testResultMenu.Add(row);
+            }
+
+            _testResultMenu.AddSubMenu(_testTimelineMenu);
+            _testResultMenu.AddSubMenu(_testUnknownMenu);
+            Menu.AddSubMenu(_testResultMenu);
+            _testTimelineMenu.Parent = _testResultMenu;
+            _testUnknownMenu.Parent = _testResultMenu;
+            _testResultMenu.Parent = Menu;
 
             if (testEvents.Length > 0)
                 UpdateBranchTestChoices(eventChoices[0]);
@@ -379,7 +454,7 @@ namespace LSImmersiveLife
 
             if (_activeTest != null)
             {
-                Notify("End the current Branch Test before starting another one.");
+                Notify("Conclude or end the current Branch Test before starting another one.");
                 return;
             }
 
@@ -441,8 +516,8 @@ namespace LSImmersiveLife
                 "TestId=" + _activeTest.TestId
                 + "; Checkpoint=" + checkpoint.Name
                 + "; RelevantActors=" + _activeTest.RelevantActors.Count.ToString(CultureInfo.InvariantCulture));
-            FlushEvidence("test checkpoint " + checkpoint.Name);
-            Notify(checkpoint.Name + " captured to LSDeveloperTrace.log.");
+            EndTestInternal("Player concluded the test at " + checkpoint.Name, false);
+            Notify("Test ended; final checkpoint saved. Select Show Checkpoint Test to review.");
         }
 
         private void EndTestInternal(string reason, bool notify)
@@ -468,7 +543,9 @@ namespace LSImmersiveLife
             _pendingFailureFlushUtc = DateTime.MinValue;
 
             if (notify)
-                Notify("Developer test ended. Choose Analyze Current Test to classify the evidence.");
+                Notify("Test ended. Select Show Checkpoint Test to review.");
+
+            RefreshMenuControls();
         }
 
         private void AnalyzeCurrentTest()
@@ -487,14 +564,17 @@ namespace LSImmersiveLife
             {
                 _lastAnalysis = AnalyzeSession(session);
                 WriteAnalysisReport(_lastAnalysis);
+                bool readableReportWritten = WriteHumanReadableReport(_lastAnalysis);
+                RefreshResultView(_lastAnalysis, readableReportWritten);
                 LogRuntime("DEVELOPER_TEST_ANALYZED", _lastAnalysis.Summary);
                 LogDebug("DEVELOPER_FIRST_DIVERGENCE", _lastAnalysis.FirstDivergence);
-                Notify(_lastAnalysis.ToNotification());
+                OpenResultView();
+                Notify(AnalysisNotification(readableReportWritten));
             }
             catch (Exception error)
             {
                 LogException("DEVELOPER_TEST_ANALYSIS_FAILED", error);
-                Notify("Developer test analysis failed; see LSDeveloperTrace.log and LSDebug.log.");
+                Notify("Test analysis could not be displayed. Check LSDebug.log for the error.");
             }
         }
 
@@ -1642,18 +1722,59 @@ namespace LSImmersiveLife
                 Event = session.Branch.EventName,
                 Branch = session.Branch.Name,
                 ExpectedBehavior = session.Branch.ExpectedBehavior,
+                FlowConnection = session.Branch.FlowConnection,
+                BranchSource = session.Branch.SourceSection + " lines " + session.Branch.SourceLines,
                 Events = events
             };
 
+            List<LSDeveloperExpectedStep> expectedSteps = session.Branch.Steps;
+            bool routeDecisionPending = false;
+            bool routeDecisionAmbiguous = false;
+            if (session.Branch.Routes.Count == 1)
+            {
+                LSDeveloperExpectedRoute route = session.Branch.Routes[0];
+                expectedSteps = route.Steps;
+                result.SelectedRoute = route.Name;
+            }
+            else if (session.Branch.Routes.Count > 1)
+            {
+                List<LSDeveloperExpectedRoute> observedRoutes = session.Branch.Routes
+                    .Where(route => route.SelectorCategories.Any(category => events.Any(trace =>
+                        string.Equals(trace.Category, category, StringComparison.OrdinalIgnoreCase))))
+                    .ToList();
+
+                if (observedRoutes.Count == 1)
+                {
+                    LSDeveloperExpectedRoute route = observedRoutes[0];
+                    expectedSteps = route.Steps;
+                    result.SelectedRoute = route.Name;
+                    result.ExpectedBehavior = (result.ExpectedBehavior ?? string.Empty)
+                        + " Observed documented outcome: " + route.Name + ".";
+                }
+                else
+                {
+                    expectedSteps = CommonRoutePrefix(session.Branch.Routes);
+                    routeDecisionPending = observedRoutes.Count == 0;
+                    routeDecisionAmbiguous = observedRoutes.Count > 1;
+                    result.SelectedRoute = routeDecisionPending
+                        ? "Not determined; the documented outcome marker was not observed."
+                        : "Ambiguous; multiple documented outcome markers were observed.";
+                    result.ExpectedBehavior = (result.ExpectedBehavior ?? string.Empty)
+                        + " Documented outcomes: "
+                        + string.Join("; ", session.Branch.Routes.Select(route => route.Name).ToArray()) + ".";
+                }
+            }
+
+            result.ExpectedStepCount = expectedSteps.Count;
             int expectedIndex = 0;
             LSDeveloperTraceEvent firstProblem = null;
             for (int i = 0; i < events.Count; i++)
             {
                 LSDeveloperTraceEvent trace = events[i];
-                if (expectedIndex < session.Branch.Steps.Count
-                    && session.Branch.Steps[expectedIndex].Matches(trace))
+                if (expectedIndex < expectedSteps.Count
+                    && expectedSteps[expectedIndex].Matches(trace))
                 {
-                    result.MatchedSteps.Add(session.Branch.Steps[expectedIndex].Name);
+                    result.MatchedSteps.Add(expectedSteps[expectedIndex].Name);
                     expectedIndex++;
                     continue;
                 }
@@ -1664,14 +1785,15 @@ namespace LSImmersiveLife
                         || IsSerious(trace)))
                 {
                     firstProblem = trace;
-                    result.FirstProblemStep = expectedIndex < session.Branch.Steps.Count
-                        ? session.Branch.Steps[expectedIndex].Name
+                    result.FirstProblemStep = expectedIndex < expectedSteps.Count
+                        ? expectedSteps[expectedIndex].Name
                         : "post-branch observation";
                 }
             }
 
             if (firstProblem != null)
             {
+                result.FirstDivergenceEvent = firstProblem;
                 result.FirstDivergence = DescribeFirstProblem(firstProblem, result.FirstProblemStep, session);
                 result.Classification = firstProblem.EventKind == "TaskConflict"
                     || firstProblem.EventKind == "PhysicalMismatch"
@@ -1680,18 +1802,30 @@ namespace LSImmersiveLife
                     : "CONFIRMED_FAILURE_EVIDENCE";
                 result.Inferences.Add("The first divergence is anchored to the earliest serious/conflict/mismatch event in the bounded trace, not the last error.");
             }
-            else if (expectedIndex < session.Branch.Steps.Count)
+            else if (routeDecisionAmbiguous)
             {
-                string missing = session.Branch.Steps[expectedIndex].Name;
+                result.FirstDivergence = "More than one documented outcome marker was observed; the expected route cannot be selected safely.";
+                result.Classification = "UNKNOWN";
+                result.Unknown.Add("Alternative route selection is ambiguous. Review the route markers and timeline; Developer Mode did not choose a gameplay outcome.");
+            }
+            else if (expectedIndex < expectedSteps.Count)
+            {
+                string missing = expectedSteps[expectedIndex].Name;
                 result.FirstDivergence = "Expected step was not confirmed before the test ended or analysis was requested: " + missing + ".";
                 result.Classification = session.IsEnded ? "OBSERVED_INCOMPLETE" : "UNKNOWN";
                 result.Inferences.Add("The trace contains no serious event proving the cause of the missing step.");
             }
-            else if (session.Branch.Steps.Count == 0)
+            else if (routeDecisionPending)
             {
-                result.FirstDivergence = "This documented Branch Test does not yet have a runtime step map, so the available evidence cannot be marked as a pass.";
+                result.FirstDivergence = "The shared documented steps were observed, but no route-specific outcome was captured; the test ended before the documented branch could be compared.";
+                result.Classification = session.IsEnded ? "OBSERVED_INCOMPLETE" : "UNKNOWN";
+                result.Unknown.Add("The documented flow has multiple outcomes. No route-selection category was recorded, so no outcome was assumed.");
+            }
+            else if (expectedSteps.Count == 0)
+            {
+                result.FirstDivergence = "No documented expected route is attached to this selection, so the captured evidence cannot be compared as a pass or failure.";
                 result.Classification = session.IsEnded ? "INCOMPLETE" : "UNKNOWN";
-                result.Unknown.Add("No expected-step mapping is attached to this documented branch. Review the captured evidence without treating it as a pass or a gameplay failure.");
+                result.Unknown.Add("The available official documents do not provide an expected route for this selection. Review captured evidence without treating it as a pass or gameplay failure.");
             }
             else
             {
@@ -1738,6 +1872,27 @@ namespace LSImmersiveLife
                 + "; Events=" + events.Count.ToString(CultureInfo.InvariantCulture)
                 + "; FirstDivergence=" + result.FirstDivergence;
             return result;
+        }
+
+        private static List<LSDeveloperExpectedStep> CommonRoutePrefix(
+            IList<LSDeveloperExpectedRoute> routes)
+        {
+            List<LSDeveloperExpectedStep> prefix = new List<LSDeveloperExpectedStep>();
+            if (routes == null || routes.Count == 0)
+                return prefix;
+
+            List<LSDeveloperExpectedStep> first = routes[0].Steps;
+            for (int i = 0; i < first.Count; i++)
+            {
+                LSDeveloperExpectedStep step = first[i];
+                bool shared = routes.Skip(1).All(route => route.Steps.Count > i
+                    && string.Equals(route.Steps[i].Name, step.Name, StringComparison.OrdinalIgnoreCase)
+                    && route.Steps[i].Categories.SequenceEqual(step.Categories, StringComparer.OrdinalIgnoreCase));
+                if (!shared)
+                    break;
+                prefix.Add(step);
+            }
+            return prefix;
         }
 
         private string DescribeFirstProblem(
@@ -1839,6 +1994,502 @@ namespace LSImmersiveLife
             {
                 LogDebug("DEVELOPER_ANALYSIS_REPORT_WRITE_FAILED", error.Message);
             }
+        }
+
+        private void RefreshResultView(
+            LSDeveloperAnalysisResult result,
+            bool readableReportWritten)
+        {
+            if (result == null)
+                return;
+
+            List<LSDeveloperTraceEvent> events = result.Events ?? new List<LSDeveloperTraceEvent>();
+            LSDeveloperTraceEvent focus = SelectReportEvent(result, events);
+            LSDeveloperTraceEvent stateEvidence = LatestReportEvent(events, focus,
+                item => !string.IsNullOrWhiteSpace(item.StateBefore)
+                    || !string.IsNullOrWhiteSpace(item.StateAfter));
+            LSDeveloperTraceEvent taskEvidence = LatestReportEvent(events, focus,
+                item => !string.IsNullOrWhiteSpace(item.TaskBefore)
+                    || !string.IsNullOrWhiteSpace(item.TaskAfter));
+            LSDeveloperTraceEvent physicalEvidence = LatestReportEvent(events, focus,
+                item => !string.IsNullOrWhiteSpace(item.PhysicalBehavior)
+                    || !string.IsNullOrWhiteSpace(item.TaskStatus)
+                    || !float.IsNaN(item.MovementDelta)
+                    || item.HasPosition);
+            string runtimeSessionId = events.Select(item => item.RuntimeSessionId)
+                .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item)) ?? "Not recorded";
+
+            _testResultSummaryItem.Title = "Test Result: " + HumanResultLabel(result.Classification);
+            _testResultSummaryItem.Description = HumanResult(result.Classification)
+                + (readableReportWritten
+                    ? " A compact copy is saved to Plugin\\LSDeveloperReport.md."
+                    : " The optional Plugin note was not written.");
+
+            string[] values =
+            {
+                ReportText(result.Event, 100) + " / " + ReportText(result.Branch, 160),
+                ReportText(result.TestId, 100),
+                ReportText(runtimeSessionId, 100),
+                ReportText(result.ExpectedBehavior, 360),
+                ReportText(result.FlowConnection, 360),
+                DescribeReportObservation(focus),
+                DescribeReportEntity(focus == null ? 0 : focus.ActorHandle,
+                    focus == null ? string.Empty : focus.ActorModel),
+                DescribeReportOwner(focus),
+                DescribeReportTarget(focus),
+                DescribeReportTransition(stateEvidence, true),
+                DescribeReportTransition(taskEvidence, false),
+                DescribeReportPhysical(physicalEvidence),
+                DescribeReportDivergence(result, focus),
+                DescribeReportSource(result, focus),
+                HumanResult(result.Classification)
+            };
+            for (int i = 0; i < _testResultFields.Count; i++)
+                _testResultFields[i].Description = ReportText(values[i], 360);
+
+            _testTimelineMenu.Clear();
+            List<LSDeveloperTraceEvent> timeline = LastItems(events, 12);
+            if (focus != null && !timeline.Contains(focus))
+            {
+                if (timeline.Count >= 12)
+                    timeline[0] = focus;
+                else
+                    timeline.Add(focus);
+            }
+            timeline = timeline.OrderBy(item => item.Sequence).ToList();
+            if (timeline.Count == 0)
+                AddReadOnlyReportItem(_testTimelineMenu, "No captured events",
+                    "No trace events were recorded for this test.");
+            else
+            {
+                foreach (LSDeveloperTraceEvent trace in timeline)
+                    AddReadOnlyReportItem(
+                        _testTimelineMenu,
+                        FormatTime(trace.TimestampUtc) + " — " + ReadableEventKind(trace.EventKind),
+                        DescribeReadableTraceEvent(trace));
+            }
+
+            _testUnknownMenu.Clear();
+            int unknownCount = 0;
+            foreach (string unknown in result.Unknown.Take(7))
+            {
+                unknownCount++;
+                AddReadOnlyReportItem(
+                    _testUnknownMenu,
+                    "Unknown " + unknownCount.ToString(CultureInfo.InvariantCulture),
+                    ReportText(unknown, 360));
+            }
+            if (result.ExpectedStepCount == 0)
+            {
+                unknownCount++;
+                AddReadOnlyReportItem(
+                    _testUnknownMenu,
+                    "Expected flow not mapped",
+                    "No expected route is specified for this selection. Captured evidence remains reviewable, but no documented pass/failure comparison is available.");
+            }
+            if (unknownCount == 0)
+                AddReadOnlyReportItem(_testUnknownMenu, "No extra unknowns recorded",
+                    "This means the analyzer emitted no additional unknown notes; it is not proof every game-level cause is known.");
+        }
+
+        private void OpenResultView()
+        {
+            foreach (NativeMenu menu in Menus)
+            {
+                if (menu != null)
+                    menu.Visible = false;
+            }
+            _testResultMenu.Visible = true;
+        }
+
+        private static void AddReadOnlyReportItem(NativeMenu menu, string title, string description)
+        {
+            NativeItem item = new NativeItem(ReportText(title, 100), ReportText(description, 420));
+            item.Enabled = false;
+            menu.Add(item);
+        }
+
+        private string AnalysisNotification(bool readableReportWritten)
+        {
+            return readableReportWritten
+                ? "Test result is open. Readable note saved to Plugin\\LSDeveloperReport.md."
+                : "Test result is open. Readable note was not saved; check Developer settings and LSDebug.log.";
+        }
+
+        private bool WriteHumanReadableReport(LSDeveloperAnalysisResult result)
+        {
+            if (!_settings.WriteHumanReadableReport
+                || result == null
+                || string.IsNullOrWhiteSpace(_paths.DeveloperReportPath))
+                return false;
+
+            List<LSDeveloperTraceEvent> events = result.Events ?? new List<LSDeveloperTraceEvent>();
+            LSDeveloperTraceEvent focus = SelectReportEvent(result, events);
+            LSDeveloperTraceEvent stateEvidence = LatestReportEvent(events, focus,
+                item => !string.IsNullOrWhiteSpace(item.StateBefore)
+                    || !string.IsNullOrWhiteSpace(item.StateAfter));
+            LSDeveloperTraceEvent taskEvidence = LatestReportEvent(events, focus,
+                item => !string.IsNullOrWhiteSpace(item.TaskBefore)
+                    || !string.IsNullOrWhiteSpace(item.TaskAfter));
+            LSDeveloperTraceEvent physicalEvidence = LatestReportEvent(events, focus,
+                item => !string.IsNullOrWhiteSpace(item.PhysicalBehavior)
+                    || !string.IsNullOrWhiteSpace(item.TaskStatus)
+                    || !float.IsNaN(item.MovementDelta)
+                    || item.HasPosition);
+            string runtimeSessionId = events.Select(item => item.RuntimeSessionId)
+                .FirstOrDefault(item => !string.IsNullOrWhiteSpace(item)) ?? "Not recorded";
+
+            StringBuilder output = new StringBuilder();
+            output.AppendLine("# LS Immersive Life — Developer Test Note");
+            output.AppendLine();
+            output.AppendLine("**Generated:** " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm:ss 'UTC'", CultureInfo.InvariantCulture));
+            output.AppendLine("**Test ID:** " + ReportText(result.TestId, 100));
+            output.AppendLine("**Runtime Session ID:** " + ReportText(runtimeSessionId, 100));
+            output.AppendLine("**Test Event / Branch:** " + ReportText(result.Event, 100)
+                + " / " + ReportText(result.Branch, 160));
+            output.AppendLine();
+            output.AppendLine("| Inspection field | Test result |");
+            output.AppendLine("| --- | --- |");
+            AddReportRow(output, "Expected Event", ReportText(result.ExpectedBehavior, 700));
+            AddReportRow(output, "Flow Connection", ReportText(result.FlowConnection, 500));
+            AddReportRow(output, "Observed Route", ReportText(result.SelectedRoute, 240));
+            AddReportRow(output, "Observed Event", DescribeReportObservation(focus));
+            AddReportRow(output, "Actor", DescribeReportEntity(
+                focus == null ? 0 : focus.ActorHandle,
+                focus == null ? string.Empty : focus.ActorModel));
+            AddReportRow(output, "Owner System File", DescribeReportOwner(focus));
+            AddReportRow(output, "Target", DescribeReportTarget(focus));
+            AddReportRow(output, "State", DescribeReportTransition(stateEvidence, true));
+            AddReportRow(output, "Task", DescribeReportTransition(taskEvidence, false));
+            AddReportRow(output, "Physical Behavior", DescribeReportPhysical(physicalEvidence));
+            AddReportRow(output, "First Divergence", DescribeReportDivergence(result, focus));
+            AddReportRow(output, "Source", DescribeReportSource(result, focus));
+            AddReportRow(output, "Result", HumanResult(result.Classification));
+            output.AppendLine();
+            output.AppendLine("**How to read this note:** It reports only evidence exposed by the current runtime. “Unknown” means the evidence was not available; it is not a guessed cause. Developer Mode observes gameplay and does not change it.");
+            output.AppendLine();
+            output.AppendLine("## Evidence timeline");
+            output.AppendLine();
+            output.AppendLine("Showing up to 20 recorded events. The first divergence is retained when one was directly observed.");
+            List<LSDeveloperTraceEvent> timeline = LastItems(events, 20);
+            if (focus != null && !timeline.Contains(focus))
+            {
+                if (timeline.Count >= 20)
+                    timeline[0] = focus;
+                else
+                    timeline.Add(focus);
+            }
+            timeline = timeline.OrderBy(item => item.Sequence).ToList();
+            if (timeline.Count == 0)
+                output.AppendLine("- No trace events were captured for this test.");
+            else
+            {
+                foreach (LSDeveloperTraceEvent trace in timeline)
+                    output.AppendLine("- **" + FormatTime(trace.TimestampUtc) + "** — "
+                        + ReportText(DescribeReadableTraceEvent(trace), 520));
+            }
+
+            output.AppendLine();
+            output.AppendLine("## What remains unknown");
+            output.AppendLine();
+            if (result.Unknown.Count == 0)
+                output.AppendLine("- No additional unknowns were emitted by the analyzer. This is not proof that every game-level cause is known.");
+            else
+            {
+                foreach (string unknown in result.Unknown.Take(8))
+                    output.AppendLine("- " + ReportText(unknown, 320));
+                if (result.Unknown.Count > 8)
+                    output.AppendLine("- Additional unknown notes were omitted to keep this report short.");
+            }
+            if (result.ExpectedStepCount == 0)
+            {
+                output.AppendLine("- No expected route is specified for this selection. The report can describe captured events and confirmed anomalies, but cannot compare a documented complete flow.");
+            }
+
+            try
+            {
+                string directory = Path.GetDirectoryName(_paths.DeveloperReportPath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                    Directory.CreateDirectory(directory);
+                // An explicit Analyze action replaces the previous note rather
+                // than appending, so the human-readable file stays bounded.
+                File.WriteAllText(_paths.DeveloperReportPath, output.ToString(), new UTF8Encoding(false));
+                return true;
+            }
+            catch (Exception error)
+            {
+                LogDebug("DEVELOPER_HUMAN_REPORT_WRITE_FAILED", error.Message);
+                return false;
+            }
+        }
+
+        private static LSDeveloperTraceEvent SelectReportEvent(
+            LSDeveloperAnalysisResult result,
+            List<LSDeveloperTraceEvent> events)
+        {
+            if (result != null && result.FirstDivergenceEvent != null)
+                return result.FirstDivergenceEvent;
+            return events.LastOrDefault(item => item.EventKind != "ObservedState")
+                ?? events.LastOrDefault();
+        }
+
+        private static LSDeveloperTraceEvent LatestReportEvent(
+            List<LSDeveloperTraceEvent> events,
+            LSDeveloperTraceEvent focus,
+            Func<LSDeveloperTraceEvent, bool> predicate)
+        {
+            IEnumerable<LSDeveloperTraceEvent> candidates = events ?? new List<LSDeveloperTraceEvent>();
+            if (focus != null)
+            {
+                if (focus.ActorHandle <= 0)
+                    return predicate(focus) ? focus : null;
+                candidates = candidates.Where(item => item.ActorHandle == focus.ActorHandle);
+                if (focus.Sequence > 0)
+                    candidates = candidates.Where(item => item.Sequence <= focus.Sequence);
+            }
+            return candidates.LastOrDefault(predicate);
+        }
+
+        private static void AddReportRow(StringBuilder output, string field, string value)
+        {
+            output.Append("| ").Append(field).Append(" | ")
+                .Append(ReportCell(value)).AppendLine(" |");
+        }
+
+        private static string ReportCell(string value)
+        {
+            return ReportText(value, 700).Replace("|", "\\|");
+        }
+
+        private static string ReportText(string value, int maximumLength)
+        {
+            string normalized = (value ?? string.Empty)
+                .Replace("\r", " ")
+                .Replace("\n", " ")
+                .Trim();
+            return string.IsNullOrWhiteSpace(normalized)
+                ? "Not recorded"
+                : Limit(normalized, maximumLength);
+        }
+
+        private static string HumanResultLabel(string classification)
+        {
+            if (string.Equals(classification, "PASSED", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(classification, "PASS", StringComparison.OrdinalIgnoreCase))
+                return "Passed";
+            if (string.Equals(classification, "CONFIRMED_FAILURE_EVIDENCE", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(classification, "CONFIRMED_ANOMALY", StringComparison.OrdinalIgnoreCase))
+                return "Failed";
+            if (string.Equals(classification, "INCOMPLETE", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(classification, "OBSERVED_INCOMPLETE", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(classification, "NO_DIVERGENCE_OBSERVED", StringComparison.OrdinalIgnoreCase))
+                return "Incomplete";
+            return "Unknown";
+        }
+
+        private static string HumanResult(string classification)
+        {
+            string label = HumanResultLabel(classification);
+            switch (label)
+            {
+                case "Passed":
+                    return "Passed — the mapped checks were satisfied; verify the required physical terminal outcome in-game.";
+                case "Failed":
+                    return "Failed — a failure or anomaly was directly observed; its hidden cause may remain unknown.";
+                case "Incomplete":
+                    return "Incomplete — the captured evidence does not prove the full expected physical outcome.";
+                default:
+                    return "Unknown — the available evidence is not enough to classify the behavior.";
+            }
+        }
+
+        private static string DescribeReportObservation(LSDeveloperTraceEvent trace)
+        {
+            if (trace == null)
+                return "No direct divergence event was recorded.";
+            string description = ReadableEventKind(trace.EventKind);
+            if (!string.IsNullOrWhiteSpace(trace.Reason))
+                description += ": " + trace.Reason;
+            if (!string.IsNullOrWhiteSpace(trace.ExpectedNext))
+                description += " Expected next: " + trace.ExpectedNext + ".";
+            return ReportText(description, 700);
+        }
+
+        private static string DescribeReportEntity(int handle, string model)
+        {
+            if (handle <= 0)
+                return "No actor handle was recorded.";
+            return "Entity handle " + handle.ToString(CultureInfo.InvariantCulture)
+                + (string.IsNullOrWhiteSpace(model)
+                    ? "; model hash not recorded; entity type not exposed."
+                    : "; model hash " + ReportText(model, 80) + "; entity type not exposed.");
+        }
+
+        private static string DescribeReportOwner(LSDeveloperTraceEvent trace)
+        {
+            if (trace == null)
+                return "Owner and source file were not exposed in the captured evidence.";
+            string owner = ValueOrUnknown(trace.Owner);
+            string file = string.IsNullOrWhiteSpace(trace.SourceFile)
+                ? "source file not recorded"
+                : trace.SourceFile;
+            string member = string.IsNullOrWhiteSpace(trace.SourceMember)
+                ? string.Empty
+                : " / " + trace.SourceMember;
+            return owner + " — " + file + member;
+        }
+
+        private static string DescribeReportTarget(LSDeveloperTraceEvent trace)
+        {
+            if (trace == null)
+                return "No target was recorded.";
+            string target = trace.TargetHandle <= 0
+                ? "Target handle not recorded"
+                : "Entity handle " + trace.TargetHandle.ToString(CultureInfo.InvariantCulture)
+                    + (string.IsNullOrWhiteSpace(trace.TargetModel)
+                        ? "; model hash not recorded"
+                        : "; model hash " + ReportText(trace.TargetModel, 80));
+            if (trace.VehicleHandle > 0)
+                target += "; related vehicle handle " + trace.VehicleHandle.ToString(CultureInfo.InvariantCulture)
+                    + (string.IsNullOrWhiteSpace(trace.VehicleModel)
+                        ? " (model hash not recorded)"
+                        : " (model hash " + ReportText(trace.VehicleModel, 80) + ")");
+            return target + ".";
+        }
+
+        private static string DescribeReportTransition(LSDeveloperTraceEvent trace, bool state)
+        {
+            if (trace == null)
+                return state ? "Logical state was not recorded." : "Task was not recorded.";
+            string before = state ? trace.StateBefore : trace.TaskBefore;
+            string after = state ? trace.StateAfter : trace.TaskAfter;
+            if (!string.IsNullOrWhiteSpace(before) && !string.IsNullOrWhiteSpace(after))
+                return ReportText(before, 180) + " → " + ReportText(after, 180);
+            string value = string.IsNullOrWhiteSpace(after) ? before : after;
+            return string.IsNullOrWhiteSpace(value)
+                ? (state ? "Logical state was not recorded." : "Task was not recorded.")
+                : "Latest recorded value: " + ReportText(value, 360);
+        }
+
+        private static string DescribeReportPhysical(LSDeveloperTraceEvent trace)
+        {
+            if (trace == null)
+                return "No physical sample was attached to the relevant event.";
+            List<string> evidence = new List<string>();
+            if (!string.IsNullOrWhiteSpace(trace.PhysicalBehavior))
+                evidence.Add(trace.PhysicalBehavior);
+            if (!string.IsNullOrWhiteSpace(trace.TaskStatus))
+                evidence.Add("GTA task status: " + trace.TaskStatus);
+            if (!float.IsNaN(trace.TargetDistance))
+                evidence.Add("target distance " + trace.TargetDistance.ToString("0.0", CultureInfo.InvariantCulture) + " m");
+            if (!float.IsNaN(trace.MovementDelta))
+                evidence.Add("sampled movement " + trace.MovementDelta.ToString("0.0", CultureInfo.InvariantCulture) + " m");
+            if (trace.HasPosition)
+                evidence.Add("position " + trace.Position);
+            if (evidence.Count == 0 && !string.IsNullOrWhiteSpace(trace.Reason))
+                evidence.Add(trace.Reason);
+            return evidence.Count == 0
+                ? "No physical behavior was directly recorded for the relevant event."
+                : string.Join("; ", evidence.ToArray());
+        }
+
+        private static string DescribeReportDivergence(
+            LSDeveloperAnalysisResult result,
+            LSDeveloperTraceEvent focus)
+        {
+            if (result == null)
+                return "Analysis result unavailable.";
+            if (focus != null)
+            {
+                if (focus.EventKind == "BehaviorStall")
+                    return "The expected continuation did not begin during the observed stall window. The trace does not prove GTA's hidden reason for not continuing.";
+                if (focus.EventKind == "PhysicalMismatch")
+                    return "The sampled physical behavior did not match the reported logical state: "
+                        + ReportText(focus.StateAfter, 140) + " / " + ReportText(focus.PhysicalBehavior, 260) + ".";
+                if (focus.EventKind == "TaskConflict")
+                    return "Two task owners issued a conflict for the same actor. Developer Mode recorded the conflict and did not resolve it.";
+                return ReadableEventKind(focus.EventKind)
+                    + (string.IsNullOrWhiteSpace(focus.Reason) ? " was recorded." : ": " + focus.Reason);
+            }
+            if (result.ExpectedStepCount == 0)
+                return "No expected route is specified for this selection, so there is no documented step to compare.";
+            if (string.Equals(result.Classification, "NO_DIVERGENCE_OBSERVED", StringComparison.OrdinalIgnoreCase))
+                return "No divergence was observed in the captured evidence; this is not a pass unless the expected flow and physical completion were confirmed.";
+            return ReportText(result.FirstDivergence, 600);
+        }
+
+        private static string DescribeReportSource(
+            LSDeveloperAnalysisResult result,
+            LSDeveloperTraceEvent trace)
+        {
+            string document = result == null ? string.Empty : result.BranchSource;
+            string runtime = trace == null || string.IsNullOrWhiteSpace(trace.SourceFile)
+                ? "runtime source file/member not recorded"
+                : trace.SourceFile + (string.IsNullOrWhiteSpace(trace.SourceMember)
+                    ? string.Empty : " / " + trace.SourceMember);
+            return "Gameplay Branch: " + ReportText(document, 250)
+                + "; runtime evidence: " + runtime + ".";
+        }
+
+        private static string DescribeReadableTraceEvent(LSDeveloperTraceEvent trace)
+        {
+            if (trace == null)
+                return "Unknown event.";
+            StringBuilder description = new StringBuilder(ReadableEventKind(trace.EventKind));
+            if (!string.IsNullOrWhiteSpace(trace.Owner))
+                description.Append("; owner ").Append(trace.Owner);
+            if (trace.ActorHandle > 0)
+                description.Append("; actor ").Append(trace.ActorHandle.ToString(CultureInfo.InvariantCulture));
+            if (trace.TargetHandle > 0)
+                description.Append("; target ").Append(trace.TargetHandle.ToString(CultureInfo.InvariantCulture));
+            if (!string.IsNullOrWhiteSpace(trace.StateAfter))
+                description.Append("; state ").Append(trace.StateAfter);
+            if (!string.IsNullOrWhiteSpace(trace.TaskAfter))
+                description.Append("; task ").Append(trace.TaskAfter);
+            if (!string.IsNullOrWhiteSpace(trace.PhysicalBehavior))
+                description.Append("; observed behavior ").Append(trace.PhysicalBehavior);
+            if (!string.IsNullOrWhiteSpace(trace.Reason))
+                description.Append("; reason ").Append(trace.Reason);
+            if (!string.IsNullOrWhiteSpace(trace.ExpectedNext))
+                description.Append("; expected next ").Append(trace.ExpectedNext);
+            if (!string.IsNullOrWhiteSpace(trace.SourceFile))
+                description.Append("; source ").Append(trace.SourceFile)
+                    .Append(string.IsNullOrWhiteSpace(trace.SourceMember) ? string.Empty : " / " + trace.SourceMember);
+            if (!string.IsNullOrWhiteSpace(trace.TaskStatus))
+                description.Append("; task status ").Append(trace.TaskStatus);
+            if (!float.IsNaN(trace.TargetDistance))
+                description.Append("; target distance ").Append(trace.TargetDistance.ToString("0.0", CultureInfo.InvariantCulture)).Append(" m");
+            if (!float.IsNaN(trace.MovementDelta))
+                description.Append("; movement ").Append(trace.MovementDelta.ToString("0.0", CultureInfo.InvariantCulture)).Append(" m");
+            return ReportText(description.ToString(), 520);
+        }
+
+        private static string ReadableEventKind(string eventKind)
+        {
+            if (string.Equals(eventKind, "BehaviorStall", StringComparison.OrdinalIgnoreCase))
+                return "Behavioral stall observed";
+            if (string.Equals(eventKind, "PhysicalMismatch", StringComparison.OrdinalIgnoreCase))
+                return "Logical/physical mismatch observed";
+            if (string.Equals(eventKind, "TaskConflict", StringComparison.OrdinalIgnoreCase))
+                return "Task ownership conflict observed";
+            if (string.Equals(eventKind, "ObservedState", StringComparison.OrdinalIgnoreCase))
+                return "Live actor state sampled";
+            if (string.IsNullOrWhiteSpace(eventKind))
+                return "Unclassified event";
+            StringBuilder readable = new StringBuilder();
+            for (int i = 0; i < eventKind.Length; i++)
+            {
+                char current = eventKind[i];
+                if (current == '_')
+                    readable.Append(' ');
+                else
+                {
+                    if (i > 0 && char.IsUpper(current) && eventKind[i - 1] != '_' && char.IsLower(eventKind[i - 1]))
+                        readable.Append(' ');
+                    readable.Append(current);
+                }
+            }
+            return readable.ToString();
         }
 
         private void WatchExistingLogs()
@@ -2135,6 +2786,8 @@ namespace LSImmersiveLife
                 || value.Contains("GANG_INCIDENT")
                 || value.Contains("GANG_RESPONSE")
                 || value.Contains("PATROL")
+                || value.Contains("AUTHORITY")
+                || value.Contains("PROFILE")
                 || value.Contains("TASK")
                 || value.Contains("STATE")
                 || value.Contains("PHASE")
@@ -2165,6 +2818,9 @@ namespace LSImmersiveLife
                 || value.Contains("ARRIV")
                 || value.Contains("FAIL")
                 || value.Contains("ERROR"))
+                return true;
+
+            if (value == "POLICE_GROUP_SUSPECT_SECURED")
                 return true;
 
             return false;
@@ -2413,6 +3069,7 @@ namespace LSImmersiveLife
         internal bool ShowDetailedNotifications { get; set; }
         internal bool WriteLifecycleMarkers { get; set; }
         internal bool WriteTraceFile { get; set; }
+        internal bool WriteHumanReadableReport { get; set; }
 
         private LSDeveloperSettings()
         {
@@ -2433,6 +3090,7 @@ namespace LSImmersiveLife
             ShowDetailedNotifications = false;
             WriteLifecycleMarkers = true;
             WriteTraceFile = true;
+            WriteHumanReadableReport = true;
         }
 
         internal static LSDeveloperSettings Load(string path, Action<string> debug)
@@ -2477,6 +3135,7 @@ namespace LSImmersiveLife
                 result.ShowDetailedNotifications = Bool(root, "showDetailedNotifications", result.ShowDetailedNotifications);
                 result.WriteLifecycleMarkers = Bool(root, "writeLifecycleMarkers", result.WriteLifecycleMarkers);
                 result.WriteTraceFile = Bool(root, "writeTraceFile", result.WriteTraceFile);
+                result.WriteHumanReadableReport = Bool(root, "writeHumanReadableReport", result.WriteHumanReadableReport);
                 result.Normalize();
             }
             catch (Exception error)
@@ -2508,6 +3167,7 @@ namespace LSImmersiveLife
             ShowDetailedNotifications = source.ShowDetailedNotifications;
             WriteLifecycleMarkers = source.WriteLifecycleMarkers;
             WriteTraceFile = source.WriteTraceFile;
+            WriteHumanReadableReport = source.WriteHumanReadableReport;
             Normalize();
         }
 
@@ -2550,7 +3210,8 @@ namespace LSImmersiveLife
                     new XAttribute("showLiveNotifications", ShowLiveNotifications),
                     new XAttribute("showDetailedNotifications", ShowDetailedNotifications),
                     new XAttribute("writeLifecycleMarkers", WriteLifecycleMarkers),
-                    new XAttribute("writeTraceFile", WriteTraceFile)));
+                    new XAttribute("writeTraceFile", WriteTraceFile),
+                    new XAttribute("writeHumanReadableReport", WriteHumanReadableReport)));
             document.Save(path);
         }
 
@@ -3064,17 +3725,35 @@ namespace LSImmersiveLife
     internal sealed class LSDeveloperExpectedStep
     {
         internal string Name { get; private set; }
-        private readonly Func<LSDeveloperTraceEvent, bool> _match;
+        internal string[] Categories { get; private set; }
 
-        internal LSDeveloperExpectedStep(string name, Func<LSDeveloperTraceEvent, bool> match)
+        internal LSDeveloperExpectedStep(string name, IEnumerable<string> categories)
         {
             Name = name;
-            _match = match;
+            Categories = (categories ?? Enumerable.Empty<string>()).ToArray();
         }
 
         internal bool Matches(LSDeveloperTraceEvent trace)
         {
-            return _match != null && _match(trace);
+            return trace != null && Categories.Any(category =>
+                string.Equals(trace.Category, category, StringComparison.OrdinalIgnoreCase));
+        }
+    }
+
+    internal sealed class LSDeveloperExpectedRoute
+    {
+        internal string Name { get; private set; }
+        internal string[] SelectorCategories { get; private set; }
+        internal List<LSDeveloperExpectedStep> Steps { get; private set; }
+
+        internal LSDeveloperExpectedRoute(
+            string name,
+            IEnumerable<string> selectorCategories,
+            IEnumerable<LSDeveloperExpectedStep> steps)
+        {
+            Name = name;
+            SelectorCategories = (selectorCategories ?? Enumerable.Empty<string>()).ToArray();
+            Steps = new List<LSDeveloperExpectedStep>(steps ?? Enumerable.Empty<LSDeveloperExpectedStep>());
         }
     }
 
@@ -3087,7 +3766,9 @@ namespace LSImmersiveLife
         internal string SourceSection { get; private set; }
         internal string SourceLines { get; private set; }
         internal string ExpectedBehavior { get; private set; }
+        internal string FlowConnection { get; private set; }
         internal List<LSDeveloperExpectedStep> Steps { get; private set; }
+        internal List<LSDeveloperExpectedRoute> Routes { get; private set; }
 
         internal LSDeveloperBranchDefinition(
             string id,
@@ -3097,7 +3778,9 @@ namespace LSImmersiveLife
             string sourceSection,
             string sourceLines,
             string expectedBehavior,
-            IEnumerable<LSDeveloperExpectedStep> steps)
+            string flowConnection,
+            IEnumerable<LSDeveloperExpectedStep> steps,
+            IEnumerable<LSDeveloperExpectedRoute> routes)
         {
             Id = id;
             EventId = eventId;
@@ -3106,7 +3789,9 @@ namespace LSImmersiveLife
             SourceSection = sourceSection;
             SourceLines = sourceLines;
             ExpectedBehavior = expectedBehavior;
+            FlowConnection = flowConnection;
             Steps = new List<LSDeveloperExpectedStep>(steps ?? Enumerable.Empty<LSDeveloperExpectedStep>());
+            Routes = new List<LSDeveloperExpectedRoute>(routes ?? Enumerable.Empty<LSDeveloperExpectedRoute>());
         }
     }
 
@@ -3173,6 +3858,10 @@ namespace LSImmersiveLife
                     if (string.IsNullOrWhiteSpace(eventId) || string.IsNullOrWhiteSpace(eventName))
                         throw new InvalidDataException("Each Developer TestEvent requires an id and name.");
 
+                    List<LSDeveloperExpectedStep> commonSteps = ReadSteps(eventElement.Element("CommonSteps"));
+                    if (commonSteps.Count > 20)
+                        throw new InvalidDataException("A Developer TestEvent may define at most 20 common expected steps.");
+
                     List<LSDeveloperBranchDefinition> branches = new List<LSDeveloperBranchDefinition>();
                     foreach (XElement branchElement in eventElement.Elements("Branch"))
                     {
@@ -3180,30 +3869,66 @@ namespace LSImmersiveLife
                         string branchName = Attribute(branchElement, "name");
                         if (string.IsNullOrWhiteSpace(branchId) || string.IsNullOrWhiteSpace(branchName))
                             throw new InvalidDataException("Each Developer Branch requires an id and name.");
+                        string flowConnection = string.IsNullOrWhiteSpace(Attribute(branchElement, "flowConnection"))
+                            ? Attribute(eventElement, "flowConnection")
+                            : Attribute(branchElement, "flowConnection");
+                        if (flowConnection.Length > 360)
+                            throw new InvalidDataException("A Developer flow connection may not exceed 360 characters.");
 
+                        bool skipCommonSteps = string.Equals(
+                            Attribute(branchElement, "skipCommonSteps"),
+                            "true",
+                            StringComparison.OrdinalIgnoreCase);
+                        IEnumerable<LSDeveloperExpectedStep> branchCommonSteps = skipCommonSteps
+                            ? Enumerable.Empty<LSDeveloperExpectedStep>()
+                            : commonSteps;
                         List<LSDeveloperExpectedStep> steps = new List<LSDeveloperExpectedStep>();
+                        List<LSDeveloperExpectedRoute> routes = new List<LSDeveloperExpectedRoute>();
                         XElement stepsElement = branchElement.Element("ExpectedSteps");
+                        XElement routesElement = branchElement.Element("ExpectedRoutes");
+                        if (stepsElement != null && routesElement != null)
+                            throw new InvalidDataException("A Developer Branch may define ExpectedSteps or ExpectedRoutes, not both.");
+
                         if (stepsElement != null)
                         {
-                            foreach (XElement stepElement in stepsElement.Elements("Step"))
-                            {
-                                string stepName = Attribute(stepElement, "name");
-                                string[] categories = (Attribute(stepElement, "categories") ?? string.Empty)
-                                    .Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)
-                                    .Select(item => item.Trim())
-                                    .Where(item => item.Length > 0)
-                                    .ToArray();
-                                if (string.IsNullOrWhiteSpace(stepName) || categories.Length == 0)
-                                    throw new InvalidDataException("Each Developer expected step requires a name and trace categories.");
+                            steps = branchCommonSteps.Concat(ReadSteps(stepsElement)).ToList();
+                            if (steps.Count > 80)
+                                throw new InvalidDataException("A Developer Branch may define at most 80 expected steps.");
+                        }
 
-                                steps.Add(new LSDeveloperExpectedStep(
-                                    stepName,
-                                    delegate(LSDeveloperTraceEvent trace)
-                                    {
-                                        return trace != null && categories.Any(category =>
-                                            string.Equals(trace.Category, category, StringComparison.OrdinalIgnoreCase));
-                                    }));
+                        if (routesElement != null)
+                        {
+                            XElement[] routeElements = routesElement.Elements("Route").ToArray();
+                            if (routeElements.Length == 0 || routeElements.Length > 12)
+                                throw new InvalidDataException("ExpectedRoutes must contain between 1 and 12 routes.");
+
+                            foreach (XElement routeElement in routeElements)
+                            {
+                                string routeName = Attribute(routeElement, "name");
+                                string[] selectorCategories = ReadCategories(routeElement, "selectOn");
+                                List<LSDeveloperExpectedStep> routeSteps = branchCommonSteps
+                                    .Concat(ReadSteps(routeElement))
+                                    .ToList();
+                                if (string.IsNullOrWhiteSpace(routeName) || routeSteps.Count == 0 || routeSteps.Count > 80)
+                                    throw new InvalidDataException("Each Developer expected route requires a name and between 1 and 80 steps.");
+
+                                routes.Add(new LSDeveloperExpectedRoute(routeName, selectorCategories, routeSteps));
                             }
+
+                            if (routes.Select(route => route.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != routes.Count)
+                                throw new InvalidDataException("Expected route names must be unique inside each Developer Branch.");
+
+                            if (routes.Count > 1 && routes.Any(route => route.SelectorCategories.Length == 0))
+                                throw new InvalidDataException("Each alternative route requires a selectOn trace category.");
+
+                            string duplicateSelector = routes
+                                .SelectMany(route => route.SelectorCategories.Select(category => new { route.Name, Category = category }))
+                                .GroupBy(item => item.Category, StringComparer.OrdinalIgnoreCase)
+                                .Where(group => group.Select(item => item.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
+                                .Select(group => group.Key)
+                                .FirstOrDefault();
+                            if (duplicateSelector != null)
+                                throw new InvalidDataException("An alternative route selector cannot identify multiple routes: " + duplicateSelector);
                         }
 
                         branches.Add(new LSDeveloperBranchDefinition(
@@ -3214,7 +3939,9 @@ namespace LSImmersiveLife
                             Attribute(branchElement, "sourceSection"),
                             Attribute(branchElement, "sourceLines"),
                             Attribute(branchElement, "expectedBehavior"),
-                            steps));
+                            flowConnection,
+                            steps,
+                            routes));
                     }
 
                     events.Add(new LSDeveloperTestEventDefinition(
@@ -3283,6 +4010,33 @@ namespace LSImmersiveLife
             XAttribute attribute = element == null ? null : element.Attribute(name);
             return attribute == null ? string.Empty : attribute.Value;
         }
+
+        private static List<LSDeveloperExpectedStep> ReadSteps(XElement parent)
+        {
+            List<LSDeveloperExpectedStep> steps = new List<LSDeveloperExpectedStep>();
+            if (parent == null)
+                return steps;
+
+            foreach (XElement stepElement in parent.Elements("Step"))
+            {
+                string stepName = Attribute(stepElement, "name");
+                string[] categories = ReadCategories(stepElement, "categories");
+                if (string.IsNullOrWhiteSpace(stepName) || categories.Length == 0)
+                    throw new InvalidDataException("Each Developer expected step requires a name and trace categories.");
+                steps.Add(new LSDeveloperExpectedStep(stepName, categories));
+            }
+            return steps;
+        }
+
+        private static string[] ReadCategories(XElement element, string attributeName)
+        {
+            return Attribute(element, attributeName)
+                .Split(new[] { '|' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(item => item.Trim())
+                .Where(item => item.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
     }
 
     internal sealed class LSDeveloperAnalysisResult
@@ -3291,8 +4045,13 @@ namespace LSImmersiveLife
         internal string Event { get; set; }
         internal string Branch { get; set; }
         internal string ExpectedBehavior { get; set; }
+        internal string FlowConnection { get; set; }
+        internal string SelectedRoute { get; set; }
+        internal string BranchSource { get; set; }
+        internal int ExpectedStepCount { get; set; }
         internal string Classification { get; set; }
         internal string FirstDivergence { get; set; }
+        internal LSDeveloperTraceEvent FirstDivergenceEvent { get; set; }
         internal string FirstProblemStep { get; set; }
         internal string Summary { get; set; }
         internal List<LSDeveloperTraceEvent> Events { get; set; } = new List<LSDeveloperTraceEvent>();

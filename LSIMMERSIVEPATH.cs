@@ -20,6 +20,7 @@ namespace LSImmersiveLife
         internal string PluginDirectory { get; private set; }
         internal string DeveloperXmlPath { get; private set; }
         internal string DeveloperBranchesXmlPath { get; private set; }
+        internal string DeveloperReportPath { get; private set; }
         internal string RuntimeLogPath { get; private set; }
         internal string DebugLogPath { get; private set; }
         internal string DeveloperTraceLogPath { get; private set; }
@@ -166,6 +167,7 @@ namespace LSImmersiveLife
             PluginDirectory = Path.Combine(LSImmersiveDirectory, "Plugin");
             DeveloperXmlPath = Path.Combine(PluginDirectory, "LSDeveloper.xml");
             DeveloperBranchesXmlPath = Path.Combine(PluginDirectory, "LSDeveloperBranches.xml");
+            DeveloperReportPath = Path.Combine(PluginDirectory, "LSDeveloperReport.md");
             LocationCatalogXmlPath = Path.Combine(
                 PluginDirectory, "LSImmersiveLocation.xml");
             RuntimeLogPath = Path.Combine(LogDirectory, "LSRuntime.log");
@@ -263,6 +265,7 @@ namespace LSImmersiveLife
             PluginDirectory = Path.Combine(LSImmersiveDirectory, "Plugin");
             DeveloperXmlPath = Path.Combine(PluginDirectory, "LSDeveloper.xml");
             DeveloperBranchesXmlPath = Path.Combine(PluginDirectory, "LSDeveloperBranches.xml");
+            DeveloperReportPath = Path.Combine(PluginDirectory, "LSDeveloperReport.md");
             LocationCatalogXmlPath = Path.Combine(
                 PluginDirectory, "LSImmersiveLocation.xml");
             RuntimeLogPath = Path.Combine(LogDirectory, "LSRuntime.log");

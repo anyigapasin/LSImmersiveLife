@@ -109,7 +109,8 @@ namespace LSImmersiveLife
             Add(_authority.Menu);
             Add(_hotkeys.Menu);
             Add(_settings.Menu);
-            Add(_developer.Menu);
+            foreach (NativeMenu developerMenu in _developer.Menus)
+                Add(developerMenu);
 
             // The Police UI has nested category menus of its own. Registering
             // them is a LemonUI requirement; it does not make this class the
@@ -215,7 +216,7 @@ namespace LSImmersiveLife
                 || (_authority != null && _authority.Menu.Visible)
                 || (_hotkeys != null && _hotkeys.Menu.Visible)
                 || (_settings != null && _settings.Menu.Visible)
-                || (_developer != null && _developer.Menu.Visible);
+                || (_developer != null && _developer.IsAnyMenuVisible);
         }
 
         private void LogConfigurationFallback(string text)

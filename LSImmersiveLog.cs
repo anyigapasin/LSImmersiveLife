@@ -133,6 +133,7 @@ namespace LSImmersiveLife
                         + "; StartedLocal=" + DateTime.Now.ToString(
                             "yyyy-MM-dd HH:mm:ss.fff",
                             CultureInfo.InvariantCulture)
+                        + "; " + DescribeLoadedAssemblyIdentity()
                         + "; Context=" + NormalizeMessage(context));
                     return;
                 }
@@ -193,7 +194,9 @@ namespace LSImmersiveLife
                     WriteRuntimeLocked(
                         "SESSION_STARTED",
                         "SessionId=" + _sessionId
-                        + "; Started during shutdown; Context="
+                        + "; Started during shutdown; "
+                        + DescribeLoadedAssemblyIdentity()
+                        + "; Context="
                         + NormalizeMessage(context));
                 }
 
@@ -401,7 +404,29 @@ namespace LSImmersiveLife
             WriteRuntimeLocked(
                 "SESSION_STARTED",
                 "SessionId=" + _sessionId
-                + "; Started automatically before first log entry.");
+                + "; Started automatically before first log entry; "
+                + DescribeLoadedAssemblyIdentity());
+        }
+
+        private static string DescribeLoadedAssemblyIdentity()
+        {
+            try
+            {
+                var assembly = typeof(LSImmersiveLog).Assembly;
+                var name = assembly.GetName();
+                return "AssemblyName=" + (name.Name ?? "Unknown")
+                    + "; AssemblyVersion=" + (name.Version == null
+                        ? "Unknown" : name.Version.ToString())
+                    + "; AssemblyMvid="
+                    + assembly.ManifestModule.ModuleVersionId.ToString("D")
+                    + "; AssemblyLocation="
+                    + (string.IsNullOrWhiteSpace(assembly.Location)
+                        ? "Unavailable" : assembly.Location);
+            }
+            catch (Exception ex)
+            {
+                return "AssemblyIdentity=Unavailable:" + ex.GetType().Name;
+            }
         }
 
         private void WriteRuntimeLocked(string category, string message)

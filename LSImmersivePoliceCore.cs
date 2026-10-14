@@ -150,6 +150,8 @@ namespace LSImmersiveLife
                 _npcDatabase,
                 Audio);
             NpcResponse.ConfigureSuspectInjurySettings(_config.Police.SuspectInjury);
+            NpcResponse.SetBackupDamageEvidenceProvider(
+                Backup.CaptureNpcDamageEvidence);
             CrimeActivity = new LSPDCrimeActivity(
                 Audio,
                 paths,
@@ -2102,6 +2104,18 @@ namespace LSImmersiveLife
 
             if (NpcResponse.HasBackupAssignment)
             {
+                if (NpcResponse.CanBeginBackupTransportHandoff)
+                {
+                    if (Backup.RequestNpcCustodyTransport(NpcResponse))
+                    {
+                        LastOperationMessage = "Backup custody transport accepted for this same handcuffed Citizen. Keep the Citizen at the scene until the assigned unit physically arrives.";
+                        return LastOperationMessage;
+                    }
+
+                    LastOperationMessage = "The current Backup unit is not confirmed for this Citizen's custody transfer. The Citizen remains secured; request transport again when the assigned operation is available.";
+                    return LastOperationMessage;
+                }
+
                 LastOperationMessage = NpcResponse.RequestBackupTransportCommand(player);
                 return LastOperationMessage;
             }
@@ -2116,6 +2130,31 @@ namespace LSImmersiveLife
             return LastOperationMessage;
         }
 
+        internal string RequestNpcPersonalVehicleTransport()
+        {
+            if (!RequireActive())
+                return LastOperationMessage;
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+            {
+                LastOperationMessage = "The player character is unavailable.";
+                return LastOperationMessage;
+            }
+
+            if (!NpcResponse.CanBeginPlayerVehicleCustody)
+            {
+                LastOperationMessage = "Personal Police Utility transport is available after the same Citizen has been physically handcuffed. The current Citizen remains in its documented interaction branch.";
+                return LastOperationMessage;
+            }
+
+            string custody = TryStartNpcPlayerVehicleCustody(player);
+            LastOperationMessage = !string.IsNullOrWhiteSpace(custody)
+                ? custody
+                : "Personal Police Utility transport is unavailable or too far from the scene. The Citizen remains secured; choose Request a Back Up For Citizen Transport to continue custody.";
+            return LastOperationMessage;
+        }
+
         private string StartNpcBackupRequest(Ped player, bool custodyTransportRequest)
         {
             string backupResult = Backup.RequestNpcSupport(
@@ -2123,9 +2162,7 @@ namespace LSImmersiveLife
                 player,
                 true,
                 custodyTransportRequest);
-            if (!backupResult.StartsWith("Backup requested", StringComparison.OrdinalIgnoreCase)
-                && !backupResult.StartsWith("Existing backup", StringComparison.OrdinalIgnoreCase)
-                && !backupResult.StartsWith("Backup is already", StringComparison.OrdinalIgnoreCase))
+            if (!Backup.HasNpcAssignmentFor(NpcResponse, custodyTransportRequest))
                 return backupResult;
 
             string handoff = NpcResponse.RequestBackupSupportCommand();
@@ -2182,7 +2219,8 @@ namespace LSImmersiveLife
             Vehicle current = player.CurrentVehicle;
             if (current != null && current.Exists()
                 && IsKnownPoliceVehicle(current)
-                && !current.Model.IsBike)
+                && !current.Model.IsBike
+                && current.Position.DistanceTo(player.Position) <= 75.0f)
             {
                 if (Convoy.HasRearCustodySeat(current))
                     return current;
@@ -2234,16 +2272,6 @@ namespace LSImmersiveLife
                 return LastOperationMessage;
             }
 
-            // A compliant NPC contact uses the already-managed Police car or
-            // van for personal custody. Only a motorcycle (or no usable
-            // custody vehicle) continues into the existing Backup owner.
-            string playerCustody = TryStartNpcPlayerVehicleCustody(player);
-            if (!string.IsNullOrWhiteSpace(playerCustody))
-            {
-                LastOperationMessage = playerCustody;
-                return LastOperationMessage;
-            }
-
             if (!_config.Police.Backup.Enabled)
             {
                 LastOperationMessage = "Backup is disabled in LS Immersive settings.";
@@ -2282,17 +2310,7 @@ namespace LSImmersiveLife
 
             if (NpcResponse.CanRequestBackup)
             {
-                string backupResult = Backup.RequestNpcSupport(
-                    NpcResponse, player, preferSavedFavorite);
-                if (!backupResult.StartsWith("Backup requested", StringComparison.OrdinalIgnoreCase)
-                    && !backupResult.StartsWith("Existing backup", StringComparison.OrdinalIgnoreCase)
-                    && !backupResult.StartsWith("Backup is already", StringComparison.OrdinalIgnoreCase))
-                {
-                    LastOperationMessage = backupResult;
-                    return LastOperationMessage;
-                }
-                string handoff = NpcResponse.RequestBackupSupportCommand();
-                LastOperationMessage = handoff + " " + backupResult;
+                LastOperationMessage = StartNpcBackupRequest(player, false);
                 return LastOperationMessage;
             }
 

@@ -73,9 +73,16 @@ namespace LSImmersiveLife
         private const int NpcVehicleInterceptionLogMilliseconds = 5000;
         private const int NpcVehicleInterceptionRouteRefreshMilliseconds = 3000;
         private const int NpcVehicleInterceptionRouteFailureLimit = 3;
+        private const int NpcVehiclePursuitRequiredUnitCount = 2;
+        private const int NpcVehicleLeadProgressSampleMilliseconds = 3000;
         private const float NpcVehicleContainmentRadius = 32f;
+        private const float NpcVehicleLeadResumeChaseDistance = 70f;
+        private const float NpcVehicleLeadProgressDistance = 5f;
+        private const float NpcVehicleLeadRouteProgressDistance = 4f;
         private const int NpcBackgroundDepartureSeconds = RouteStallTimeoutSeconds;
         private const float NpcBackgroundDepartureMinimumDistance = 28f;
+        private const int NpcDetachedCleanupSampleMilliseconds = 1000;
+        private const int MaximumNpcDetachedCleanupOperations = 4;
 
         private readonly LSPDAudioDispatch _audio;
         private readonly LSPDProfile _profile;
@@ -114,6 +121,9 @@ namespace LSImmersiveLife
         private string _vehicleModelName = string.Empty;
         private string _officerModelName = string.Empty;
         private string _operationId = string.Empty;
+        private NpcAssignmentIdentity _npcAssignmentIdentity;
+        private readonly List<NpcDetachedCleanupOperation> _npcDetachedCleanupOperations =
+            new List<NpcDetachedCleanupOperation>();
         private bool _arrivalReported;
         private DateTime _lastSupportTaskAt = DateTime.MinValue;
         private BackupUnit _npcTransportUnit;
@@ -220,6 +230,11 @@ namespace LSImmersiveLife
             internal DateTime NextInterceptionExitTaskAt;
             internal bool InterceptionAreaReported;
             internal bool NpcVehiclePursuitActive;
+            internal bool NpcVehicleChaseTaskIssued;
+            internal bool NpcLeadRoadRecoveryActive;
+            internal DateTime NextNpcVehicleProgressCheckAt = DateTime.MinValue;
+            internal int NpcVehicleChaseRecoveryAttempts;
+            internal bool NpcVehicleChaseRecoveryDegradedLogged;
             internal bool VehiclePursuitLead;
             internal bool VehiclePursuitBlocker;
             internal bool NpcPursuitRolesInitialized;
@@ -272,6 +287,68 @@ namespace LSImmersiveLife
             internal bool GangSupportStartedLogged;
             internal bool GangDriverLossLogged;
             internal bool GangStandDownRouteStarted;
+        }
+
+        private sealed class NpcAssignmentIdentity
+        {
+            internal readonly string InteractionId;
+            internal readonly int CitizenHandle;
+            internal readonly int VehicleHandle;
+            internal readonly string EscalationType;
+            internal readonly string OperationId;
+            internal readonly Ped Citizen;
+            internal readonly DateTime CreatedAt;
+            internal LSPDBackupAssignmentState LifecycleState;
+
+            internal NpcAssignmentIdentity(
+                LSPDNPCResponse response,
+                string escalationType,
+                string operationId,
+                DateTime createdAt)
+            {
+                InteractionId = response == null ? string.Empty : response.InteractionId;
+                Citizen = response == null ? null : response.ActiveSubject;
+                CitizenHandle = Citizen == null ? 0 : Citizen.Handle;
+                VehicleHandle = response == null
+                    ? 0 : response.OriginalContactVehicleHandle;
+                EscalationType = escalationType ?? string.Empty;
+                OperationId = operationId ?? string.Empty;
+                CreatedAt = createdAt;
+                LifecycleState = LSPDBackupAssignmentState.None;
+            }
+
+            internal bool Matches(LSPDNPCResponse response, string escalationType)
+            {
+                return MatchesContact(response)
+                    && string.Equals(EscalationType, escalationType,
+                        StringComparison.Ordinal);
+            }
+
+            internal bool MatchesContact(LSPDNPCResponse response)
+            {
+                if (response == null)
+                    return false;
+                Ped citizen = response.ActiveSubject;
+                return !string.IsNullOrWhiteSpace(InteractionId)
+                    && string.Equals(InteractionId, response.InteractionId,
+                        StringComparison.Ordinal)
+                    && CitizenHandle != 0 && citizen != null
+                    && CitizenHandle == citizen.Handle
+                    && VehicleHandle == response.OriginalContactVehicleHandle;
+            }
+        }
+
+        private sealed class NpcDetachedCleanupOperation
+        {
+            internal NpcAssignmentIdentity Identity;
+            internal List<BackupUnit> Units = new List<BackupUnit>();
+            internal Vector3 DepartureOrigin;
+            internal DateTime RetainedAt;
+            internal DateTime NextSampleAt;
+            internal DateTime CleanupStartedAt = DateTime.MinValue;
+            internal bool DepartureConfirmed;
+            internal bool CleanupLogged;
+            internal bool SampleFailureLogged;
         }
 
         private sealed class DispatchFootApproachTaskState
@@ -545,13 +622,39 @@ namespace LSImmersiveLife
                 return "NPC Backup requires a detained or fleeing citizen contact.";
             if (player == null || !player.Exists())
                 return "The player character is unavailable.";
+            string escalationType = custodyTransportRequest
+                ? "CustodyTransport" : npcResponse.CurrentStageName;
+            string requestedOperationId = Guid.NewGuid().ToString("N");
             if (Active)
             {
-                if (ReferenceEquals(_npcResponse, npcResponse))
-                    return "Backup is already assigned and " + _state.ToString().ToLowerInvariant() + ".";
-                if (_state == LSPDBackupAssignmentState.StandingDown)
+                if (_npcAssignmentIdentity != null
+                    && _npcAssignmentIdentity.OperationId == _operationId
+                    && _npcAssignmentIdentity.Matches(npcResponse, escalationType))
+                {
+                    LogRuntime("POLICE_BACKUP_NPC_ASSIGNMENT_IDENTITY_REUSED",
+                        "Interaction=" + _npcAssignmentIdentity.InteractionId
+                        + "; Operation=" + _operationId
+                        + "; Citizen=" + _npcAssignmentIdentity.CitizenHandle
+                        + "; Vehicle=" + _npcAssignmentIdentity.VehicleHandle
+                        + "; Escalation=" + escalationType
+                        + "; Lifecycle=" + _state);
+                    return "Backup is already assigned to this exact Citizen escalation.";
+                }
+
+                if (_npcAssignmentIdentity != null)
+                {
+                    string detachReason;
+                    if (!TryDetachNpcTransportForNewEscalation(
+                        npcResponse, escalationType, requestedOperationId,
+                        out detachReason))
+                    {
+                        return "The previous Citizen Backup operation is still active; the new request was not accepted. "
+                            + detachReason;
+                    }
+                }
+                else if (_state == LSPDBackupAssignmentState.StandingDown)
                     Reset();
-                if (Active)
+                else if (Active)
                     return "A previous backup assignment is still active.";
             }
 
@@ -563,7 +666,9 @@ namespace LSImmersiveLife
             _officerModelName = ResolveOfficerModel(
                 preferSavedFavorite,
                 _profile == null ? string.Empty : _profile.PreferredCitizenBackupPedModelName);
-            _operationId = Guid.NewGuid().ToString("N");
+            _operationId = requestedOperationId;
+            _npcAssignmentIdentity = new NpcAssignmentIdentity(
+                npcResponse, escalationType, _operationId, DateTime.UtcNow);
             _assetPreparationDeadline = DateTime.UtcNow.AddSeconds(AssetPreparationTimeoutSeconds);
             _nextAssetRequestAt = DateTime.MinValue;
             _arrivalReported = false;
@@ -607,7 +712,13 @@ namespace LSImmersiveLife
                 return "Backup could not prepare the configured Police vehicle or officer model.";
             Report("lsimmersivelife.police.backup.requested", "npc-contact-requested");
             LogRuntime("POLICE_BACKUP_NPC_REQUESTED",
-                "Fleeing=" + _npcTargetWasFleeing
+                "Operation=" + _operationId
+                + "; Interaction=" + _npcAssignmentIdentity.InteractionId
+                + "; Citizen=" + _npcAssignmentIdentity.CitizenHandle
+                + "; Vehicle=" + _npcAssignmentIdentity.VehicleHandle
+                + "; Escalation=" + _npcAssignmentIdentity.EscalationType
+                + "; Lifecycle=" + _state
+                + "; Fleeing=" + _npcTargetWasFleeing
                 + "; Target=" + npcResponse.SupportPosition
                 + "; Vehicle=" + _vehicleModelName
                 + "; Officer=" + _officerModelName
@@ -615,6 +726,418 @@ namespace LSImmersiveLife
             return custodyTransportRequest
                 ? "Backup transport requested. One Police unit is staging near the citizen scene."
                 : "Backup requested. One Police unit is staging for the citizen contact.";
+        }
+
+        internal bool HasNpcAssignmentFor(LSPDNPCResponse npcResponse,
+            bool custodyTransportRequest = false)
+        {
+            string escalationType = custodyTransportRequest
+                ? "CustodyTransport"
+                : npcResponse == null ? string.Empty : npcResponse.CurrentStageName;
+            return Active && _npcResponse != null
+                && ReferenceEquals(_npcResponse, npcResponse)
+                && _npcAssignmentIdentity != null
+                && _npcAssignmentIdentity.OperationId == _operationId
+                && _npcAssignmentIdentity.Matches(npcResponse, escalationType);
+        }
+
+        internal bool HasNpcAssignmentForContact(LSPDNPCResponse npcResponse)
+        {
+            return Active && _state != LSPDBackupAssignmentState.StandingDown
+                && _npcResponse != null
+                && ReferenceEquals(_npcResponse, npcResponse)
+                && _npcAssignmentIdentity != null
+                && _npcAssignmentIdentity.OperationId == _operationId
+                && _npcAssignmentIdentity.MatchesContact(npcResponse);
+        }
+
+        internal bool RequestNpcCustodyTransport(LSPDNPCResponse npcResponse)
+        {
+            if (!HasNpcAssignmentForContact(npcResponse)
+                || !npcResponse.CanBeginBackupTransportHandoff
+                || _npcTransportStarted)
+                return false;
+
+            if (!_npcCustodyTransportRequested)
+            {
+                _npcCustodyTransportRequested = true;
+                LogRuntime("POLICE_BACKUP_NPC_CUSTODY_TRANSPORT_ACCEPTED",
+                    "Operation=" + _operationId
+                    + "; Interaction=" + _npcAssignmentIdentity.InteractionId
+                    + "; Citizen=" + _npcAssignmentIdentity.CitizenHandle
+                    + "; OriginalVehicle=" + _npcAssignmentIdentity.VehicleHandle
+                    + "; OriginalEscalation=" + _npcAssignmentIdentity.EscalationType
+                    + "; Lifecycle=" + _state
+                    + "; SameOperation=true; PhysicalCuffsConfirmed=true");
+            }
+            return true;
+        }
+
+        private bool TryDetachNpcTransportForNewEscalation(
+            LSPDNPCResponse newResponse,
+            string newEscalationType,
+            string newOperationId,
+            out string reason)
+        {
+            reason = string.Empty;
+            NpcAssignmentIdentity previous = _npcAssignmentIdentity;
+            BackupUnit unit = _npcTransportUnit;
+            Ped newCitizen = newResponse == null ? null : newResponse.ActiveSubject;
+            float previousDistance = float.NaN;
+            try
+            {
+                if (IsUsable(unit) && IsAvailablePed(newCitizen))
+                    previousDistance = unit.Vehicle.Position.DistanceTo(
+                        newCitizen.Position);
+            }
+            catch (Exception ex)
+            {
+                reason = "The prior Backup/Citizen distance could not be read: "
+                    + ex.GetType().Name;
+            }
+            int previousCitizenVehicleHandle = 0;
+            bool previousCitizenStateReadable = previous != null
+                && TryReadPedCurrentVehicleHandle(previous.Citizen,
+                    out previousCitizenVehicleHandle);
+            bool previousCitizenLoaded = previousCitizenStateReadable
+                && IsUsable(unit)
+                && previousCitizenVehicleHandle == unit.Vehicle.Handle;
+
+            if (previous == null || !_npcTransportStarted
+                || !previousCitizenLoaded)
+            {
+                if (string.IsNullOrWhiteSpace(reason))
+                    reason = previousCitizenStateReadable
+                        ? "The prior Citizen is not confirmed loaded in its assigned Backup vehicle."
+                        : "The prior Citizen's current vehicle state could not be read safely.";
+                LogRuntime("POLICE_BACKUP_NPC_ASSIGNMENT_REPLACEMENT_REJECTED",
+                    "PreviousOperation=" + (previous == null ? string.Empty : previous.OperationId)
+                    + "; PreviousInteraction=" + (previous == null ? string.Empty : previous.InteractionId)
+                    + "; NewInteraction=" + (newResponse == null ? string.Empty : newResponse.InteractionId)
+                    + "; PreviousCitizen=" + (previous == null ? 0 : previous.CitizenHandle)
+                    + "; NewCitizen=" + (newCitizen == null ? 0 : newCitizen.Handle)
+                    + "; PreviousVehicle=" + (previous == null ? 0 : previous.VehicleHandle)
+                    + "; PreviousEscalation=" + (previous == null ? string.Empty : previous.EscalationType)
+                    + "; Escalation=" + (newEscalationType ?? string.Empty)
+                    + "; Distance=" + (float.IsNaN(previousDistance)
+                        ? "Unavailable" : previousDistance.ToString("0.0"))
+                    + "; Lifecycle=" + _state
+                    + "; Decision=Reject; Reason=PriorCustodyNotPhysicallyConfirmed"
+                    + "; NewOperation=" + (newOperationId ?? string.Empty));
+                return false;
+            }
+
+            if (_npcDetachedCleanupOperations.Count
+                >= MaximumNpcDetachedCleanupOperations)
+            {
+                reason = "Bounded Backup background-cleanup capacity is full.";
+                LogRuntime("POLICE_BACKUP_NPC_ASSIGNMENT_REPLACEMENT_REJECTED",
+                    "PreviousOperation=" + previous.OperationId
+                    + "; PreviousInteraction=" + previous.InteractionId
+                    + "; NewInteraction=" + newResponse.InteractionId
+                    + "; PreviousCitizen=" + previous.CitizenHandle
+                    + "; NewCitizen=" + newCitizen.Handle
+                    + "; PreviousVehicle=" + previous.VehicleHandle
+                    + "; PreviousEscalation=" + previous.EscalationType
+                    + "; NewEscalation=" + (newEscalationType ?? string.Empty)
+                    + "; Distance=" + (float.IsNaN(previousDistance)
+                        ? "Unavailable" : previousDistance.ToString("0.0"))
+                    + "; Lifecycle=" + _state
+                    + "; Decision=Reject; Reason=DetachedCleanupCapacityReached"
+                    + "; NewOperation=" + (newOperationId ?? string.Empty));
+                return false;
+            }
+
+            if (_units.Count > 2)
+            {
+                reason = "The prior Citizen assignment exceeded its two-unit ownership bound.";
+                LogRuntime("POLICE_BACKUP_NPC_ASSIGNMENT_REPLACEMENT_REJECTED",
+                    "PreviousOperation=" + previous.OperationId
+                    + "; PreviousInteraction=" + previous.InteractionId
+                    + "; NewInteraction=" + newResponse.InteractionId
+                    + "; PreviousCitizen=" + previous.CitizenHandle
+                    + "; NewCitizen=" + newCitizen.Handle
+                    + "; PreviousVehicle=" + previous.VehicleHandle
+                    + "; PreviousEscalation=" + previous.EscalationType
+                    + "; NewEscalation=" + (newEscalationType ?? string.Empty)
+                    + "; Distance=" + (float.IsNaN(previousDistance)
+                        ? "Unavailable" : previousDistance.ToString("0.0"))
+                    + "; Lifecycle=" + _state
+                    + "; UnitCount=" + _units.Count
+                    + "; Decision=Reject; Reason=PriorUnitOwnershipBoundExceeded"
+                    + "; NewOperation=" + (newOperationId ?? string.Empty));
+                return false;
+            }
+
+            var background = new NpcDetachedCleanupOperation
+            {
+                Identity = previous,
+                Units = _units.ToList(),
+                DepartureOrigin = _npcBackgroundDepartureOrigin,
+                RetainedAt = DateTime.UtcNow,
+                NextSampleAt = DateTime.MinValue,
+                DepartureConfirmed = _npcPlayerSessionReleased,
+                CleanupStartedAt = _npcBackgroundCleanupRequested
+                    || _state == LSPDBackupAssignmentState.StandingDown
+                        ? (_standDownStartedAt == DateTime.MinValue
+                            ? DateTime.UtcNow : _standDownStartedAt)
+                        : DateTime.MinValue
+            };
+            if (background.DepartureOrigin == Vector3.Zero)
+                background.DepartureOrigin = unit.Vehicle.Position;
+
+            if (background.Units.Count == 0
+                || !background.Units.Contains(unit))
+            {
+                reason = "No usable Backup transport unit remained for the prior Citizen.";
+                LogRuntime("POLICE_BACKUP_NPC_ASSIGNMENT_REPLACEMENT_REJECTED",
+                    "PreviousOperation=" + previous.OperationId
+                    + "; NewInteraction=" + newResponse.InteractionId
+                    + "; PreviousCitizen=" + previous.CitizenHandle
+                    + "; NewCitizen=" + newCitizen.Handle
+                    + "; Distance=" + (float.IsNaN(previousDistance)
+                        ? "Unavailable" : previousDistance.ToString("0.0"))
+                    + "; Lifecycle=" + _state
+                    + "; Decision=Reject; Reason=TransportUnitUnavailable"
+                    + "; NewOperation=" + (newOperationId ?? string.Empty));
+                return false;
+            }
+
+            _npcDetachedCleanupOperations.Add(background);
+            LogRuntime("POLICE_BACKUP_NPC_ASSIGNMENT_RETIRED_FOR_NEW_ESCALATION",
+                "PreviousOperation=" + previous.OperationId
+                + "; PreviousInteraction=" + previous.InteractionId
+                + "; NewInteraction=" + newResponse.InteractionId
+                + "; PreviousCitizen=" + previous.CitizenHandle
+                + "; NewCitizen=" + newCitizen.Handle
+                + "; PreviousVehicle=" + previous.VehicleHandle
+                + "; NewVehicle=" + (newResponse.ActivePursuitVehicle
+                    ?? newResponse.OriginalContactVehicle)?.Handle
+                + "; PreviousEscalation=" + previous.EscalationType
+                + "; NewEscalation=" + (newEscalationType ?? string.Empty)
+                + "; Distance=" + (float.IsNaN(previousDistance)
+                    ? "Unavailable" : previousDistance.ToString("0.0"))
+                + "; Lifecycle=" + _state
+                + "; Decision=DetachedToBoundedBackgroundCleanup"
+                + "; ResultOperation=" + (newOperationId ?? string.Empty)
+                + "; Units=" + background.Units.Count
+                + "; PriorCitizenLoaded=true");
+
+            // Reset only this completed transport assignment. The old physical
+            // units now belong to their bounded detached cleanup record and
+            // cannot be deleted or retasked by the new Citizen operation.
+            _units.Clear();
+            Reset();
+            return true;
+        }
+
+        private void ProcessNpcDetachedBackgroundCleanup(Ped player, DateTime now)
+        {
+            for (int operationIndex = _npcDetachedCleanupOperations.Count - 1;
+                operationIndex >= 0; operationIndex--)
+            {
+                NpcDetachedCleanupOperation operation =
+                    _npcDetachedCleanupOperations[operationIndex];
+                if (operation == null || now < operation.NextSampleAt)
+                    continue;
+                operation.NextSampleAt = now.AddMilliseconds(
+                    NpcDetachedCleanupSampleMilliseconds);
+
+                for (int unitIndex = operation.Units.Count - 1;
+                    unitIndex >= 0; unitIndex--)
+                {
+                    BackupUnit unit = operation.Units[unitIndex];
+                    if (unit == null || !IsAvailableVehicle(unit.Vehicle))
+                    {
+                        ReleaseNpcDetachedUnit(operation, unitIndex,
+                            "VehicleUnavailable", float.NaN);
+                        continue;
+                    }
+
+                    Ped citizen = operation.Identity == null
+                        ? null : operation.Identity.Citizen;
+                    int citizenVehicleHandle;
+                    bool citizenStateReadable = TryReadPedCurrentVehicleHandle(
+                        citizen, out citizenVehicleHandle);
+                    int driverVehicleHandle;
+                    bool driverStateReadable = TryReadPedCurrentVehicleHandle(
+                        unit.Driver, out driverVehicleHandle);
+                    if (!citizenStateReadable || !driverStateReadable)
+                    {
+                        if (!operation.SampleFailureLogged)
+                        {
+                            operation.SampleFailureLogged = true;
+                            LogRuntime("POLICE_BACKUP_NPC_DETACHED_SAMPLE_UNAVAILABLE",
+                                "Operation=" + (operation.Identity == null
+                                    ? string.Empty : operation.Identity.OperationId)
+                                + "; Citizen=" + (operation.Identity == null
+                                    ? 0 : operation.Identity.CitizenHandle)
+                                + "; Vehicle=" + unit.Vehicle.Handle
+                                + "; Reason=PedVehicleStateQueryFailed; Retry=Throttled");
+                        }
+                        DateTime stateReadDeadline = operation.RetainedAt.AddSeconds(
+                            Math.Max(1, _settings.StandDownSeconds) * 2);
+                        if (now >= stateReadDeadline)
+                            ReleaseNpcDetachedUnit(operation, unitIndex,
+                                "BoundedReleaseAfterPedStateReadFailure", float.NaN);
+                        continue;
+                    }
+                    bool citizenInVehicle = citizenVehicleHandle == unit.Vehicle.Handle;
+                    bool driverInVehicle = driverVehicleHandle == unit.Vehicle.Handle;
+                    float distanceFromScene;
+                    try
+                    {
+                        distanceFromScene = operation.DepartureOrigin == Vector3.Zero
+                            ? 0f : unit.Vehicle.Position.DistanceTo(
+                                operation.DepartureOrigin);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!operation.SampleFailureLogged)
+                        {
+                            operation.SampleFailureLogged = true;
+                            LogRuntime("POLICE_BACKUP_NPC_DETACHED_SAMPLE_UNAVAILABLE",
+                                "Operation=" + (operation.Identity == null
+                                    ? string.Empty : operation.Identity.OperationId)
+                                + "; Citizen=" + (operation.Identity == null
+                                    ? 0 : operation.Identity.CitizenHandle)
+                                + "; Vehicle=" + unit.Vehicle.Handle
+                                + "; Reason=VehiclePositionQueryFailed; Exception="
+                                + ex.GetType().Name + "; Retry=Throttled");
+                        }
+                        DateTime positionReadDeadline = operation.RetainedAt.AddSeconds(
+                            Math.Max(1, _settings.StandDownSeconds) * 2);
+                        if (now >= positionReadDeadline)
+                            ReleaseNpcDetachedUnit(operation, unitIndex,
+                                "BoundedReleaseAfterVehiclePositionFailure", float.NaN);
+                        continue;
+                    }
+
+                    float distanceFromPlayer = 0f;
+                    try
+                    {
+                        if (player != null && player.Exists())
+                            distanceFromPlayer = unit.Vehicle.Position.DistanceTo(
+                                player.Position);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!operation.SampleFailureLogged)
+                        {
+                            operation.SampleFailureLogged = true;
+                            LogRuntime("POLICE_BACKUP_NPC_DETACHED_SAMPLE_UNAVAILABLE",
+                                "Operation=" + (operation.Identity == null
+                                    ? string.Empty : operation.Identity.OperationId)
+                                + "; Citizen=" + (operation.Identity == null
+                                    ? 0 : operation.Identity.CitizenHandle)
+                                + "; Vehicle=" + unit.Vehicle.Handle
+                                + "; Reason=PlayerDistanceQueryFailed; Exception="
+                                + ex.GetType().Name + "; Retry=Throttled");
+                        }
+                    }
+
+                    if (!operation.DepartureConfirmed
+                        && driverInVehicle && citizenInVehicle
+                        && distanceFromScene >= NpcBackgroundDepartureMinimumDistance)
+                    {
+                        operation.DepartureConfirmed = true;
+                        if (operation.CleanupStartedAt == DateTime.MinValue)
+                            operation.CleanupStartedAt = now;
+                        LogRuntime("POLICE_BACKUP_NPC_DETACHED_DEPARTURE_CONFIRMED",
+                            "Operation=" + (operation.Identity == null
+                                ? string.Empty : operation.Identity.OperationId)
+                            + "; Citizen=" + citizen.Handle
+                            + "; Vehicle=" + unit.Vehicle.Handle
+                            + "; DistanceFromScene=" + distanceFromScene.ToString("0.0")
+                            + "; SameCitizenLoaded=true; DriverInVehicle=true");
+                    }
+
+                    if (!operation.DepartureConfirmed)
+                    {
+                        DateTime cleanupLimit = operation.RetainedAt.AddSeconds(
+                            Math.Max(1, _settings.StandDownSeconds) * 2);
+                        if (now >= cleanupLimit)
+                            ReleaseNpcDetachedUnit(operation, unitIndex,
+                                citizenInVehicle
+                                    ? "DepartureNotConfirmedWithinBoundedWindow"
+                                    : "CitizenNoLongerLoadedWithinBoundedWindow",
+                                distanceFromPlayer);
+                        continue;
+                    }
+
+                    if (operation.CleanupStartedAt == DateTime.MinValue)
+                        operation.CleanupStartedAt = now;
+                    DateTime distantCleanupAt = operation.CleanupStartedAt.AddSeconds(
+                        Math.Max(1, _settings.StandDownSeconds));
+                    DateTime releaseDeadline = operation.CleanupStartedAt.AddSeconds(
+                        Math.Max(1, _settings.StandDownSeconds) * 2);
+                    if (distanceFromPlayer >= SafeCleanupDistance
+                        && now >= distantCleanupAt)
+                    {
+                        ReleaseNpcDetachedUnit(operation, unitIndex,
+                            "DepartedAndBeyondSafeCleanupRange", distanceFromPlayer);
+                    }
+                    else if (now >= releaseDeadline)
+                    {
+                        // Relinquish only the old Backup unit. Never delete its
+                        // vehicle, the loaded Citizen, or the new contact.
+                        ReleaseNpcDetachedUnit(operation, unitIndex,
+                            "BoundedBackgroundCleanupDeadline", distanceFromPlayer);
+                    }
+                }
+
+                if (operation.Units.Count == 0)
+                {
+                    if (!operation.CleanupLogged)
+                    {
+                        operation.CleanupLogged = true;
+                        LogRuntime("POLICE_BACKUP_NPC_DETACHED_CLEANUP_COMPLETED",
+                            "Operation=" + (operation.Identity == null
+                                ? string.Empty : operation.Identity.OperationId)
+                            + "; Interaction=" + (operation.Identity == null
+                                ? string.Empty : operation.Identity.InteractionId)
+                            + "; Citizen=" + (operation.Identity == null
+                                ? 0 : operation.Identity.CitizenHandle)
+                            + "; Lifecycle=" + (operation.Identity == null
+                                ? LSPDBackupAssignmentState.None
+                                : operation.Identity.LifecycleState));
+                    }
+                    _npcDetachedCleanupOperations.RemoveAt(operationIndex);
+                }
+            }
+        }
+
+        private void ReleaseNpcDetachedUnit(
+            NpcDetachedCleanupOperation operation,
+            int unitIndex,
+            string reason,
+            float distanceFromPlayer)
+        {
+            if (operation == null || unitIndex < 0
+                || unitIndex >= operation.Units.Count)
+                return;
+
+            BackupUnit unit = operation.Units[unitIndex];
+            int vehicleHandle = 0;
+            try
+            {
+                if (unit != null && unit.Vehicle != null)
+                    vehicleHandle = unit.Vehicle.Handle;
+            }
+            catch { }
+            ReleaseBrokenUnit(unit);
+            operation.Units.RemoveAt(unitIndex);
+            LogRuntime("POLICE_BACKUP_NPC_DETACHED_UNIT_RELEASED",
+                "Operation=" + (operation.Identity == null
+                    ? string.Empty : operation.Identity.OperationId)
+                + "; Interaction=" + (operation.Identity == null
+                    ? string.Empty : operation.Identity.InteractionId)
+                + "; Citizen=" + (operation.Identity == null
+                    ? 0 : operation.Identity.CitizenHandle)
+                + "; Vehicle=" + vehicleHandle
+                + "; Distance=" + (float.IsNaN(distanceFromPlayer)
+                    ? "Unavailable" : distanceFromPlayer.ToString("0.0"))
+                + "; Reason=" + (reason ?? "Unknown"));
         }
 
         /// <summary>
@@ -721,10 +1244,13 @@ namespace LSImmersiveLife
             Ped player,
             bool paused)
         {
-            if (!Active || paused)
+            if (paused)
                 return;
 
             DateTime now = DateTime.UtcNow;
+            ProcessNpcDetachedBackgroundCleanup(player, now);
+            if (!Active)
+                return;
             if (_state == LSPDBackupAssignmentState.StandingDown)
             {
                 ProcessStandDown(player, now);
@@ -819,6 +1345,7 @@ namespace LSImmersiveLife
             // directly into the existing physical custody handoff after the
             // vehicle has stopped.
             if (npcAssignment && _npcTargetWasFleeing && !_npcTransportStarted
+                && !_npcCustodyTransportRequested
                 && MaintainNpcVehicleAssignment(npcResponse, player, now))
                 return;
 
@@ -1139,6 +1666,7 @@ namespace LSImmersiveLife
             _npcResponse = null;
             _gangResponse = null;
             _operationId = string.Empty;
+            _npcAssignmentIdentity = null;
             _assetPreparationDeadline = DateTime.MinValue;
             _nextAssetRequestAt = DateTime.MinValue;
             _stateChangedAt = DateTime.MinValue;
@@ -1324,7 +1852,7 @@ namespace LSImmersiveLife
             int requestedUnits = _npcResponse == null
                 ? _settings.UnitsPerRequest
                 : npcVehiclePursuit
-                    ? Math.Min(2, Math.Max(1, _settings.UnitsPerRequest))
+                    ? NpcVehiclePursuitRequiredUnitCount
                     : 1;
             if (_gangResponse != null)
                 requestedUnits = Math.Min(3, Math.Max(2, _settings.UnitsPerRequest));
@@ -1408,10 +1936,29 @@ namespace LSImmersiveLife
                     bool pursuitStaged = TryFindPursuitStagingPosition(
                         player, pursuitSlotIndex, unitPursuitTarget,
                         unitPursuitVehicle, out spawn);
-                    if (!pursuitStaged && dispatchPursuit)
+                    if (!pursuitStaged
+                        && (dispatchPursuit || npcVehiclePursuit))
+                    {
+                        // The NPC vehicle-flight rear/front roles are opposite
+                        // the Dispatch slot numbering. Keep the fallback road
+                        // search bounded, but map its slot so unit 0 remains
+                        // behind and unit 1 remains ahead.
+                        int fallbackSlot = npcVehiclePursuit
+                            ? NpcVehiclePursuitRequiredUnitCount - 1
+                                - pursuitSlotIndex
+                            : pursuitSlotIndex;
                         pursuitStaged = TryFindPursuitBackupRoadStagingPosition(
-                            pursuitSlotIndex, unitPursuitTarget,
+                            fallbackSlot, unitPursuitTarget,
                             unitPursuitVehicle, out spawn);
+                        if (pursuitStaged && npcVehiclePursuit)
+                            LogRuntime(
+                                "POLICE_BACKUP_NPC_VEHICLE_STAGING_FALLBACK_USED",
+                                "Target=" + unitPursuitTarget.Handle
+                                + "; UnitIndex=" + index
+                                + "; Role=" + (index == 0 ? "RearPursuit" : "ForwardInterceptor")
+                                + "; Position=" + spawn
+                                + "; Search=BoundedAlternateVehicleRoadNodes");
+                    }
                     if (!pursuitStaged)
                     {
                         LogRuntime("POLICE_BACKUP_INTERCEPTION_STAGING_REJECTED",
@@ -1745,7 +2292,25 @@ namespace LSImmersiveLife
                     + "; Interceptor=" + (citizenPursuitUnits.Count > 1
                         ? citizenPursuitUnits[1].Vehicle.Handle : 0)
                     + "; Units=" + citizenPursuitUnits.Count
-                    + "; Maximum=2");
+                    + "; Requested=" + NpcVehiclePursuitRequiredUnitCount
+                    + "; AssignmentStatus=" + (citizenPursuitUnits.Count
+                        >= NpcVehiclePursuitRequiredUnitCount
+                            ? "TwoUnitTeam" : "DegradedSingleOrNoInterceptor")
+                    + "; Maximum=" + NpcVehiclePursuitRequiredUnitCount);
+                if (citizenPursuitUnits.Count
+                    < NpcVehiclePursuitRequiredUnitCount)
+                {
+                    LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_DEGRADED",
+                        "Ped=" + (movingTarget == null ? 0 : movingTarget.Handle)
+                        + "; Requested=" + NpcVehiclePursuitRequiredUnitCount
+                        + "; Created=" + citizenPursuitUnits.Count
+                        + "; Lead=" + (citizenPursuitUnits.Count > 0
+                            ? citizenPursuitUnits[0].Vehicle.Handle : 0)
+                        + "; Interceptor=0"
+                        + "; Reason=BOUNDED_STAGING_OR_UNIT_CREATION_FAILED"
+                        + "; PlayerMayContinuePursuit=true");
+                    Notify("~b~POLICE BACKUP~s~\nOnly one vehicle pursuit unit could be staged after bounded road-node retries. The Citizen contact remains active.");
+                }
             }
             return _units.Count > 0;
         }
@@ -3193,7 +3758,17 @@ namespace LSImmersiveLife
                     pursuitUnit.NpcBlockerRouteAttempted = false;
                     pursuitUnit.NpcBlockerLastProgressPosition = pursuitUnit.Vehicle.Position;
                     pursuitUnit.NpcPursuitDriverTaskCleared = false;
+                    pursuitUnit.NpcVehicleChaseTaskIssued = false;
+                    pursuitUnit.NpcLeadRoadRecoveryActive = false;
+                    pursuitUnit.NpcVehicleChaseRecoveryAttempts = 0;
+                    pursuitUnit.NpcVehicleChaseRecoveryDegradedLogged = false;
+                    pursuitUnit.NextNpcVehicleProgressCheckAt = now;
                     pursuitUnit.LastDriveTaskAt = DateTime.MinValue;
+                    pursuitUnit.LastProgressAt = now;
+                    pursuitUnit.LastPursuitTargetDistance =
+                        pursuitUnit.Vehicle.Position.DistanceTo(
+                            subjectVehicle.Position);
+                    pursuitUnit.LastPursuitGoalDistance = float.MaxValue;
                     pursuitUnit.Destination = Vector3.Zero;
                 }
                 pursuitUnit.NpcVehiclePursuitActive = true;
@@ -3201,6 +3776,14 @@ namespace LSImmersiveLife
 
             float targetSpeed = Math.Abs(subjectVehicle.Speed);
             float leadDistance = lead.Vehicle.Position.DistanceTo(subjectVehicle.Position);
+            float nearestUnitDistance = leadDistance;
+            foreach (BackupUnit pursuitUnit in pursuingUnits)
+            {
+                float unitDistance = pursuitUnit.Vehicle.Position.DistanceTo(
+                    subjectVehicle.Position);
+                if (unitDistance < nearestUnitDistance)
+                    nearestUnitDistance = unitDistance;
+            }
             bool targetStopped = targetSpeed <= DispatchVehicleStoppedSpeed;
             if (targetStopped)
             {
@@ -3224,30 +3807,8 @@ namespace LSImmersiveLife
                     && !pursuitUnit.NpcBlockerFallbackToTrail;
                 if (!aheadInterceptor)
                 {
-                    SetEmergencySignals(pursuitUnit.Vehicle, true);
-                    if (now >= pursuitUnit.LastDriveTaskAt
-                        .AddMilliseconds(TaskRefreshMilliseconds))
-                    {
-                        try
-                        {
-                            pursuitUnit.Driver.Task.VehicleChase(subject);
-                            pursuitUnit.LastDriveTaskAt = now;
-                            if (!_npcVehiclePursuitStartedLogged)
-                            {
-                                _npcVehiclePursuitStartedLogged = true;
-                                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED",
-                                    "Ped=" + subject.Handle
-                                    + "; Vehicle=" + subjectVehicle.Handle
-                                    + "; Lead=" + pursuitUnit.Vehicle.Handle
-                                    + "; Mode=LiveVehicleChase");
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            LogException("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_FAILED", ex);
-                            pursuitUnit.LastDriveTaskAt = now;
-                        }
-                    }
+                    MaintainNpcVehicleLeadPursuit(
+                        pursuitUnit, subject, subjectVehicle, now);
                     continue;
                 }
 
@@ -3358,6 +3919,10 @@ namespace LSImmersiveLife
                     + "; Lead=" + lead.Vehicle.Handle
                     + "; Interceptor=" + (blocker == null ? 0 : blocker.Vehicle.Handle)
                     + "; LeadDistance=" + leadDistance.ToString("0.0")
+                    + "; LeadSpeed=" + Math.Abs(lead.Vehicle.Speed).ToString("0.0")
+                    + "; LeadChaseIssued=" + lead.NpcVehicleChaseTaskIssued
+                    + "; LeadRoadRecovery=" + lead.NpcLeadRoadRecoveryActive
+                    + "; LeadRecoveryAttempts=" + lead.NpcVehicleChaseRecoveryAttempts
                     + "; Speed=" + targetSpeed.ToString("0.0")
                     + "; SustainedStop=" + (_npcVehicleStoppedAt != DateTime.MinValue
                         && now >= _npcVehicleStoppedAt.AddMilliseconds(
@@ -3367,7 +3932,8 @@ namespace LSImmersiveLife
             bool sustainedStop = _npcVehicleStoppedAt != DateTime.MinValue
                 && now >= _npcVehicleStoppedAt.AddMilliseconds(
                     NpcVehicleStopSettleMilliseconds);
-            if (!sustainedStop || leadDistance > NpcVehicleContainmentRadius)
+            if (!sustainedStop
+                || nearestUnitDistance > NpcVehicleContainmentRadius)
                 return false;
 
             foreach (BackupUnit pursuitUnit in pursuingUnits)
@@ -3383,12 +3949,324 @@ namespace LSImmersiveLife
                     + "; TargetVehicle=" + subjectVehicle.Handle
                     + "; Lead=" + lead.Vehicle.Handle
                     + "; Interceptor=" + (blocker == null ? 0 : blocker.Vehicle.Handle)
+                    + "; NearestContainmentDistance="
+                    + nearestUnitDistance.ToString("0.0")
                     + "; TargetSpeed=" + targetSpeed.ToString("0.00")
                     + "; SustainedStopMilliseconds=" + NpcVehicleStopSettleMilliseconds
                     + "; SameCitizen=true");
             }
             SetState(LSPDBackupAssignmentState.Intercepting);
             return true;
+        }
+
+        private void MaintainNpcVehicleLeadPursuit(
+            BackupUnit unit,
+            Ped subject,
+            Vehicle subjectVehicle,
+            DateTime now)
+        {
+            if (!IsUsable(unit) || subject == null || !subject.Exists()
+                || subjectVehicle == null || !subjectVehicle.Exists())
+                return;
+
+            SetEmergencySignals(unit.Vehicle, true);
+            if (now >= unit.NextNpcVehicleProgressCheckAt)
+            {
+                unit.NextNpcVehicleProgressCheckAt = now.AddMilliseconds(
+                    NpcVehicleLeadProgressSampleMilliseconds);
+                float targetDistance = unit.Vehicle.Position.DistanceTo(
+                    subjectVehicle.Position);
+                if (unit.NpcLeadRoadRecoveryActive)
+                {
+                    float goalDistance = unit.Destination == Vector3.Zero
+                        ? float.MaxValue
+                        : unit.Vehicle.Position.DistanceTo(unit.Destination);
+                    bool routeProgress = unit.LastPursuitGoalDistance < float.MaxValue
+                        && goalDistance <= unit.LastPursuitGoalDistance
+                            - NpcVehicleLeadRouteProgressDistance;
+                    if (routeProgress)
+                        unit.LastProgressAt = now;
+                    unit.LastPursuitGoalDistance = goalDistance;
+
+                    if (goalDistance <= 12f
+                        || targetDistance <= NpcVehicleLeadResumeChaseDistance)
+                    {
+                        unit.NpcLeadRoadRecoveryActive = false;
+                        unit.NpcVehicleChaseTaskIssued = false;
+                        unit.Destination = Vector3.Zero;
+                        unit.LastDriveTaskAt = DateTime.MinValue;
+                        unit.LastProgressAt = now;
+                        unit.LastPursuitTargetDistance = targetDistance;
+                        LogRuntime("POLICE_BACKUP_NPC_VEHICLE_LEAD_RECOVERY_COMPLETED",
+                            "Ped=" + subject.Handle
+                            + "; TargetVehicle=" + subjectVehicle.Handle
+                            + "; Lead=" + unit.Vehicle.Handle
+                            + "; GoalDistance=" + goalDistance.ToString("0.0")
+                            + "; TargetDistance=" + targetDistance.ToString("0.0")
+                            + "; Next=LiveVehicleChase");
+                    }
+                    else if (now >= unit.LastProgressAt.AddSeconds(
+                        RouteStallTimeoutSeconds))
+                    {
+                        StartNpcVehicleLeadRoadRecovery(
+                            unit, subject, subjectVehicle, now);
+                    }
+                }
+                else
+                {
+                    bool chaseProgress = unit.LastPursuitTargetDistance
+                            < float.MaxValue
+                        && targetDistance <= unit.LastPursuitTargetDistance
+                            - NpcVehicleLeadProgressDistance;
+                    if (chaseProgress)
+                        unit.LastProgressAt = now;
+                    else if (now >= unit.LastProgressAt.AddSeconds(
+                        RouteStallTimeoutSeconds))
+                        StartNpcVehicleLeadRoadRecovery(
+                            unit, subject, subjectVehicle, now);
+                }
+
+                unit.LastPursuitTargetDistance = targetDistance;
+            }
+
+            if (unit.NpcLeadRoadRecoveryActive
+                || unit.NpcVehicleChaseTaskIssued)
+                return;
+            if (now < unit.LastDriveTaskAt.AddMilliseconds(
+                    TaskRefreshMilliseconds))
+                return;
+
+            try
+            {
+                // Match Dispatch's live chase ownership: issue once for the
+                // same Citizen/vehicle, then use bounded progress recovery
+                // rather than replacing VehicleChase on a fixed five-second timer.
+                unit.Driver.Task.VehicleChase(subject);
+                unit.NpcVehicleChaseTaskIssued = true;
+                unit.LastDriveTaskAt = now;
+                if (!_npcVehiclePursuitStartedLogged)
+                {
+                    _npcVehiclePursuitStartedLogged = true;
+                    LogRuntime("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_STARTED",
+                        "Ped=" + subject.Handle
+                        + "; Vehicle=" + subjectVehicle.Handle
+                        + "; Lead=" + unit.Vehicle.Handle
+                        + "; Mode=LiveVehicleChase; TaskIssuedOnceForTarget=true");
+                }
+            }
+            catch (Exception ex)
+            {
+                LogException("POLICE_BACKUP_NPC_VEHICLE_PURSUIT_FAILED", ex);
+                unit.NpcVehicleChaseTaskIssued = false;
+                unit.LastDriveTaskAt = now;
+            }
+        }
+
+        private void StartNpcVehicleLeadRoadRecovery(
+            BackupUnit unit,
+            Ped subject,
+            Vehicle subjectVehicle,
+            DateTime now)
+        {
+            if (!IsUsable(unit) || subject == null || !subject.Exists()
+                || subjectVehicle == null || !subjectVehicle.Exists())
+                return;
+
+            if (unit.NpcVehicleChaseRecoveryAttempts
+                >= NpcVehicleInterceptionRouteFailureLimit)
+            {
+                DegradeNpcVehicleLeadRecovery(
+                    unit, subject, subjectVehicle, now,
+                    "BOUNDED_RECOVERY_LIMIT_REACHED");
+                return;
+            }
+
+            Vector3 recoveryRoad;
+            float recoveryHeading;
+            bool nodeResolved = TryResolveDispatchVehiclePursuitRoadNode(
+                subject, subjectVehicle, false,
+                out recoveryRoad, out recoveryHeading);
+            bool sameRoute = nodeResolved && unit.Destination != Vector3.Zero
+                && unit.Destination.DistanceTo(recoveryRoad) < 18f;
+            if (!nodeResolved || sameRoute
+                || !SendTo(unit, recoveryRoad, true))
+            {
+                unit.NpcVehicleChaseRecoveryAttempts++;
+                unit.LastProgressAt = now;
+                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_LEAD_RECOVERY_REJECTED",
+                    "Ped=" + subject.Handle
+                    + "; TargetVehicle=" + subjectVehicle.Handle
+                    + "; Lead=" + unit.Vehicle.Handle
+                    + "; Attempt=" + unit.NpcVehicleChaseRecoveryAttempts
+                    + "; Candidate=" + recoveryRoad
+                    + "; Reason=" + (!nodeResolved ? "NO_SAFE_CURRENT_ROAD_NODE"
+                        : sameRoute ? "NO_NEW_ROUTE_PROGRESS"
+                        : "DRIVE_TASK_REJECTED"));
+                if (unit.NpcVehicleChaseRecoveryAttempts
+                    >= NpcVehicleInterceptionRouteFailureLimit)
+                    DegradeNpcVehicleLeadRecovery(
+                        unit, subject, subjectVehicle, now,
+                        "ALL_BOUNDED_LEAD_ROUTE_RECOVERIES_FAILED");
+                return;
+            }
+
+            unit.NpcVehicleChaseRecoveryAttempts++;
+            unit.NpcLeadRoadRecoveryActive = true;
+            unit.NpcVehicleChaseTaskIssued = false;
+            unit.LastProgressAt = now;
+            unit.LastPursuitGoalDistance = unit.Vehicle.Position.DistanceTo(
+                unit.Destination);
+            LogRuntime("POLICE_BACKUP_NPC_VEHICLE_LEAD_RECOVERY_STARTED",
+                "Ped=" + subject.Handle
+                + "; TargetVehicle=" + subjectVehicle.Handle
+                + "; Lead=" + unit.Vehicle.Handle
+                + "; Attempt=" + unit.NpcVehicleChaseRecoveryAttempts
+                + "; Destination=" + unit.Destination
+                + "; RoadHeading=" + recoveryHeading.ToString("0.0")
+                + "; SpeedPolicy=ExistingSafeBackupRoadRoute");
+        }
+
+        private void DegradeNpcVehicleLeadRecovery(
+            BackupUnit unit,
+            Ped subject,
+            Vehicle subjectVehicle,
+            DateTime now,
+            string reason)
+        {
+            if (!unit.NpcVehicleChaseRecoveryDegradedLogged)
+            {
+                unit.NpcVehicleChaseRecoveryDegradedLogged = true;
+                LogRuntime("POLICE_BACKUP_NPC_VEHICLE_LEAD_RECOVERY_DEGRADED",
+                    "Ped=" + subject.Handle
+                    + "; TargetVehicle=" + subjectVehicle.Handle
+                    + "; Lead=" + unit.Vehicle.Handle
+                    + "; Attempts=" + unit.NpcVehicleChaseRecoveryAttempts
+                    + "; Reason=" + reason
+                    + "; Fallback=LiveVehicleChase; InterceptorRemainsAssigned=true");
+            }
+            unit.NpcLeadRoadRecoveryActive = false;
+            unit.NpcVehicleChaseTaskIssued = false;
+            unit.Destination = Vector3.Zero;
+            unit.LastDriveTaskAt = DateTime.MinValue;
+            unit.LastProgressAt = now;
+        }
+
+        // Citizen injury samples use this read-only, bounded view to distinguish
+        // an assigned Backup Ped from Player/ambient damage. It is called only
+        // after the selected Citizen's health decreases; it never issues tasks
+        // or searches the world.
+        internal Tuple<bool, string> CaptureNpcDamageEvidence(
+            Ped citizen,
+            int allegedAttackerHandle)
+        {
+            if (citizen == null || !citizen.Exists())
+                return Tuple.Create(false,
+                    "BackupSnapshot=CitizenUnavailable; BackupState=" + _state);
+
+            const int maximumUnits = 4;
+            const int maximumSupportOfficersPerUnit = 4;
+            var units = new List<string>(maximumUnits);
+            int inspectedUnits = 0;
+            bool allegedAttackerIsBackup = false;
+            for (int index = 0; index < _units.Count && inspectedUnits < maximumUnits; index++)
+            {
+                BackupUnit unit = _units[index];
+                if (unit == null)
+                    continue;
+                inspectedUnits++;
+
+                try
+                {
+                    int vehicleHandle = unit.Vehicle != null && unit.Vehicle.Exists()
+                        ? unit.Vehicle.Handle : 0;
+                    string vehicleDistance = vehicleHandle == 0
+                        ? "Unavailable"
+                        : unit.Vehicle.Position.DistanceTo(citizen.Position)
+                            .ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+                    string role = !unit.NpcVehiclePursuitActive
+                        ? "NotCitizenVehiclePursuit"
+                        : unit.VehiclePursuitLead ? "CitizenVehicleLead"
+                        : unit.VehiclePursuitBlocker
+                            ? unit.NpcBlockerFallbackToTrail
+                                ? "CitizenVehicleTrailFallback"
+                                : "CitizenVehicleInterceptor"
+                            : "CitizenVehiclePursuitRoleUnknown";
+                    var actors = new List<string>(maximumSupportOfficersPerUnit + 1);
+                    if (unit.Driver != null)
+                    {
+                        actors.Add(FormatNpcDamageActorEvidence(unit.Driver, citizen));
+                        if (unit.Driver.Handle == allegedAttackerHandle)
+                            allegedAttackerIsBackup = true;
+                    }
+
+                    int supportCount = 0;
+                    if (unit.Officers != null)
+                    {
+                        for (int officerIndex = 0;
+                            officerIndex < unit.Officers.Count
+                                && supportCount < maximumSupportOfficersPerUnit;
+                            officerIndex++)
+                        {
+                            Ped officer = unit.Officers[officerIndex];
+                            if (officer == null)
+                                continue;
+                            supportCount++;
+                            actors.Add(FormatNpcDamageActorEvidence(officer, citizen));
+                            if (officer.Handle == allegedAttackerHandle)
+                                allegedAttackerIsBackup = true;
+                        }
+                    }
+
+                    units.Add("Unit=" + inspectedUnits
+                        + ",Vehicle=" + vehicleHandle
+                        + ",VehicleDistance=" + vehicleDistance
+                        + "m,Lead=" + unit.VehiclePursuitLead
+                        + ",Blocker=" + unit.VehiclePursuitBlocker
+                        + ",BlockerTrailFallback=" + unit.NpcBlockerFallbackToTrail
+                        + ",NpcVehiclePursuitActive=" + unit.NpcVehiclePursuitActive
+                        + ",Target=" + unit.NpcPursuitTargetHandle
+                        + ",PursuitVehicle=" + unit.NpcPursuitVehicleHandle
+                        + ",OwnerTask=" + role
+                        + ",Actors=[" + string.Join("|", actors.ToArray()) + "]");
+                }
+                catch (Exception ex)
+                {
+                    units.Add("Unit=" + inspectedUnits + ",SnapshotUnavailable="
+                        + ex.GetType().Name);
+                }
+            }
+
+            string snapshot = "BackupState=" + _state
+                + "; BackupUnitsTotal=" + _units.Count
+                + "; BackupUnitsInspected=" + inspectedUnits
+                + "; BackupSnapshotUnitLimit=" + maximumUnits
+                + "; AllegedAttackerIsAssignedBackup=" + allegedAttackerIsBackup
+                + "; BackupUnits=[" + string.Join(";", units.ToArray()) + "]";
+            return Tuple.Create(allegedAttackerIsBackup, snapshot);
+        }
+
+        private static string FormatNpcDamageActorEvidence(Ped actor, Ped citizen)
+        {
+            try
+            {
+                if (!actor.Exists())
+                    return "Ped=" + actor.Handle + ",Exists=false";
+
+                Vehicle currentVehicle = actor.IsInVehicle() ? actor.CurrentVehicle : null;
+                int vehicleHandle = currentVehicle != null && currentVehicle.Exists()
+                    ? currentVehicle.Handle : 0;
+                string distance = actor.Position.DistanceTo(citizen.Position)
+                    .ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+                return "Ped=" + actor.Handle
+                    + ",Exists=true,Distance=" + distance + "m"
+                    + ",InVehicle=" + (vehicleHandle != 0)
+                    + ",CurrentVehicle=" + vehicleHandle;
+            }
+            catch (Exception ex)
+            {
+                return "Ped=" + (actor == null ? 0 : actor.Handle)
+                    + ",SnapshotUnavailable=" + ex.GetType().Name;
+            }
         }
 
         private void ResolveNpcVehiclePursuitUnits(
@@ -3478,6 +4356,18 @@ namespace LSImmersiveLife
             unit.Arrived = false;
             unit.PursuitBlockerHolding = false;
             unit.NpcPursuitDriverTaskCleared = false;
+            if (unit.NpcVehiclePursuitActive)
+            {
+                // HoldNpcPursuitVehicle clears the driver task. Invalidate the
+                // cached chase/recovery ownership so a moving target resumes
+                // the same bounded pursuit instead of leaving this unit
+                // stopped with a stale "task issued" flag.
+                unit.NpcVehicleChaseTaskIssued = false;
+                unit.NpcLeadRoadRecoveryActive = false;
+                unit.Destination = Vector3.Zero;
+                unit.LastDriveTaskAt = DateTime.MinValue;
+                unit.LastProgressAt = DateTime.UtcNow;
+            }
             SetEmergencySignals(unit.Vehicle, true);
             try
             {
@@ -3543,6 +4433,14 @@ namespace LSImmersiveLife
                 BeginStandDown("NPC escort officer was unavailable.");
                 return;
             }
+            if (npcResponse.IsPlayerCustodyActionActive)
+            {
+                // Citizen Interaction owns the same subject's physical arrest.
+                // Hold the assigned Backup state and leave the officer's
+                // existing cover task untouched until the cuff is confirmed.
+                SetState(LSPDBackupAssignmentState.Securing);
+                return;
+            }
             if (_npcEscortLastProgressAt == DateTime.MinValue)
             {
                 _npcEscortLastPosition = _npcEscortOfficer.Position;
@@ -3557,7 +4455,8 @@ namespace LSImmersiveLife
             // officer to exit and contain the subject. This prevents the old
             // behavior where the officer left at a stale point and chased on
             // foot while the citizen continued to run away.
-            if (_npcTargetWasFleeing && subjectVehicle == null
+            if (_npcTargetWasFleeing && !_npcCustodyTransportRequested
+                && subjectVehicle == null
                 && !_npcInterventionStarted
                 && MaintainNpcFootInterception(
                     unit, subject, npcResponse, DateTime.UtcNow))
@@ -3698,6 +4597,7 @@ namespace LSImmersiveLife
                 if (!npcResponse.IsBackupPrisonerLoading
                     && !npcResponse.IsBackupEscortMovementActive
                     && !npcResponse.IsBackupCustodyActionActive
+                    && !npcResponse.IsPlayerCustodyActionActive
                     && DateTime.UtcNow >= _nextNpcOfficerTaskAt)
                 {
                     try
@@ -6794,6 +7694,7 @@ namespace LSImmersiveLife
                 _npcResponse = null;
                 _gangResponse = null;
                 _operationId = string.Empty;
+                _npcAssignmentIdentity = null;
                 _npcBackgroundCleanupRequested = false;
                 _npcBackgroundDepartureDeadline = DateTime.MinValue;
                 _npcBackgroundDepartureOrigin = Vector3.Zero;
@@ -8544,6 +9445,54 @@ namespace LSImmersiveLife
                 && unit.Driver != null && unit.Driver.Exists() && !unit.Driver.IsDead;
         }
 
+        private static bool IsAvailablePed(Ped ped)
+        {
+            try
+            {
+                return ped != null && ped.Exists() && !ped.IsDead;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsAvailableVehicle(Vehicle vehicle)
+        {
+            try
+            {
+                return vehicle != null && vehicle.Exists();
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryReadPedCurrentVehicleHandle(
+            Ped ped,
+            out int vehicleHandle)
+        {
+            vehicleHandle = 0;
+            try
+            {
+                if (ped == null || !ped.Exists() || ped.IsDead)
+                    return false;
+                if (!ped.IsInVehicle())
+                    return true;
+
+                Vehicle currentVehicle = ped.CurrentVehicle;
+                if (currentVehicle == null || !currentVehicle.Exists())
+                    return false;
+                vehicleHandle = currentVehicle.Handle;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static bool IsGangSupportUnitUsable(BackupUnit unit)
         {
             if (unit == null || !unit.GangRouteLocked)
@@ -8771,6 +9720,8 @@ namespace LSImmersiveLife
                 "Assignment=" + _operationId);
 
             _state = state;
+            if (_npcAssignmentIdentity != null)
+                _npcAssignmentIdentity.LifecycleState = state;
             _stateChangedAt = DateTime.UtcNow;
             LogRuntime("POLICE_BACKUP_STATE", "State=" + state + "; Assignment=" + _operationId);
         }

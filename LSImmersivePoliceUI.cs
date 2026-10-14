@@ -64,6 +64,7 @@ namespace LSImmersiveLife
         private NativeItem _confirmNpcRecordReview;
         private NativeItem _arrestNpcCitizen;
         private NativeItem _releaseNpcCitizen;
+        private NativeItem _requestNpcPersonalTransport;
         private NativeItem _requestNpcTransportBackup;
         private NativeItem _convoyStatus;
         private NativeItem _requestConvoyActivity;
@@ -694,6 +695,7 @@ namespace LSImmersiveLife
             _confirmNpcRecordReview.Enabled = true;
             _arrestNpcCitizen.Enabled = true;
             _releaseNpcCitizen.Enabled = true;
+            _requestNpcPersonalTransport.Enabled = true;
             _requestNpcTransportBackup.Enabled = true;
         }
 
@@ -706,9 +708,12 @@ namespace LSImmersiveLife
             _confirmNpcRecordReview = new NativeItem("Confirm Review of Citizen Documents");
             _arrestNpcCitizen = new NativeItem("Arrest the Ped");
             _releaseNpcCitizen = new NativeItem("Release The Ped");
+            _requestNpcPersonalTransport = new NativeItem(
+                "Transport with Personal Police Utility",
+                "Physically escort and load this handcuffed Citizen into your supported Police Utility.");
             _requestNpcTransportBackup = new NativeItem(
                 "Request a Back Up For Citizen Transport",
-                "Request a nearby Backup transport escort for a physically secured citizen.");
+                "Request or accept the assigned Backup unit for physical custody transport.");
 
             _acceptNpcInteraction.Activated += delegate
             {
@@ -742,6 +747,10 @@ namespace LSImmersiveLife
             {
                 RunCoreCommand(_core.RequestNpcBackupTransport);
             };
+            _requestNpcPersonalTransport.Activated += delegate
+            {
+                RunCoreCommand(_core.RequestNpcPersonalVehicleTransport);
+            };
 
             npcInteraction.Add(_requestNpcDocuments);
             npcInteraction.Add(_requestNpcValidation);
@@ -750,6 +759,7 @@ namespace LSImmersiveLife
             npcInteraction.Add(_rejectNpcInteraction);
             npcInteraction.Add(_arrestNpcCitizen);
             npcInteraction.Add(_releaseNpcCitizen);
+            npcInteraction.Add(_requestNpcPersonalTransport);
             npcInteraction.Add(_requestNpcTransportBackup);
             npcInteraction.Opening += delegate { RefreshNpcInteractionMenu(); };
             RefreshNpcInteractionMenu();
