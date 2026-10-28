@@ -36,20 +36,25 @@ namespace LSImmersiveLife
         private NativeMenu _stationMenu;
         private NativeMenu _stationLocationsMenu;
         private NativeMenu _coordinationMenu;
-        private NativeMenu _weaponMenu;
-        private NativeMenu _favouriteMenu;
         private NativeMenu _personalPedMenu;
+        private NativeMenu _personalPedFavoritesMenu;
+        private NativeMenu _pendingProfilePedSelectionSourceMenu;
+        private NativeMenu _pendingProfilePedSelectionDestinationMenu;
+        private string _pendingProfilePedSelectionModelName = string.Empty;
         private NativeMenu _citizenBackupPedMenu;
+        private NativeMenu _citizenBackupFavoritesMenu;
         private NativeMenu _dispatchBackupPedMenu;
+        private NativeMenu _dispatchBackupFavoritesMenu;
         private NativeMenu _personalVehicleMenu;
+        private NativeMenu _personalVehicleFavoritesMenu;
         private NativeMenu _personalWeaponsMenu;
-        private NativeMenu _addPersonalWeaponMenu;
+        private NativeMenu _rewritePersonalWeaponsMenu;
         private NativeMenu _savedPersonalWeaponsMenu;
-        private NativeMenu _removePersonalWeaponMenu;
         private NativeMenu _audioMenu;
         private Action _refreshOffer;
         private NativeItem _investigateDispatch;
         private NativeItem _secureDispatch;
+        private NativeItem _arrestDispatch;
         private NativeItem _releaseDispatchSuspect;
         private NativeItem _requestDispatch;
         private NativeItem _approveTransport;
@@ -112,6 +117,18 @@ namespace LSImmersiveLife
         private string _pendingStationSetupPedId = string.Empty;
         private string _pendingStationSetupVehicleId = string.Empty;
         private string _stationEntrySuppressedUntilLeaveId = string.Empty;
+        private string _dispatchOfferPromptOfferId = string.Empty;
+        private string _dispatchOfferPromptTitle = string.Empty;
+        private string _dispatchOfferPromptBriefing = string.Empty;
+        private string _dispatchOfferPromptAcceptKey = "Y";
+        private string _dispatchOfferPromptRejectKey = "N";
+        private string _dispatchOfferPromptText = string.Empty;
+        private Keys _dispatchOfferPromptAcceptKeyCode;
+        private Keys _dispatchOfferPromptRejectKeyCode;
+        private bool _dispatchOfferPromptKeysInitialized;
+
+        private const int DispatchOfferPromptMaximumTitleCharacters = 58;
+        private const int DispatchOfferPromptMaximumBriefingCharacters = 46;
 
         internal LSImmersivePoliceUI(LSImmersivePoliceCore core)
         {
@@ -139,6 +156,7 @@ namespace LSImmersiveLife
             _profileMenu = Register(LSImmersiveMenuFactory.Create(
                 "Police Immersive Profile",
                 "Choose your Preferred Resources"));
+            ConfigureWideProfileMenu(_profileMenu, "Police Immersive Profile");
             _stationSetupMenu = Register(LSImmersiveMenuFactory.Create(
                 "Customize your Police Roleplay",
                 string.Empty));
@@ -166,20 +184,42 @@ namespace LSImmersiveLife
             _stationMenu = Register(LSImmersiveMenuFactory.Create("Police Stations", string.Empty));
             _stationLocationsMenu = Register(LSImmersiveMenuFactory.Create("Station Locations", string.Empty));
             _coordinationMenu = Register(LSImmersiveMenuFactory.Create("Coordination Routes", string.Empty));
-            _weaponMenu = Register(LSImmersiveMenuFactory.Create("Weapon Loadout", string.Empty));
-            _favouriteMenu = Register(LSImmersiveMenuFactory.Create("Saved Favorite Lists", string.Empty));
-            _personalPedMenu = Register(LSImmersiveMenuFactory.Create("DLC Characters", string.Empty));
+            _personalPedMenu = Register(LSImmersiveMenuFactory.Create(
+                "Character Model", "Character Resources"));
+            ConfigureWideProfileMenu(_personalPedMenu, "Character Model");
+            _personalPedFavoritesMenu = Register(LSImmersiveMenuFactory.Create(
+                "Favourite Characters", "Choose a saved character model."));
+            ConfigureWideProfileMenu(_personalPedFavoritesMenu, "Favourite Characters");
             _citizenBackupPedMenu = Register(LSImmersiveMenuFactory.Create(
                 "Back Up Ped for Citizen Interaction",
-                "Select the Character Model"));
+                "Select the preferred officer for Citizen Interaction."));
+            ConfigureWideProfileMenu(_citizenBackupPedMenu, "Back Up Ped for Citizen Interaction");
+            _citizenBackupFavoritesMenu = Register(LSImmersiveMenuFactory.Create(
+                "Citizen Backup Officers", "Choose a saved officer for Citizen Interaction."));
+            ConfigureWideProfileMenu(_citizenBackupFavoritesMenu, "Citizen Backup Officers");
             _dispatchBackupPedMenu = Register(LSImmersiveMenuFactory.Create(
                 "Back Up Ped for Dispatch and Crime Activity",
-                "Select the Character Model"));
-            _personalVehicleMenu = Register(LSImmersiveMenuFactory.Create("DLC Vehicles", string.Empty));
-            _personalWeaponsMenu = Register(LSImmersiveMenuFactory.Create("Personal Loudout Weapon", string.Empty));
-            _addPersonalWeaponMenu = Register(LSImmersiveMenuFactory.Create("Add From Weapon Library", string.Empty));
-            _savedPersonalWeaponsMenu = Register(LSImmersiveMenuFactory.Create("DLC Inventory Weapons", string.Empty));
-            _removePersonalWeaponMenu = Register(LSImmersiveMenuFactory.Create("Remove Personal Weapon", string.Empty));
+                "Select the preferred officer for Dispatch and Crime Activity."));
+            ConfigureWideProfileMenu(_dispatchBackupPedMenu, "Back Up Ped for Dispatch and Crime Activity");
+            _dispatchBackupFavoritesMenu = Register(LSImmersiveMenuFactory.Create(
+                "Dispatch Backup Officers",
+                "Choose a saved officer for Dispatch and Crime Activity."));
+            ConfigureWideProfileMenu(_dispatchBackupFavoritesMenu, "Dispatch Backup Officers");
+            _personalVehicleMenu = Register(LSImmersiveMenuFactory.Create(
+                "Vehicle Model", "Vehicle Resources"));
+            ConfigureWideProfileMenu(_personalVehicleMenu, "Vehicle Model");
+            _personalVehicleFavoritesMenu = Register(LSImmersiveMenuFactory.Create(
+                "Favourite Vehicles", "Choose a saved Police vehicle."));
+            ConfigureWideProfileMenu(_personalVehicleFavoritesMenu, "Favourite Vehicles");
+            _personalWeaponsMenu = Register(LSImmersiveMenuFactory.Create(
+                "Personal Weapon Loadout", "Save or apply the Player's personal weapon collection."));
+            ConfigureWideProfileMenu(_personalWeaponsMenu, "Personal Weapon Loadout");
+            _rewritePersonalWeaponsMenu = Register(LSImmersiveMenuFactory.Create(
+                "Rewrite the Weapon Loadout", "Confirm replacement of the saved collection."));
+            ConfigureWideProfileMenu(_rewritePersonalWeaponsMenu, "Rewrite the Weapon Loadout");
+            _savedPersonalWeaponsMenu = Register(LSImmersiveMenuFactory.Create(
+                "Personal Weapon Library", "Saved weapon-wheel items."));
+            ConfigureWideProfileMenu(_savedPersonalWeaponsMenu, "Personal Weapon Library");
             _audioMenu = Register(LSImmersiveMenuFactory.Create("Audio Response", string.Empty));
 
             BuildStationSetupMenus();
@@ -203,12 +243,10 @@ namespace LSImmersiveLife
             _stationMenu.AddSubMenu(_stationLocationsMenu);
             _stationMenu.AddSubMenu(_coordinationMenu);
 
-            _favouriteMenu.AddSubMenu(_personalPedMenu);
-            _favouriteMenu.AddSubMenu(_personalVehicleMenu);
-            _favouriteMenu.AddSubMenu(_savedPersonalWeaponsMenu);
-
-            _personalWeaponsMenu.AddSubMenu(_addPersonalWeaponMenu);
-            _personalWeaponsMenu.AddSubMenu(_removePersonalWeaponMenu);
+            _personalPedMenu.AddSubMenu(_personalPedFavoritesMenu);
+            _personalVehicleMenu.AddSubMenu(_personalVehicleFavoritesMenu);
+            _citizenBackupPedMenu.AddSubMenu(_citizenBackupFavoritesMenu);
+            _dispatchBackupPedMenu.AddSubMenu(_dispatchBackupFavoritesMenu);
 
             BuildAudioMenu();
 
@@ -216,16 +254,37 @@ namespace LSImmersiveLife
             _stationMenu.Opening += delegate { RefreshStationMenu(); };
             _stationSetupMenu.Opening += delegate { RefreshStationSetupSelections(); };
             _profileMenu.Opening += delegate { RefreshProfileMenu(); };
-            _weaponMenu.Opening += delegate { RefreshWeaponMenu(); };
-            _favouriteMenu.Opening += delegate { RefreshFavouriteMenus(); };
             _personalPedMenu.Opening += delegate { RefreshPersonalPedMenu(); };
+            _personalPedFavoritesMenu.Opening += delegate { RefreshPersonalPedFavoritesMenu(); };
             _personalVehicleMenu.Opening += delegate { RefreshPersonalVehicleMenu(); };
+            _personalVehicleFavoritesMenu.Opening += delegate { RefreshPersonalVehicleFavoritesMenu(); };
             _personalWeaponsMenu.Opening += delegate { RefreshPersonalWeaponsMenu(); };
+            _rewritePersonalWeaponsMenu.Opening += delegate { RefreshRewritePersonalWeaponsMenu(); };
+            _savedPersonalWeaponsMenu.Opening += delegate { RefreshPersonalWeaponLibraryMenu(); };
             _citizenBackupPedMenu.Opening += delegate { RefreshCitizenBackupPedMenu(); };
             _dispatchBackupPedMenu.Opening += delegate { RefreshDispatchBackupPedMenu(); };
-            _addPersonalWeaponMenu.Opening += delegate { RefreshAddPersonalWeaponMenu(); };
-            _savedPersonalWeaponsMenu.Opening += delegate { RefreshSavedPersonalWeaponsMenu(); };
-            _removePersonalWeaponMenu.Opening += delegate { RefreshRemovePersonalWeaponMenu(); };
+            _citizenBackupFavoritesMenu.Opening += delegate { RefreshBackupFavouriteMenu(_citizenBackupFavoritesMenu, true); };
+            _dispatchBackupFavoritesMenu.Opening += delegate { RefreshBackupFavouriteMenu(_dispatchBackupFavoritesMenu, false); };
+        }
+
+        private static void ConfigureWideProfileMenu(NativeMenu menu, string title)
+        {
+            if (menu == null)
+                return;
+
+            menu.Width = 640f;
+            ScaledRectangle banner = new ScaledRectangle(
+                new PointF(0f, 0f),
+                new SizeF(menu.Width, 105f));
+            banner.Color = Color.FromArgb(255, 47, 111, 190);
+            menu.Banner = banner;
+            PointF defaultPosition = menu.BannerText.Position;
+            int titleLength = string.IsNullOrWhiteSpace(title) ? 0 : title.Length;
+            menu.BannerText.Scale = titleLength > 36 ? 0.72f
+                : titleLength > 27 ? 0.82f : 0.92f;
+            menu.BannerText.Position = new PointF(
+                defaultPosition.X + (menu.Width / 2f) - 290f,
+                defaultPosition.Y);
         }
 
         private void BuildStationSetupMenus()
@@ -437,11 +496,13 @@ namespace LSImmersiveLife
             RefreshStationMenu();
             RefreshLocationMenus();
             RefreshProfileMenu();
-            RefreshWeaponMenu();
             RefreshFavouriteMenus();
+            RefreshPersonalPedMenu();
+            RefreshPersonalVehicleMenu();
             RefreshCitizenBackupPedMenu();
             RefreshDispatchBackupPedMenu();
             RefreshPersonalWeaponsMenu();
+            RefreshRewritePersonalWeaponsMenu();
             RefreshConvoyMenu();
             RefreshNpcInteractionMenu();
             RefreshGangIntelligence();
@@ -562,6 +623,14 @@ namespace LSImmersiveLife
                 bool sceneAvailable = _core.IsPoliceAuthorityActive
                     && _core.Patrol.IsPatrolling
                     && _core.Dispatch.HasIncident;
+                bool dispatchFrameworkAvailable = _core.IsPoliceAuthorityActive
+                    && !_core.Dispatch.HasIncident
+                    && !_core.Convoy.Active
+                    && !_core.CrimeActivity.BlocksOtherPoliceActivities
+                    && (!_core.Backup.BlocksPlayerActivities
+                        || _core.Backup.State == LSPDBackupAssignmentState.StandingDown)
+                    && !_core.GangResponse.HasActiveIncident
+                    && !_core.NpcResponse.HasActiveInteraction;
                 bool quietPatrol = _core.IsPoliceAuthorityActive
                     && _core.Patrol.IsPatrolling
                     && !_core.Dispatch.HasIncident
@@ -573,28 +642,40 @@ namespace LSImmersiveLife
                     && !_core.NpcResponse.HasActiveInteraction;
                 LSPDDispatchState state = _core.Dispatch.State;
                 _investigateDispatch.Enabled = _investigateDispatch != null
-                    && sceneAvailable
-                    && state != LSPDDispatchState.Offered
-                    && state != LSPDDispatchState.Completed
-                    && state != LSPDDispatchState.Cancelled;
+                    && _core.IsPoliceAuthorityActive
+                    && (!sceneAvailable
+                        || (state != LSPDDispatchState.Offered
+                            && state != LSPDDispatchState.Completed
+                            && state != LSPDDispatchState.Cancelled));
                 _secureDispatch.Enabled = _secureDispatch != null
-                    && sceneAvailable
-                    && state != LSPDDispatchState.Offered
-                    && state != LSPDDispatchState.EnRoute
-                    && state != LSPDDispatchState.Arrested
-                    && state != LSPDDispatchState.AwaitingTransport
-                    && state != LSPDDispatchState.HoldingAtStation
-                    && state != LSPDDispatchState.PrisonTransfer;
+                    && _core.IsPoliceAuthorityActive
+                    && (!sceneAvailable
+                        || (state != LSPDDispatchState.Offered
+                            && state != LSPDDispatchState.EnRoute
+                            && state != LSPDDispatchState.Arrested
+                            && state != LSPDDispatchState.AwaitingTransport
+                            && state != LSPDDispatchState.HoldingAtStation
+                            && state != LSPDDispatchState.PrisonTransfer));
+                _arrestDispatch.Enabled = _arrestDispatch != null
+                    && _core.IsPoliceAuthorityActive
+                    && (!sceneAvailable
+                        || (state != LSPDDispatchState.Offered
+                            && state != LSPDDispatchState.EnRoute
+                            && state != LSPDDispatchState.Completed
+                            && state != LSPDDispatchState.Cancelled
+                            && state != LSPDDispatchState.HoldingAtStation
+                            && state != LSPDDispatchState.PrisonTransfer));
                 if (_releaseDispatchSuspect != null)
                     _releaseDispatchSuspect.Enabled = _core.CanReleaseCurrentDispatchSuspect;
                 if (_approveTransport != null)
-                    _approveTransport.Enabled = _core.HasPendingPreferredUtilityTransportChoice
-                        || _core.Convoy.HoldingAtStation
-                        || state == LSPDDispatchState.Arrested;
+                    _approveTransport.Enabled = _core.IsPoliceAuthorityActive;
+                if (_finishCustody != null)
+                    _finishCustody.Enabled = _core.IsPoliceAuthorityActive;
                 if (_requestCrimeActivity != null)
                     _requestCrimeActivity.Enabled = quietPatrol;
                 if (_requestDispatch != null)
-                    _requestDispatch.Enabled = quietPatrol && _core.Dispatch.IsEnabled;
+                    _requestDispatch.Enabled = dispatchFrameworkAvailable
+                        && _core.Dispatch.IsEnabled;
                 if (_recoverPersonalUtility != null)
                     _recoverPersonalUtility.Enabled = _core.CanRecoverPersonalUtility;
                 RefreshBackupResponseMenu();
@@ -606,28 +687,37 @@ namespace LSImmersiveLife
                 "Ask the Call-Out Radio for an eligible incident now.");
             _requestDispatch.Activated += delegate
             {
-                RunCoreCommand(_core.RequestDispatch);
+                RunDispatchRequest();
             };
             dispatch.Add(_requestDispatch);
 
             // Each framework choice uses its documented owner or remains
             // visibly unavailable until a matching owner action exists.
-            _investigateDispatch = new NativeItem("Arrest the Suspect");
-            _secureDispatch = new NativeItem("Secure the Suspect");
+            _investigateDispatch = new NativeItem(
+                "Investigate Authored Objective",
+                "Use I only after the immediate threat is secured and this incident branch has an investigation objective. Murder requires a close-range victim examination before transport or completion.");
+            _secureDispatch = new NativeItem(
+                "Secure the Suspect",
+                "Use E to order an eligible resisting or fleeing suspect to surrender.");
+            _arrestDispatch = new NativeItem(
+                "Arrest the Suspect",
+                "Use E when the suspect is compliant or wounded to begin physical handcuffing.");
             _releaseDispatchSuspect = new NativeItem("Release the Ped");
             _approveTransport = new NativeItem("Request Transport");
             _finishCustody = new NativeItem("Complete the Transport");
             _recoverPersonalUtility = new NativeItem(
                 "Spawn the Personal Utility",
-                "Locate the saved Utility within 150 metres or recover it to safe parked ground nearby.");
+                "Recover the same managed Utility to safe nearby ground. You stay in place; if nearby parking cannot be confirmed, the Utility remains at its current safe location. Enter that vehicle before pressing P to start Patrol.");
             _investigateDispatch.Activated += delegate { RunCoreCommand(_core.InvestigateDispatch); };
             _secureDispatch.Activated += delegate { RunCoreCommand(_core.SecureDispatchSuspect); };
+            _arrestDispatch.Activated += delegate { RunCoreCommand(_core.ArrestDispatchSuspect); };
             _releaseDispatchSuspect.Activated += delegate { RunCoreCommand(_core.ReleaseDispatchSuspect); };
             _approveTransport.Activated += delegate { RunCoreCommand(_core.ApproveDispatchTransportAction); };
             _finishCustody.Activated += delegate { RunCoreCommand(_core.CompletePrisonerTransport); };
             _recoverPersonalUtility.Activated += delegate { RunCoreCommand(_core.RecoverPersonalUtility); };
             dispatch.Add(_investigateDispatch);
             dispatch.Add(_secureDispatch);
+            dispatch.Add(_arrestDispatch);
             AddUnavailableChoice(dispatch, "Instruct the Back Up Ped to Arrest a Suspect");
             AddUnavailableChoice(dispatch, "Instruct the Back Up Ped to Load the Suspect inside the Utility");
             dispatch.Add(_approveTransport);
@@ -786,6 +876,10 @@ namespace LSImmersiveLife
                 gpsAndControls,
                 "Secure",
                 delegate { RunCoreCommand(_core.SecureDispatchSuspect); });
+            LSImmersiveMenuFactory.AddAction(
+                gpsAndControls,
+                "Arrest",
+                delegate { RunCoreCommand(_core.ArrestDispatchSuspect); });
             LSImmersiveMenuFactory.AddAction(
                 gpsAndControls,
                 "Interact",
@@ -1129,24 +1223,34 @@ namespace LSImmersiveLife
         private void RefreshProfileMenu()
         {
             _profileMenu.Clear();
-            AddReadOnlyValueRow(
+            AddSubMenuEntry(
                 _profileMenu,
+                _personalPedMenu,
                 "Character Model",
-                _core.Profile.SelectedPedDisplayName);
-            AddReadOnlyValueRow(
+                SelectedResourceDescription(
+                    _core.Profile.SelectedPedDisplayName,
+                    "Open the Character Resources menu to type a model or choose a saved favorite."));
+            AddSubMenuEntry(
                 _profileMenu,
+                _personalVehicleMenu,
                 "Vehicle Model",
-                _core.Profile.SelectedVehicleDisplayName);
-            AddSubMenuEntry(_profileMenu, _weaponMenu, "Weapon Loadout");
+                SelectedResourceDescription(
+                    _core.Profile.SelectedVehicleDisplayName,
+                    "Open the Vehicle Resources menu to type a model or choose a saved favorite."));
             AddSubMenuEntry(
                 _profileMenu,
                 _citizenBackupPedMenu,
-                "Back Up Ped for Citizen Interaction");
+                "Back Up Ped for Citizen Interaction",
+                SelectedResourceDescription(
+                    SelectedBackupDisplayName(true),
+                    "Choose an officer preference for Citizen Interaction."));
             AddSubMenuEntry(
                 _profileMenu,
                 _dispatchBackupPedMenu,
-                "Back Up Ped for Dispatch and Crime Activity");
-            AddSubMenuEntry(_profileMenu, _favouriteMenu, "Saved Favorite Lists");
+                "Back Up Ped for Dispatch and Crime Activity",
+                SelectedResourceDescription(
+                    SelectedBackupDisplayName(false),
+                    "Choose an officer preference for Dispatch and Crime Activity."));
             AddSubMenuEntry(
                 _profileMenu,
                 _personalWeaponsMenu,
@@ -1154,59 +1258,112 @@ namespace LSImmersiveLife
             LSImmersiveMenuFactory.AddAction(
                 _profileMenu,
                 "Save the Profile Data",
-                delegate { RunCoreAction(_core.SavePoliceProfile); });
+                delegate { RunProfileAction(_core.SavePoliceProfile); });
         }
 
-        private void RefreshWeaponMenu()
+        private void RefreshProfileMenuDescriptions()
         {
-            _weaponMenu.Clear();
-            AddReadOnlyValueRow(
-                _weaponMenu,
-                "Preferred Weapon Loadout",
-                _core.Profile.SelectedWeaponDisplayName);
-            LSImmersiveMenuFactory.AddAction(
-                _weaponMenu,
-                "Enter Weapon ID or Name",
-                PromptForProfileWeapon);
+            SetMenuItemDescription(
+                _profileMenu,
+                "Character Model",
+                SelectedResourceDescription(
+                    _core.Profile.SelectedPedDisplayName,
+                    "Open the Character Resources menu to type a model or choose a saved favorite."));
+            SetMenuItemDescription(
+                _profileMenu,
+                "Vehicle Model",
+                SelectedResourceDescription(
+                    _core.Profile.SelectedVehicleDisplayName,
+                    "Open the Vehicle Resources menu to type a model or choose a saved favorite."));
+            SetMenuItemDescription(
+                _profileMenu,
+                "Back Up Ped for Citizen Interaction",
+                SelectedResourceDescription(
+                    SelectedBackupDisplayName(true),
+                    "Choose an officer preference for Citizen Interaction."));
+            SetMenuItemDescription(
+                _profileMenu,
+                "Back Up Ped for Dispatch and Crime Activity",
+                SelectedResourceDescription(
+                    SelectedBackupDisplayName(false),
+                    "Choose an officer preference for Dispatch and Crime Activity."));
+
+            SetMenuItemDescription(
+                _personalPedMenu,
+                "Select the Character Model",
+                SelectedResourceDescription(
+                    _core.Profile.SelectedPedDisplayName,
+                    "Enter a valid installed or add-on character model."));
+            SetMenuItemDescription(
+                _personalPedMenu,
+                "Favourite Resources Lists",
+                "Saved character models: " + _core.Profile.FavoritePeds.Count() + ".");
+            SetMenuItemDescription(
+                _personalVehicleMenu,
+                "Spawn the Vehicle Model",
+                SelectedResourceDescription(
+                    _core.Profile.SelectedVehicleDisplayName,
+                    "Enter a valid installed or add-on vehicle model."));
+            SetMenuItemDescription(
+                _personalVehicleMenu,
+                "Favourite Resources Lists",
+                "Saved vehicle models: " + _core.Profile.FavoriteVehicles.Count() + ".");
+
+            RefreshBackupMenuDescriptions(_citizenBackupPedMenu, true);
+            RefreshBackupMenuDescriptions(_dispatchBackupPedMenu, false);
         }
 
         private void RefreshFavouriteMenus()
         {
-            RefreshPersonalPedMenu();
-            RefreshPersonalVehicleMenu();
-            RefreshPersonalWeaponsMenu();
-            RefreshAddPersonalWeaponMenu();
-            RefreshSavedPersonalWeaponsMenu();
-            RefreshRemovePersonalWeaponMenu();
+            RefreshPersonalPedFavoritesMenu();
+            RefreshPersonalVehicleFavoritesMenu();
+            RefreshBackupFavouriteMenu(_citizenBackupFavoritesMenu, true);
+            RefreshBackupFavouriteMenu(_dispatchBackupFavoritesMenu, false);
+            RefreshPersonalWeaponLibraryMenu();
         }
 
         private void RefreshPersonalPedMenu()
         {
             _personalPedMenu.Clear();
-            AddReadOnlyRow(
+            AddDescribedAction(
                 _personalPedMenu,
-                "Saved Characters: " + _core.Profile.FavoritePeds.Count());
+                "Select the Character Model",
+                SelectedResourceDescription(
+                    _core.Profile.SelectedPedDisplayName,
+                    "Enter a valid installed or add-on character model."),
+                PromptForPersonalPed);
+            AddSubMenuEntry(
+                _personalPedMenu,
+                _personalPedFavoritesMenu,
+                "Favourite Resources Lists",
+                "Saved character models: " + _core.Profile.FavoritePeds.Count() + ".");
             LSImmersiveMenuFactory.AddAction(
                 _personalPedMenu,
                 "Save Current Character as Favorite",
-                delegate { RunCoreAction(_core.SetSelectedPedAsFavourite); });
+                delegate { RunProfileAction(_core.SetSelectedPedAsFavourite); });
+        }
+
+        private void RefreshPersonalPedFavoritesMenu()
+        {
+            _personalPedFavoritesMenu.Clear();
             LSImmersiveMenuFactory.AddAction(
-                _personalPedMenu,
-                "Enter Addon Ped Model",
-                PromptForPersonalPed);
+                _personalPedFavoritesMenu,
+                "Save Current Character as Favorite",
+                delegate { RunProfileAction(_core.SetSelectedPedAsFavourite); });
             LSPDPoliceFavoriteModel preferred = _core.Profile.ActiveFavoritePed;
             foreach (LSPDPoliceFavoriteModel definition in _core.Profile.FavoritePeds)
             {
                 LSPDPoliceFavoriteModel saved = definition;
                 NativeItem item = new NativeItem(
-                    "Apply " + saved.DisplayName,
+                    saved.DisplayName,
                     FormatFavoriteModelDetails(saved, preferred));
                 item.Activated += delegate
                 {
-                    RunCoreAction(delegate { return _core.SetCustomFavouritePed(saved.ModelName); });
+                    RunProfilePedSelection(saved.ModelName);
                 };
-                _personalPedMenu.Add(item);
+                _personalPedFavoritesMenu.Add(item);
             }
+            AddEmptyRow(_personalPedFavoritesMenu, "No saved character favorites", 1);
         }
 
         private void RefreshCitizenBackupPedMenu()
@@ -1222,141 +1379,203 @@ namespace LSImmersiveLife
         private void RefreshContextBackupPedMenu(NativeMenu menu, bool citizenInteraction)
         {
             menu.Clear();
-            LSPDPoliceFavoriteModel active = citizenInteraction
-                ? _core.Profile.ActiveFavoriteCitizenBackupPed
-                : _core.Profile.ActiveFavoriteDispatchBackupPed;
-            AddReadOnlyRow(
+            AddDescribedAction(
                 menu,
-                "Preferred Backup: " + (active == null ? "Default Police Model" : active.DisplayName));
-            AddReadOnlyRow(menu, "Saved Backup Officers: " + _core.Profile.FavoriteBackupPeds.Count());
+                "Select the Character Model",
+                SelectedResourceDescription(
+                    SelectedBackupDisplayName(citizenInteraction),
+                    citizenInteraction
+                        ? "Enter a supported officer model for Citizen Interaction Backup."
+                        : "Enter a supported officer model for Dispatch and Crime Activity Backup."),
+                delegate { PromptForBackupPed(citizenInteraction); });
+            NativeMenu favoritesMenu = citizenInteraction
+                ? _citizenBackupFavoritesMenu
+                : _dispatchBackupFavoritesMenu;
+            AddSubMenuEntry(
+                menu,
+                favoritesMenu,
+                "Favourite Resources Lists",
+                "Shared saved Backup officers: " + _core.Profile.FavoriteBackupPeds.Count()
+                + ". This preference remains separate for this response context.");
             LSImmersiveMenuFactory.AddAction(
                 menu,
-                "Use Selected Police Character",
+                "Use the Player's Selected Character",
                 delegate
                 {
                     if (citizenInteraction)
-                        RunCoreAction(_core.SetSelectedPedAsCitizenBackupFavourite);
+                        RunProfileAction(_core.SetSelectedPedAsCitizenBackupFavourite);
                     else
-                        RunCoreAction(_core.SetSelectedPedAsDispatchBackupFavourite);
+                        RunProfileAction(_core.SetSelectedPedAsDispatchBackupFavourite);
                 });
-            LSImmersiveMenuFactory.AddAction(
+        }
+
+        private void RefreshBackupMenuDescriptions(
+            NativeMenu menu,
+            bool citizenInteraction)
+        {
+            string selected = SelectedBackupDisplayName(citizenInteraction);
+            SetMenuItemDescription(
                 menu,
-                "Enter Addon Backup Officer Model",
-                delegate { PromptForBackupPed(citizenInteraction); });
+                "Select the Character Model",
+                SelectedResourceDescription(
+                    selected,
+                    citizenInteraction
+                        ? "Enter a supported officer model for Citizen Interaction Backup."
+                        : "Enter a supported officer model for Dispatch and Crime Activity Backup."));
+            SetMenuItemDescription(
+                menu,
+                "Favourite Resources Lists",
+                "Shared saved Backup officers: " + _core.Profile.FavoriteBackupPeds.Count()
+                + ". This preference remains separate for this response context.");
+        }
+
+        private void RefreshBackupFavouriteMenu(
+            NativeMenu menu,
+            bool citizenInteraction)
+        {
+            menu.Clear();
+            LSPDPoliceFavoriteModel active = citizenInteraction
+                ? _core.Profile.ActiveFavoriteCitizenBackupPed
+                : _core.Profile.ActiveFavoriteDispatchBackupPed;
             foreach (LSPDPoliceFavoriteModel definition in _core.Profile.FavoriteBackupPeds)
             {
                 LSPDPoliceFavoriteModel saved = definition;
                 NativeItem item = new NativeItem(
-                    "Use " + saved.DisplayName,
-                    saved.ModelName + (active != null && active.Id == saved.Id ? " | Preferred" : string.Empty));
+                    saved.DisplayName,
+                    saved.ModelName + (active != null && active.Id == saved.Id ? " | Selected for this context" : string.Empty));
                 item.Activated += delegate
                 {
-                    if (citizenInteraction)
-                        RunCoreAction(delegate { return _core.SelectCitizenBackupFavourite(saved.Id); });
-                    else
-                        RunCoreAction(delegate { return _core.SelectDispatchBackupFavourite(saved.Id); });
+                    RunProfileSelection(
+                        delegate
+                        {
+                            return citizenInteraction
+                                ? _core.SelectCitizenBackupFavourite(saved.Id)
+                                : _core.SelectDispatchBackupFavourite(saved.Id);
+                        },
+                        menu,
+                        citizenInteraction ? _citizenBackupPedMenu : _dispatchBackupPedMenu);
                 };
                 menu.Add(item);
             }
-            AddEmptyRow(menu, "No personal Backup officers saved", 4);
+            AddEmptyRow(menu, "No saved Backup officer favorites");
         }
 
         private void RefreshPersonalVehicleMenu()
         {
             _personalVehicleMenu.Clear();
-            AddReadOnlyRow(
+            AddDescribedAction(
                 _personalVehicleMenu,
-                "Saved Vehicles: " + _core.Profile.FavoriteVehicles.Count());
+                "Spawn the Vehicle Model",
+                SelectedResourceDescription(
+                    _core.Profile.SelectedVehicleDisplayName,
+                    "Enter a valid installed or add-on Police vehicle model."),
+                PromptForPersonalVehicle);
+            AddSubMenuEntry(
+                _personalVehicleMenu,
+                _personalVehicleFavoritesMenu,
+                "Favourite Resources Lists",
+                "Saved vehicle models: " + _core.Profile.FavoriteVehicles.Count() + ".");
             LSImmersiveMenuFactory.AddAction(
                 _personalVehicleMenu,
                 "Save Current Vehicle as Favorite",
-                delegate { RunCoreAction(_core.SetSelectedVehicleAsFavourite); });
+                delegate { RunProfileAction(_core.SetSelectedVehicleAsFavourite); });
+        }
+
+        private void RefreshPersonalVehicleFavoritesMenu()
+        {
+            _personalVehicleFavoritesMenu.Clear();
             LSImmersiveMenuFactory.AddAction(
-                _personalVehicleMenu,
-                "Enter Addon Vehicle Model",
-                PromptForPersonalVehicle);
+                _personalVehicleFavoritesMenu,
+                "Save Current Vehicle as Favorite",
+                delegate { RunProfileAction(_core.SetSelectedVehicleAsFavourite); });
             LSPDPoliceFavoriteModel preferred = _core.Profile.ActiveFavoriteVehicle;
             foreach (LSPDPoliceFavoriteModel definition in _core.Profile.FavoriteVehicles)
             {
                 LSPDPoliceFavoriteModel saved = definition;
                 NativeItem item = new NativeItem(
-                    "Spawn " + saved.DisplayName,
+                    saved.DisplayName,
                     FormatFavoriteModelDetails(saved, preferred));
                 item.Activated += delegate
                 {
-                    RunCoreAction(delegate { return _core.SetCustomFavouriteVehicle(saved.ModelName); });
+                    RunProfileSelection(
+                        delegate { return _core.SetCustomFavouriteVehicle(saved.ModelName); },
+                        _personalVehicleFavoritesMenu,
+                        _personalVehicleMenu);
                 };
-                _personalVehicleMenu.Add(item);
+                _personalVehicleFavoritesMenu.Add(item);
             }
+            AddEmptyRow(_personalVehicleFavoritesMenu, "No saved vehicle favorites", 1);
         }
 
         private void RefreshPersonalWeaponsMenu()
         {
             _personalWeaponsMenu.Clear();
             bool hasSavedLoadout = _core.Profile.PersonalWeapons.Any();
-            NativeItem applyLoadout = new NativeItem("Apply the Personal Loadout Weapon");
-            applyLoadout.Enabled = hasSavedLoadout;
-            applyLoadout.Activated += delegate { RunCoreAction(_core.ApplyPersonalLoadout); };
-            _personalWeaponsMenu.Add(applyLoadout);
-
             LSImmersiveMenuFactory.AddAction(
                 _personalWeaponsMenu,
-                hasSavedLoadout ? "Rewrite the Weapon Loadout" : "Save the Current Loadout",
-                delegate { RunCoreAction(_core.SaveCurrentPersonalLoadout); });
+                "Save the Weapon Inventory to Personal XML",
+                delegate { RunProfileAction(_core.SaveCurrentPersonalLoadout); });
+            NativeItem applyLoadout = new NativeItem(
+                "Apply the Personal Loadout Weapon",
+                hasSavedLoadout
+                    ? "Restore the saved weapon-wheel collection to the Player."
+                    : "No personal collection is saved yet.");
+            applyLoadout.Enabled = hasSavedLoadout;
+            applyLoadout.Activated += delegate { RunProfileAction(_core.ApplyPersonalLoadout); };
+            _personalWeaponsMenu.Add(applyLoadout);
+            AddSubMenuEntry(
+                _personalWeaponsMenu,
+                _rewritePersonalWeaponsMenu,
+                "Rewrite the Weapon Loadout",
+                hasSavedLoadout
+                    ? "Replace the saved collection with the weapons currently carried. Confirmation is required."
+                    : "Save a collection first. This action never changes an empty saved collection.");
+            AddSubMenuEntry(
+                _personalWeaponsMenu,
+                _savedPersonalWeaponsMenu,
+                "Personal Weapon Library",
+                hasSavedLoadout
+                    ? "Display the saved personal weapon collection."
+                    : "No personal weapon collection is saved yet.");
         }
 
-        private void RefreshAddPersonalWeaponMenu()
+        private void RefreshRewritePersonalWeaponsMenu()
         {
-            _addPersonalWeaponMenu.Clear();
-            foreach (LSPDPoliceWeaponDefinition definition in _core.Profile.Weapons)
+            _rewritePersonalWeaponsMenu.Clear();
+            bool hasSavedLoadout = _core.Profile.PersonalWeapons.Any();
+            AddReadOnlyRow(
+                _rewritePersonalWeaponsMenu,
+                hasSavedLoadout
+                    ? "Confirming will replace the saved collection with the weapons you carry now."
+                    : "No saved collection exists. Save the weapon inventory first.");
+            NativeItem confirm = new NativeItem("Confirm Rewrite");
+            confirm.Enabled = hasSavedLoadout;
+            confirm.Activated += delegate
             {
-                LSPDPoliceWeaponDefinition choice = definition;
-                bool saved = _core.Profile.FindPersonalWeapon(choice.Id) != null;
-                NativeItem item = new NativeItem(
-                    choice.DisplayName + (saved ? " | Saved" : string.Empty));
-                item.Enabled = !saved;
-                item.Activated += delegate
-                {
-                    RunCoreAction(delegate { return _core.AddPersonalWeapon(choice.Id); });
-                };
-                _addPersonalWeaponMenu.Add(item);
-            }
-            AddEmptyRow(_addPersonalWeaponMenu, "No Police weapons available");
+                RunProfileSelection(
+                    _core.RewritePersonalLoadout,
+                    _rewritePersonalWeaponsMenu,
+                    _personalWeaponsMenu);
+            };
+            _rewritePersonalWeaponsMenu.Add(confirm);
+            LSImmersiveMenuFactory.AddAction(
+                _rewritePersonalWeaponsMenu,
+                "Cancel and Return",
+                delegate { ReturnToProfileMenu(_rewritePersonalWeaponsMenu, _personalWeaponsMenu); });
         }
 
-        private void RefreshSavedPersonalWeaponsMenu()
+        private void RefreshPersonalWeaponLibraryMenu()
         {
             _savedPersonalWeaponsMenu.Clear();
             LSPDPoliceFavoriteWeapon preferred = _core.Profile.SelectedPersonalWeapon;
             foreach (LSPDPoliceFavoriteWeapon definition in _core.Profile.PersonalWeapons)
             {
-                LSPDPoliceFavoriteWeapon choice = definition;
                 NativeItem item = new NativeItem(
-                    choice.DisplayName,
-                    FormatFavoriteWeaponDetails(choice, preferred));
-                item.Activated += delegate
-                {
-                    RunCoreAction(delegate { return _core.SelectPersonalWeapon(choice.Id); });
-                };
+                    definition.DisplayName,
+                    FormatFavoriteWeaponDetails(definition, preferred));
                 _savedPersonalWeaponsMenu.Add(item);
             }
-            AddEmptyRow(_savedPersonalWeaponsMenu, "No personal Police weapons saved");
-        }
-
-        private void RefreshRemovePersonalWeaponMenu()
-        {
-            _removePersonalWeaponMenu.Clear();
-            foreach (LSPDPoliceFavoriteWeapon definition in _core.Profile.PersonalWeapons)
-            {
-                LSPDPoliceFavoriteWeapon choice = definition;
-                NativeItem item = new NativeItem("Remove " + choice.DisplayName);
-                item.Activated += delegate
-                {
-                    RunCoreAction(delegate { return _core.RemovePersonalWeapon(choice.Id); });
-                };
-                _removePersonalWeaponMenu.Add(item);
-            }
-            AddEmptyRow(_removePersonalWeaponMenu, "No personal Police weapons saved");
+            AddEmptyRow(_savedPersonalWeaponsMenu, "No personal weapon collection saved");
         }
 
         private void BuildAudioMenu()
@@ -1385,37 +1604,32 @@ namespace LSImmersiveLife
 
         private void PromptForPersonalPed()
         {
-            string value = ReadCustomIdentifier("Enter the addon ped model name.");
+            string value = ReadCustomIdentifier("Enter an installed or add-on character model name.");
             if (string.IsNullOrWhiteSpace(value))
                 return;
-            RunCoreAction(delegate { return _core.SetCustomFavouritePed(value); });
+            RunProfileAction(delegate { return _core.SetCustomFavouritePed(value); });
         }
 
         private void PromptForPersonalVehicle()
         {
-            string value = ReadCustomIdentifier("Enter the Police vehicle model name.");
+            string value = ReadCustomIdentifier("Enter an installed or add-on Police vehicle model name.");
             if (string.IsNullOrWhiteSpace(value))
                 return;
-            RunCoreAction(delegate { return _core.SetCustomFavouriteVehicle(value); });
-        }
-
-        private void PromptForProfileWeapon()
-        {
-            string value = ReadCustomIdentifier("Enter a Police weapon name or ID.");
-            if (string.IsNullOrWhiteSpace(value))
-                return;
-            RunCoreAction(delegate { return _core.SelectPoliceWeapon(value); });
+            RunProfileAction(delegate { return _core.SetCustomFavouriteVehicle(value); });
         }
 
         private void PromptForBackupPed(bool citizenInteraction)
         {
-            string value = ReadCustomIdentifier("Enter the addon Backup officer model name.");
+            string instruction = citizenInteraction
+                ? "Enter an installed or add-on Citizen Interaction Backup officer model."
+                : "Enter an installed or add-on Dispatch and Crime Backup officer model.";
+            string value = ReadCustomIdentifier(instruction);
             if (string.IsNullOrWhiteSpace(value))
                 return;
             if (citizenInteraction)
-                RunCoreAction(delegate { return _core.SetCustomCitizenBackupFavourite(value); });
+                RunProfileAction(delegate { return _core.SetCustomCitizenBackupFavourite(value); });
             else
-                RunCoreAction(delegate { return _core.SetCustomDispatchBackupFavourite(value); });
+                RunProfileAction(delegate { return _core.SetCustomDispatchBackupFavourite(value); });
         }
 
         private void PromptForLegacyBackupPed()
@@ -1449,6 +1663,109 @@ namespace LSImmersiveLife
                 RefreshAllMenus();
         }
 
+        private bool RunProfileAction(Func<bool> action)
+        {
+            bool success = action();
+            string message = _core.LastOperationMessage;
+            if (!string.IsNullOrWhiteSpace(message))
+                Notification.PostTicker(message, false, false);
+            if (success)
+                RefreshProfileMenuDescriptions();
+            return success;
+        }
+
+        private bool RunProfileSelection(
+            Func<bool> action,
+            NativeMenu sourceMenu,
+            NativeMenu destinationMenu)
+        {
+            if (!RunProfileAction(action))
+                return false;
+            ReturnToProfileMenu(sourceMenu, destinationMenu);
+            return true;
+        }
+
+        private void RunProfilePedSelection(string modelName)
+        {
+            if (!RunProfileAction(
+                delegate { return _core.SetCustomFavouritePed(modelName); }))
+                return;
+
+            _pendingProfilePedSelectionSourceMenu = _personalPedFavoritesMenu;
+            _pendingProfilePedSelectionDestinationMenu = _personalPedMenu;
+            _pendingProfilePedSelectionModelName = modelName ?? string.Empty;
+            ProcessPendingProfilePedSelection();
+        }
+
+        private void ProcessPendingProfilePedSelection()
+        {
+            NativeMenu sourceMenu = _pendingProfilePedSelectionSourceMenu;
+            string modelName = _pendingProfilePedSelectionModelName;
+            if (sourceMenu == null || string.IsNullOrWhiteSpace(modelName))
+                return;
+            if (!_core.IsPoliceAuthorityActive)
+            {
+                ClearPendingProfilePedSelection();
+                return;
+            }
+
+            if (IsCurrentProfilePedModel(modelName))
+            {
+                ReturnToProfileMenu(
+                    sourceMenu,
+                    _pendingProfilePedSelectionDestinationMenu);
+                ClearPendingProfilePedSelection();
+                return;
+            }
+
+            if (_core.HasPendingProfilePedApply)
+            {
+                if (!_menus.Any(menu => menu != null && menu.Visible))
+                    sourceMenu.Visible = true;
+                return;
+            }
+
+            // A failed or timed-out model apply leaves the favourite menu open
+            // so the Player can retry without rebuilding or losing the Profile
+            // navigation context.
+            if (!_menus.Any(menu => menu != null && menu.Visible))
+                sourceMenu.Visible = true;
+            ClearPendingProfilePedSelection();
+        }
+
+        private void ClearPendingProfilePedSelection()
+        {
+            _pendingProfilePedSelectionSourceMenu = null;
+            _pendingProfilePedSelectionDestinationMenu = null;
+            _pendingProfilePedSelectionModelName = string.Empty;
+        }
+
+        private static bool IsCurrentProfilePedModel(string modelName)
+        {
+            try
+            {
+                Ped player = Game.Player.Character;
+                Model selected = new Model(modelName);
+                return player != null && player.Exists()
+                    && selected.IsValid
+                    && player.Model.Hash == selected.Hash;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void ReturnToProfileMenu(
+            NativeMenu sourceMenu,
+            NativeMenu destinationMenu)
+        {
+            if (sourceMenu != null)
+                sourceMenu.Visible = false;
+            if (destinationMenu != null)
+                destinationMenu.Visible = true;
+        }
+
         private void RunPatrolToggle()
         {
             bool hadDispatchOffer = _core.Dispatch.HasOffer;
@@ -1460,6 +1777,21 @@ namespace LSImmersiveLife
 
             if (success)
                 RefreshAllMenus();
+        }
+
+        private void RunDispatchRequest()
+        {
+            bool hadDispatchOffer = _core.Dispatch.HasOffer;
+            string message = _core.RequestDispatch();
+            bool createdDispatchOffer = !hadDispatchOffer && _core.Dispatch.HasOffer;
+
+            // Dispatch.Receive owns the one-time offer ticker and audio. Do not
+            // replace that full callout with a second success ticker in the
+            // same menu action.
+            if (!createdDispatchOffer && !_core.Dispatch.HasOffer
+                && !string.IsNullOrWhiteSpace(message))
+                Notification.PostTicker(message, false, false);
+            RefreshAllMenus();
         }
 
         private void RunCoreCommand(Func<string> command)
@@ -1492,11 +1824,59 @@ namespace LSImmersiveLife
         private static void AddSubMenuEntry(
             NativeMenu parent,
             NativeMenu submenu,
-            string title)
+            string title,
+            string description = null)
         {
             NativeSubmenuItem item = new NativeSubmenuItem(submenu, parent);
             item.Title = title;
+            item.Description = description ?? string.Empty;
             parent.Add(item);
+        }
+
+        private static NativeItem AddDescribedAction(
+            NativeMenu menu,
+            string title,
+            string description,
+            Action action)
+        {
+            NativeItem item = new NativeItem(title, description ?? string.Empty);
+            item.Activated += delegate { action(); };
+            menu.Add(item);
+            return item;
+        }
+
+        private static void SetMenuItemDescription(
+            NativeMenu menu,
+            string title,
+            string description)
+        {
+            if (menu == null)
+                return;
+            foreach (NativeItem item in menu.Items)
+            {
+                if (!string.Equals(item.Title, title, StringComparison.Ordinal))
+                    continue;
+                item.Description = description ?? string.Empty;
+                return;
+            }
+        }
+
+        private static string SelectedResourceDescription(
+            string selectedValue,
+            string instruction)
+        {
+            string selection = string.IsNullOrWhiteSpace(selectedValue)
+                ? "Selected: not set"
+                : "Selected: " + selectedValue;
+            return selection + ". " + instruction;
+        }
+
+        private string SelectedBackupDisplayName(bool citizenInteraction)
+        {
+            LSPDPoliceFavoriteModel favorite = citizenInteraction
+                ? _core.Profile.ActiveFavoriteCitizenBackupPed
+                : _core.Profile.ActiveFavoriteDispatchBackupPed;
+            return favorite == null ? "Default Police Model" : favorite.DisplayName;
         }
 
         private static void AddReadOnlyRow(NativeMenu menu, string text)
@@ -1582,6 +1962,7 @@ namespace LSImmersiveLife
             _core.SetRoleActive(active);
             if (!active)
             {
+                ClearPendingProfilePedSelection();
                 _station.CloseAlmanac();
                 _station.CancelStationPreview();
                 _stationSetupSessionActive = false;
@@ -1598,6 +1979,7 @@ namespace LSImmersiveLife
             ProcessResponseFrameworkHotkeys(paused, setupBlocksGameplay, allowStationSetupEntry);
             bool menuVisible = _menus.Any(menu => menu != null && menu.Visible);
             _core.Process(paused, !menuVisible && !setupBlocksGameplay && allowStationSetupEntry);
+            ProcessPendingProfilePedSelection();
             UpdateInitialStationSetup(paused, allowStationSetupEntry);
             if (!setupWasComplete && _core.Profile.StationSetupComplete
                 && _core.IsPoliceAuthorityActive)
@@ -1628,6 +2010,102 @@ namespace LSImmersiveLife
             // handlers on each tick, so controls cannot remain stale until reopen.
             if (_refreshOffer != null) _refreshOffer();
             RefreshConvoyMenu();
+            DrawDispatchOfferPrompt();
+        }
+
+        private void DrawDispatchOfferPrompt()
+        {
+            if (!_core.Dispatch.HasOffer)
+            {
+                ClearDispatchOfferPrompt();
+                return;
+            }
+
+            LSPDDispatchEvent offer = _core.Dispatch.Current;
+            if (offer == null)
+            {
+                ClearDispatchOfferPrompt();
+                return;
+            }
+
+            LSPDControlBindings controls = _core.PoliceControls;
+            Keys acceptKeyCode = controls == null ? Keys.Y : controls.AcceptKey;
+            Keys rejectKeyCode = controls == null ? Keys.N : controls.RejectKey;
+            bool promptKeysChanged = !_dispatchOfferPromptKeysInitialized
+                || _dispatchOfferPromptAcceptKeyCode != acceptKeyCode
+                || _dispatchOfferPromptRejectKeyCode != rejectKeyCode;
+            if (promptKeysChanged)
+            {
+                _dispatchOfferPromptAcceptKeyCode = acceptKeyCode;
+                _dispatchOfferPromptRejectKeyCode = rejectKeyCode;
+                _dispatchOfferPromptAcceptKey = controls == null
+                    ? "Y" : acceptKeyCode.ToString().ToUpperInvariant();
+                _dispatchOfferPromptRejectKey = controls == null
+                    ? "N" : rejectKeyCode.ToString().ToUpperInvariant();
+                _dispatchOfferPromptKeysInitialized = true;
+            }
+
+            string offerId = offer.Id ?? string.Empty;
+            string title = string.IsNullOrWhiteSpace(offer.Title)
+                ? "Emergency call" : offer.Title;
+            string briefing = string.IsNullOrWhiteSpace(offer.Briefing)
+                ? "Details unavailable." : offer.Briefing;
+            bool promptChanged = !string.Equals(offerId, _dispatchOfferPromptOfferId,
+                    StringComparison.Ordinal)
+                || !string.Equals(title, _dispatchOfferPromptTitle,
+                    StringComparison.Ordinal)
+                || !string.Equals(briefing, _dispatchOfferPromptBriefing,
+                    StringComparison.Ordinal);
+            if (promptChanged || promptKeysChanged
+                || string.IsNullOrWhiteSpace(_dispatchOfferPromptText))
+            {
+                _dispatchOfferPromptOfferId = offerId;
+                _dispatchOfferPromptTitle = title;
+                _dispatchOfferPromptBriefing = briefing;
+                string promptTitle = CompactDispatchOfferPromptField(
+                    title, DispatchOfferPromptMaximumTitleCharacters);
+                string promptBriefing = CompactDispatchOfferPromptField(
+                    briefing, DispatchOfferPromptMaximumBriefingCharacters);
+                _dispatchOfferPromptText = "~b~911 DISPATCH~s~  "
+                    + "~g~" + _dispatchOfferPromptAcceptKey + " / Circle ACCEPT~s~  "
+                    + "~r~" + _dispatchOfferPromptRejectKey + " / X DECLINE~s~\n"
+                    + "~y~CALL:~s~ " + promptTitle + "\n"
+                    + "~c~REPORT:~s~ " + promptBriefing;
+            }
+
+            // GTA's help text is frame-scoped. Refresh the existing prompt each
+            // frame, but only rebuild its content when the offer or keys change.
+            GTA.UI.Screen.ShowHelpTextThisFrame(_dispatchOfferPromptText, false);
+        }
+
+        private void ClearDispatchOfferPrompt()
+        {
+            _dispatchOfferPromptOfferId = string.Empty;
+            _dispatchOfferPromptTitle = string.Empty;
+            _dispatchOfferPromptBriefing = string.Empty;
+            _dispatchOfferPromptAcceptKey = "Y";
+            _dispatchOfferPromptRejectKey = "N";
+            _dispatchOfferPromptText = string.Empty;
+            _dispatchOfferPromptAcceptKeyCode = Keys.None;
+            _dispatchOfferPromptRejectKeyCode = Keys.None;
+            _dispatchOfferPromptKeysInitialized = false;
+        }
+
+        private static string CompactDispatchOfferPromptField(
+            string value,
+            int maximumCharacters)
+        {
+            string normalized = string.Join(" ",
+                (value ?? string.Empty).Split(
+                    (char[])null, StringSplitOptions.RemoveEmptyEntries));
+            if (normalized.Length <= maximumCharacters)
+                return normalized;
+
+            int visibleCharacters = Math.Max(1, maximumCharacters - 3);
+            int wordBoundary = normalized.LastIndexOf(' ', visibleCharacters);
+            if (wordBoundary >= maximumCharacters / 2)
+                visibleCharacters = wordBoundary;
+            return normalized.Substring(0, visibleCharacters).TrimEnd() + "...";
         }
 
         private void ProcessResponseFrameworkHotkeys(
@@ -1744,6 +2222,7 @@ namespace LSImmersiveLife
 
         internal void Shutdown()
         {
+            ClearPendingProfilePedSelection();
             _station.CloseAlmanac();
             _station.CancelStationPreview();
             _citizenRecordPanel.Release();

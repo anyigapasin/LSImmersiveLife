@@ -1900,6 +1900,23 @@ namespace LSImmersiveLife
             string expectedStep,
             LSDeveloperTestSession session)
         {
+            if (problem.Category.IndexOf(
+                    "INTERIOR_ACTOR_PREFLIGHT", StringComparison.OrdinalIgnoreCase) >= 0
+                && problem.EventKind == "PhysicalMismatch")
+            {
+                string recordedEvidence = DescribeEvent(problem);
+                bool coordinateOnly = recordedEvidence.IndexOf(
+                    "EntityIdentityRejectedCoordinateFallback", StringComparison.OrdinalIgnoreCase) >= 0
+                    || recordedEvidence.IndexOf(
+                        "ActorEntityOutsideSelectedInterior", StringComparison.OrdinalIgnoreCase) >= 0;
+                return "FIRST DIVERGENCE: the mapped interior actor readiness check rejected the scene before the Dispatch offer. "
+                    + (coordinateOnly
+                        ? "Coordinate lookup selected an interior at the actor position, but the actor entity itself was not confirmed in that live interior; a point near a doorway can therefore look interior by coordinates while the Ped remains outside. "
+                        : string.Empty)
+                    + "The gameplay owners remain in control; Developer Mode reports only recorded role, position, interior, room, floor, and mapped doorway evidence. "
+                    + "Mapped doorway resolution is catalog access evidence, not proof of a completed Ped navmesh path. Any further cause is unknown. Evidence="
+                    + recordedEvidence;
+            }
             if (problem.EventKind == "BehaviorStall")
             {
                 return "FIRST DIVERGENCE: expected continuation '"
@@ -3310,7 +3327,7 @@ namespace LSImmersiveLife
                 Owner = InferOwner(category),
                 Category = category ?? "UNCLASSIFIED_EVENT",
                 EventKind = InferKind(category, message, level),
-                ActorHandle = Handle(fields, "Actor", "Ped", "Driver", "Subject", "Prisoner", "Officer", "Suspect"),
+                ActorHandle = Handle(fields, "Actor", "Ped", "Driver", "Subject", "Prisoner", "Officer", "Suspect", "Handle"),
                 ActorModel = Value(fields, "ActorModel", "PedModel", "Model", "PedAsset"),
                 TargetHandle = Handle(fields, "Target", "TargetPed", "Suspect"),
                 TargetModel = Value(fields, "TargetModel", "TargetAsset"),
@@ -3320,7 +3337,7 @@ namespace LSImmersiveLife
                 StateAfter = Value(fields, "StateAfter", "State", "Stage", "Phase"),
                 TaskBefore = Value(fields, "TaskBefore", "PreviousTask", "BeforeTask"),
                 TaskAfter = Value(fields, "TaskAfter", "Task", "TaskName", "Action"),
-                Reason = Value(fields, "Reason", "FailureReason"),
+                Reason = Value(fields, "Reason", "FailureReason", "Failure", "Result"),
                 ExpectedNext = Value(fields, "ExpectedNext"),
                 SourceFile = Value(fields, "LogicFile", "SourceFile"),
                 SourceMember = Value(fields, "LogicMember", "SourceMember"),
@@ -3537,6 +3554,10 @@ namespace LSImmersiveLife
         {
             string value = (category ?? string.Empty).ToUpperInvariant();
             if (value.Contains("TASK_OWNERSHIP_CONFLICT")) return "TaskConflict";
+            if (value.Contains("INTERIOR_ACTOR_PREFLIGHT")
+                && (message ?? string.Empty).IndexOf(
+                    "Result=Rejected", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "PhysicalMismatch";
             if (value.Contains("PHYSICAL_MISMATCH")) return "PhysicalMismatch";
             if (value.Contains("FAIL") || value.Contains("ERROR") || value.Contains("EXCEPTION")
                 || value.Contains("INVALID") || value.Contains("UNAVAILABLE") || value.Contains("TIMEOUT")

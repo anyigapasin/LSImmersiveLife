@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 
@@ -16,6 +17,7 @@ namespace LSImmersiveLife
     {
         private const int MaximumRecordLength = 16384;
         private const int MaximumThrottleCategories = 128;
+        private const int MaximumTransitionStates = 128;
 
         private readonly object _sync = new object();
         private bool _backgroundWrites;
@@ -25,6 +27,8 @@ namespace LSImmersiveLife
         private readonly DateTime _sessionStartedUtc;
         private readonly Dictionary<string, ThrottleState> _throttleStates =
             new Dictionary<string, ThrottleState>(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _transitionStates =
+            new Dictionary<string, string>(StringComparer.Ordinal);
 
         private bool _sessionStarted;
         private bool _sessionEnded;
@@ -259,8 +263,8 @@ namespace LSImmersiveLife
         /// <summary>
         /// Records a repeated action without performing synchronous disk I/O
         /// for every tick. The first action is retained, later entries within
-        /// the requested interval are counted, and the next retained action or
-        /// session end writes a clear repeat summary. Use this only for scan or
+        /// the requested interval are counted, and session end writes one clear
+        /// repeat summary. Use this only for scan or
         /// guard loops; one-off gameplay actions should use Runtime instead.
         /// </summary>
         internal void RuntimeThrottled(
@@ -298,10 +302,86 @@ namespace LSImmersiveLife
                     return;
                 }
 
-                WriteThrottleSummaryLocked(normalizedCategory, state);
                 WriteRuntimeLocked(normalizedCategory, message);
                 state.LastWrittenUtc = now;
                 state.HasWritten = true;
+            }
+        }
+
+        /// <summary>
+        /// Records a Runtime diagnostic only when its stable state changes.
+        /// The state should exclude sampled coordinates, ages, and other values
+        /// that change without changing the underlying condition.
+        /// </summary>
+        internal void RuntimeTransition(
+            string category,
+            string state,
+            string message)
+        {
+            Transition("RUNTIME", category, state, message);
+        }
+
+        /// <summary>
+        /// Records a Debug diagnostic only when its stable state changes.
+        /// </summary>
+        internal void DebugTransition(
+            string category,
+            string state,
+            string message)
+        {
+            Transition("DEBUG", category, state, message);
+        }
+
+        internal void ClearRuntimeTransition(string category)
+        {
+            ClearTransition("RUNTIME", category);
+        }
+
+        internal void ClearDebugTransition(string category)
+        {
+            ClearTransition("DEBUG", category);
+        }
+
+        private void Transition(
+            string level,
+            string category,
+            string state,
+            string message)
+        {
+            lock (_sync)
+            {
+                EnsureSessionStartedLocked();
+
+                string normalizedCategory = NormalizeCategory(category);
+                string key = level + "|" + normalizedCategory;
+                string normalizedState = NormalizeMessage(state);
+                string previousState;
+                if (_transitionStates.TryGetValue(key, out previousState)
+                    && string.Equals(previousState, normalizedState,
+                        StringComparison.Ordinal))
+                {
+                    _suppressedEntryCount++;
+                    return;
+                }
+
+                if (!_transitionStates.ContainsKey(key)
+                    && _transitionStates.Count >= MaximumTransitionStates)
+                    _transitionStates.Clear();
+
+                _transitionStates[key] = normalizedState;
+                if (string.Equals(level, "RUNTIME", StringComparison.Ordinal))
+                    WriteRuntimeLocked(normalizedCategory, message);
+                else
+                    WriteDebugLocked("DEBUG_" + normalizedCategory, message);
+            }
+        }
+
+        private void ClearTransition(string level, string category)
+        {
+            lock (_sync)
+            {
+                string key = level + "|" + NormalizeCategory(category);
+                _transitionStates.Remove(key);
             }
         }
 
@@ -414,14 +494,36 @@ namespace LSImmersiveLife
             {
                 var assembly = typeof(LSImmersiveLog).Assembly;
                 var name = assembly.GetName();
+                string assemblyLocation = assembly.Location;
+                string assemblyFileSha256 = "Unavailable";
+                if (!string.IsNullOrWhiteSpace(assemblyLocation))
+                {
+                    try
+                    {
+                        using (FileStream assemblyFile = File.OpenRead(assemblyLocation))
+                        using (SHA256 sha256 = SHA256.Create())
+                        {
+                            assemblyFileSha256 = BitConverter.ToString(
+                                sha256.ComputeHash(assemblyFile))
+                                .Replace("-", string.Empty)
+                                .ToLowerInvariant();
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        assemblyFileSha256 = "Unavailable:" + ex.GetType().Name;
+                    }
+                }
+
                 return "AssemblyName=" + (name.Name ?? "Unknown")
                     + "; AssemblyVersion=" + (name.Version == null
                         ? "Unknown" : name.Version.ToString())
                     + "; AssemblyMvid="
                     + assembly.ManifestModule.ModuleVersionId.ToString("D")
                     + "; AssemblyLocation="
-                    + (string.IsNullOrWhiteSpace(assembly.Location)
-                        ? "Unavailable" : assembly.Location);
+                    + (string.IsNullOrWhiteSpace(assemblyLocation)
+                        ? "Unavailable" : assemblyLocation)
+                    + "; AssemblyFileSha256=" + assemblyFileSha256;
             }
             catch (Exception ex)
             {
@@ -650,6 +752,11 @@ namespace LSImmersiveLife
         private static bool LooksLikeFailure(string category)
         {
             if (string.IsNullOrEmpty(category))
+                return false;
+
+            // Starting a watchdog is an informational transition, not a
+            // timeout failure. Keep real timeout/failed outcomes classified.
+            if (category.EndsWith("_TIMEOUT_STARTED", StringComparison.OrdinalIgnoreCase))
                 return false;
 
             return category.IndexOf("FAILED", StringComparison.OrdinalIgnoreCase) >= 0

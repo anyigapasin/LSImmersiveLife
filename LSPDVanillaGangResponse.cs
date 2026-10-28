@@ -13,7 +13,19 @@ namespace LSImmersiveLife
     /// </summary>
     internal sealed class LSPDVanillaGangResponse
     {
+        private const int PlayerVehicleTaskProbeMilliseconds = 500;
+        private const int MaximumPlayerVehicleTaskProbePeds = 64;
+        private const int MaximumRememberedPlayerVehicleTaskPairs = 128;
+        private const int PlayerVehiclePostExitObservationSeconds = 5;
+        private const float PlayerVehicleTaskProbeRadius = 24f;
         private readonly LSImmersiveLog _log;
+        private readonly HashSet<long> _reportedPlayerVehicleTaskPairs =
+            new HashSet<long>();
+        private readonly Queue<long> _reportedPlayerVehicleTaskOrder =
+            new Queue<long>();
+        private DateTime _nextPlayerVehicleTaskProbeAt = DateTime.MinValue;
+        private Vehicle _lastObservedPlayerVehicle;
+        private DateTime _lastObservedPlayerVehicleAt = DateTime.MinValue;
         private static readonly string[] VanillaGangModels =
         {
             "g_m_y_ballaeast_01", "g_m_y_ballaorig_01", "g_m_y_ballasout_01",
@@ -31,27 +43,6 @@ namespace LSImmersiveLife
                 343272203, 1957851257, -314526266, 834197053,
                 -1205420430, 1823612999, -514572009
             };
-
-        private enum PoliceAwarenessMode
-        {
-            Stealth,
-            Wary,
-            AttackReady
-        }
-
-        private sealed class PoliceAwarenessState
-        {
-            internal PoliceAwarenessMode Mode;
-            internal DateTime NextTaskAt;
-            internal bool AttackReadyEscalationEligible;
-            internal bool AttackReadyAimIssued;
-            internal bool AttackReadyEscalationIssued;
-            internal bool AttackReadyLogged;
-            internal DateTime AttackReadyNearSince = DateTime.MinValue;
-        }
-
-        private readonly Dictionary<int, PoliceAwarenessState> _policeAwareness =
-            new Dictionary<int, PoliceAwarenessState>();
 
         internal LSPDVanillaGangResponse(LSImmersiveLog log)
         {
@@ -81,159 +72,178 @@ namespace LSImmersiveLife
             return IsFriendlyAnyiii(ped, gangData);
         }
 
-        internal void ResetPoliceAwareness()
+        internal void ResetObservationState()
         {
-            _policeAwareness.Clear();
+            _reportedPlayerVehicleTaskPairs.Clear();
+            _reportedPlayerVehicleTaskOrder.Clear();
+            _nextPlayerVehicleTaskProbeAt = DateTime.MinValue;
+            _lastObservedPlayerVehicle = null;
+            _lastObservedPlayerVehicleAt = DateTime.MinValue;
         }
 
         /// <summary>
-        /// Adds a small, local Police-mode awareness layer to recognized gang
-        /// members without replacing their normal GTA behavior. It only runs
-        /// during a quiet patrol approach, chooses a bounded variation per ped,
-        /// and never turns an ambient gang member into a combatant by itself.
+        /// Captures a bounded one-time sample when a nearby pedestrian tries to
+        /// enter or jack the Player's current vehicle, or attacks its occupant.
+        /// This is evidence-only: it never issues a task or claims the Ped.
         /// </summary>
-        internal void ProcessPoliceAwareness(
+        internal void ObservePlayerVehicleTaskAttempts(
             Ped player,
             IEnumerable<Ped> nearby,
             LSPDGangDataIntegration gangData,
             DateTime now)
         {
-            if (player == null || !player.Exists() || nearby == null)
+            if (player == null || !player.Exists() || nearby == null
+                || now < _nextPlayerVehicleTaskProbeAt)
                 return;
 
-            HashSet<int> observedHandles = new HashSet<int>();
+            Vehicle vehicle;
+            bool playerCurrentlyInVehicle;
+            try
+            {
+                playerCurrentlyInVehicle = player.IsInVehicle();
+                if (playerCurrentlyInVehicle)
+                {
+                    vehicle = player.CurrentVehicle;
+                    if (vehicle == null || !vehicle.Exists())
+                        return;
+                    _lastObservedPlayerVehicle = vehicle;
+                    _lastObservedPlayerVehicleAt = now;
+                }
+                else if (_lastObservedPlayerVehicle != null
+                    && now < _lastObservedPlayerVehicleAt.AddSeconds(
+                        PlayerVehiclePostExitObservationSeconds)
+                    && _lastObservedPlayerVehicle.Exists())
+                {
+                    vehicle = _lastObservedPlayerVehicle;
+                }
+                else
+                {
+                    _lastObservedPlayerVehicle = null;
+                    _lastObservedPlayerVehicleAt = DateTime.MinValue;
+                    return;
+                }
+            }
+            catch
+            {
+                return;
+            }
+            _nextPlayerVehicleTaskProbeAt = now.AddMilliseconds(
+                PlayerVehicleTaskProbeMilliseconds);
+            bool playerIsBeingJacked = false;
+            try
+            {
+                playerIsBeingJacked = Function.Call<bool>(
+                    Hash.IS_PED_BEING_JACKED, player);
+            }
+            catch { }
+
+            int inspected = 0;
             foreach (Ped ped in nearby)
             {
-                if (!IsRecognizedGangActor(ped, gangData)
-                    || ped.Handle == player.Handle)
+                if (inspected >= MaximumPlayerVehicleTaskProbePeds)
+                    break;
+                inspected++;
+                if (ped == null || !ped.Exists() || ped.Handle == player.Handle)
                     continue;
                 try
                 {
-                    if (ped.IsDead || ped.IsInVehicle() || ped.IsInCombat || ped.IsShooting)
+                    if (ped.IsDead
+                        || ped.Position.DistanceTo(vehicle.Position)
+                            > PlayerVehicleTaskProbeRadius)
                         continue;
-                    float distance = ped.Position.DistanceTo(player.Position);
-                    if (distance < 10f || distance > 55f)
-                        continue;
-                    observedHandles.Add(ped.Handle);
-
-                    PoliceAwarenessState state;
-                    if (!_policeAwareness.TryGetValue(ped.Handle, out state))
+                    int enteringVehicle = 0;
+                    int enteringSeat = -2;
+                    bool entryProbeAvailable = false;
+                    try
                     {
-                        uint seed = unchecked((uint)(ped.Handle * 1103515245 + 12345));
-                        int bucket = (int)(seed % 100u);
-                        state = new PoliceAwarenessState
-                        {
-                            Mode = bucket < 55
-                                ? PoliceAwarenessMode.Stealth
-                                : bucket < 88
-                                    ? PoliceAwarenessMode.Wary
-                                    : PoliceAwarenessMode.AttackReady,
-                            // AttackReady remains a minority state, and only
-                            // a bounded subset of those armed peds may
-                            // escalate after lingering near the officer.
-                            AttackReadyEscalationEligible = bucket >= 88
-                                && (seed % 3u == 0u),
-                            NextTaskAt = DateTime.MinValue
-                        };
-                        _policeAwareness[ped.Handle] = state;
+                        enteringVehicle = Function.Call<int>(
+                            Hash.GET_VEHICLE_PED_IS_TRYING_TO_ENTER, ped);
+                        entryProbeAvailable = true;
                     }
-                    if (now < state.NextTaskAt)
-                        continue;
-                    state.NextTaskAt = now.AddSeconds(
-                        state.Mode == PoliceAwarenessMode.AttackReady ? 2 : 10);
-
-                    if (state.Mode == PoliceAwarenessMode.AttackReady)
+                    catch { }
+                    if (enteringVehicle != 0)
                     {
-                        if (state.AttackReadyEscalationEligible
-                            && distance <= 35f)
+                        try
                         {
-                            if (state.AttackReadyNearSince == DateTime.MinValue)
-                                state.AttackReadyNearSince = now;
-                            if (!state.AttackReadyAimIssued)
-                            {
-                                Function.Call(Hash.TASK_AIM_GUN_AT_ENTITY,
-                                    ped, player, 2200, true);
-                                state.AttackReadyAimIssued = true;
-                                LogRuntime(
-                                    "POLICE_GANG_AWARENESS_ESCALATION_AIMED",
-                                    "Ped=" + ped.Handle
-                                    + "; Distance=" + distance.ToString("0.0")
-                                    + "; Behavior=LimitedAttackReadySubset");
-                            }
-
-                            if (!state.AttackReadyEscalationIssued
-                                && now >= state.AttackReadyNearSince.AddSeconds(4)
-                                && IsArmed(ped))
-                            {
-                                Function.Call(Hash.CLEAR_PED_TASKS, ped);
-                                ped.Task.Combat(player);
-                                state.AttackReadyEscalationIssued = true;
-                                LogRuntime(
-                                    "POLICE_GANG_AWARENESS_ESCALATED",
-                                    "Ped=" + ped.Handle
-                                    + "; Distance=" + distance.ToString("0.0")
-                                    + "; Behavior=LimitedArmedResistance");
-                            }
+                            enteringSeat = Function.Call<int>(
+                                Hash.GET_SEAT_PED_IS_TRYING_TO_ENTER, ped);
                         }
-                        if (!state.AttackReadyLogged)
-                        {
-                            state.AttackReadyLogged = true;
-                            LogRuntime(
-                                "POLICE_GANG_AWARENESS_ATTACK_READY",
-                                "Ped=" + ped.Handle
-                                + "; Distance=" + distance.ToString("0.0")
-                                + "; Behavior=AmbientAIMayEscalate");
-                        }
-                        continue;
+                        catch { }
                     }
 
-                    if (state.Mode == PoliceAwarenessMode.Stealth)
+                    bool isJacking = false;
+                    try { isJacking = Function.Call<bool>(Hash.IS_PED_JACKING, ped); }
+                    catch { }
+
+                    bool combatAgainstPlayer = false;
+                    try { combatAgainstPlayer = ped.IsInCombatAgainst(player); }
+                    catch { }
+
+                    bool tryingToEnterPlayerVehicle = entryProbeAvailable
+                        && enteringVehicle == vehicle.Handle;
+                    bool jackingPlayer = isJacking && playerIsBeingJacked;
+                    if (!tryingToEnterPlayerVehicle && !jackingPlayer
+                        && !combatAgainstPlayer)
+                        continue;
+
+                    long pairKey = ((long)ped.Handle << 32)
+                        ^ (uint)vehicle.Handle;
+                    if (!_reportedPlayerVehicleTaskPairs.Add(pairKey))
+                        continue;
+                    _reportedPlayerVehicleTaskOrder.Enqueue(pairKey);
+                    while (_reportedPlayerVehicleTaskOrder.Count
+                        > MaximumRememberedPlayerVehicleTaskPairs)
                     {
-                        Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
-                            ped, player, 1200);
-                        Function.Call(Hash.TASK_WANDER_STANDARD,
-                            ped, 5.0f, 10);
-                        LogRuntime(
-                            "POLICE_GANG_AWARENESS_STEALTH",
-                            "Ped=" + ped.Handle
-                            + "; Distance=" + distance.ToString("0.0")
-                            + "; Behavior=TurnAwayAndContinue");
-                        continue;
+                        long expiredKey = _reportedPlayerVehicleTaskOrder.Dequeue();
+                        _reportedPlayerVehicleTaskPairs.Remove(expiredKey);
                     }
 
-                    Vector3 away = ped.Position - player.Position;
-                    float magnitude = (float)Math.Sqrt(
-                        away.X * away.X + away.Y * away.Y);
-                    if (magnitude < 0.1f)
-                        away = new Vector3(0f, 1f, 0f);
-                    else
-                        away = new Vector3(away.X / magnitude, away.Y / magnitude, 0f);
-                    Vector3 destination = ped.Position + away * 18f;
-                    Function.Call(Hash.TASK_FOLLOW_NAV_MESH_TO_COORD,
-                        ped,
-                        destination.X,
-                        destination.Y,
-                        destination.Z,
-                        1.35f,
-                        -1,
-                        1.0f,
-                        1,
-                        0f);
-                    LogRuntime(
-                        "POLICE_GANG_AWARENESS_WARY",
+                    int modelHash = 0;
+                    int relationshipGroup = 0;
+                    int weaponHash = 0;
+                    try { modelHash = ped.Model.Hash; } catch { }
+                    try
+                    {
+                        relationshipGroup = Function.Call<int>(
+                            Hash.GET_PED_RELATIONSHIP_GROUP_HASH, ped);
+                    }
+                    catch { }
+                    try { weaponHash = (int)ped.Weapons.Current.Hash; } catch { }
+
+                    string gangIdentity = DescribeActorIdentity(modelHash, gangData);
+                    string action = tryingToEnterPlayerVehicle
+                        ? "TryingToEnterPlayerVehicle"
+                        : jackingPlayer ? "JackingPlayerFromVehicle"
+                            : "CombatAgainstPlayerInVehicle";
+                    LogRuntime("POLICE_PLAYER_VEHICLE_TASK_OBSERVED",
                         "Ped=" + ped.Handle
-                        + "; Distance=" + distance.ToString("0.0")
-                        + "; Behavior=WalkAwayAndKeepDistance");
+                        + "; ModelHash=" + modelHash
+                        + "; Identity=" + gangIdentity
+                        + "; Action=" + action
+                        + "; Player=" + player.Handle
+                        + "; PlayerVehicle=" + vehicle.Handle
+                        + "; PlayerInVehicleAtProbe=" + playerCurrentlyInVehicle
+                        + "; EntryVehicle=" + enteringVehicle
+                        + "; EntrySeat=" + enteringSeat
+                        + "; EntryProbeAvailable=" + entryProbeAvailable
+                        + "; IsJacking=" + isJacking
+                        + "; PlayerBeingJacked=" + playerIsBeingJacked
+                        + "; CombatAgainstPlayer=" + combatAgainstPlayer
+                        + "; WeaponHash=" + weaponHash
+                        + "; RelationshipGroup=" + relationshipGroup
+                        + "; EnterVehicleTaskStatus=" + ReadTaskStatus(
+                            ped, Hash.TASK_ENTER_VEHICLE)
+                        + "; CombatTaskStatus=" + ReadTaskStatus(
+                            ped, Hash.TASK_COMBAT_PED)
+                        + "; Observer=LSPDVanillaGangResponse"
+                        + "; GangResponseIssuedTask=false"
+                        + "; TaskOwner=UNATTRIBUTED_BY_NATIVE_EVIDENCE");
                 }
                 catch (Exception ex)
                 {
-                    LogException("POLICE_GANG_AWARENESS_TASK_FAILED", ex);
+                    LogException("POLICE_PLAYER_VEHICLE_TASK_PROBE_FAILED", ex);
                 }
             }
-
-            foreach (int handle in _policeAwareness.Keys.ToArray())
-                if (!observedHandles.Contains(handle))
-                    _policeAwareness.Remove(handle);
         }
 
         internal bool TryFindAttacker(
@@ -280,8 +290,12 @@ namespace LSImmersiveLife
                     // A model assigned to a player-owned Gang & Turf profile is
                     // never reclassified as a vanilla hostile gang member.
                     bool vanilla = IsVanillaGangHash(hash) && gang == null;
-                    if (!external && !vanilla
-                        && (gangData == null || !gangData.IsMemberPoolModel(hash)))
+                    // A model in an unassigned Gang & Turf pool is only a
+                    // catalog hint. It does not establish this Ped's live gang
+                    // identity; ordinary hostile civilians must remain with
+                    // Citizen Response unless a named external group or a
+                    // recognized vanilla faction owns the actor.
+                    if (!external && !vanilla)
                         continue;
 
                     Ped target = IsAggressive(ped, player) ? player : null;
@@ -363,8 +377,7 @@ namespace LSImmersiveLife
 
                     bool external = gang != null && !playerOwned;
                     bool vanilla = IsVanillaGangHash(hash) && gang == null;
-                    if (!external && !vanilla
-                        && (gangData == null || !gangData.IsMemberPoolModel(hash)))
+                    if (!external && !vanilla)
                         continue;
 
                     bool hostile = IsAggressive(ped, player);
@@ -442,12 +455,7 @@ namespace LSImmersiveLife
                         && candidateGang == null
                         && VanillaFaction(anchorHash) != 0
                         && VanillaFaction(anchorHash) == VanillaFaction(candidate.Model.Hash);
-                    bool sameUnassignedMemberPool = anchorGang == null
-                        && candidateGang == null
-                        && gangData != null
-                        && gangData.IsMemberPoolModel(anchorHash)
-                        && gangData.IsMemberPoolModel(candidate.Model.Hash);
-                    if (sameExternalGang || sameVanillaFaction || sameUnassignedMemberPool)
+                    if (sameExternalGang || sameVanillaFaction)
                         group.Add(candidate);
                 }
                 catch
@@ -471,32 +479,6 @@ namespace LSImmersiveLife
             {
                 LSPDGangDefinition gang = gangData.FindGangForModel(ped.Model.Hash);
                 return gang != null && (gang.IsPlayerOwned || gang.CreatedByPlayer);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private static bool IsRecognizedGangActor(
-            Ped ped,
-            LSPDGangDataIntegration gangData)
-        {
-            if (ped == null || !ped.Exists())
-                return false;
-            try
-            {
-                if (IsFriendlyAnyiii(ped, gangData))
-                    return false;
-                LSPDGangDefinition gang = gangData == null
-                    ? null : gangData.FindGangForModel(ped.Model.Hash);
-                bool playerOwned = gang != null
-                    && (gang.IsPlayerOwned || gang.CreatedByPlayer);
-                if (playerOwned)
-                    return false;
-                return (gang != null && !playerOwned)
-                    || (IsVanillaGangHash(ped.Model.Hash) && gang == null)
-                    || (gangData != null && gangData.IsMemberPoolModel(ped.Model.Hash));
             }
             catch
             {
@@ -549,9 +531,7 @@ namespace LSImmersiveLife
                 return false;
             try
             {
-                return ped.IsInCombatAgainst(target)
-                    || (ped.IsShooting
-                        && ped.Position.DistanceTo(target.Position) <= 90f);
+                return ped.IsInCombatAgainst(target);
             }
             catch
             {
@@ -559,29 +539,44 @@ namespace LSImmersiveLife
             }
         }
 
-        private static bool IsArmed(Ped ped)
+        private static string DescribeActorIdentity(
+            int modelHash,
+            LSPDGangDataIntegration gangData)
         {
-            if (ped == null || !ped.Exists())
-                return false;
-            try { return ped.Weapons.Current.Hash != WeaponHash.Unarmed; }
-            catch { return false; }
+            try
+            {
+                LSPDGangDefinition gang = gangData == null
+                    ? null : gangData.FindGangForModel(modelHash);
+                if (gang != null)
+                    return gang.Name;
+                if (gangData != null && gangData.IsMemberPoolModel(modelHash))
+                    return "Unassigned Gang & Turf model-pool hint (identity unconfirmed)";
+                return IsVanillaGangHash(modelHash)
+                    ? "Vanilla GTA gang" : "Unassigned civilian model";
+            }
+            catch
+            {
+                return "IdentityUnavailable";
+            }
+        }
+
+        private static string ReadTaskStatus(Ped ped, Hash task)
+        {
+            try
+            {
+                return Function.Call<int>(Hash.GET_SCRIPT_TASK_STATUS, ped, task)
+                    .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex)
+            {
+                return "Unavailable:" + ex.GetType().Name;
+            }
         }
 
         private void LogRuntime(string category, string message)
         {
             if (_log != null)
-            {
-                bool recurringAwarenessState = string.Equals(
-                        category, "POLICE_GANG_AWARENESS_STEALTH",
-                        StringComparison.Ordinal)
-                    || string.Equals(category, "POLICE_GANG_AWARENESS_WARY",
-                        StringComparison.Ordinal);
-                if (recurringAwarenessState)
-                    _log.RuntimeThrottled(category, message,
-                        TimeSpan.FromSeconds(30));
-                else
-                    _log.Runtime(category, message);
-            }
+                _log.Runtime(category, message);
         }
 
         private void LogException(string category, Exception ex)

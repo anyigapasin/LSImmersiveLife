@@ -24,6 +24,8 @@ namespace LSImmersiveLife
         private const int InteriorTaskRefreshMilliseconds = 4500;
         private const int InteriorRouteTimeoutSeconds = 75;
         private const int MaximumInteriorRouteRecoveries = 3;
+        private const int ResponseOfficerModelTimeoutSeconds = 15;
+        private const int ResponseOfficerModelRetryDelaySeconds = 60;
 
         private readonly LSPDAudioDispatch _audio;
         private readonly LSPDProfile _profile;
@@ -45,6 +47,11 @@ namespace LSImmersiveLife
                 new Dictionary<int, DispatchCustodyRelationshipSnapshot>();
         private DateTime _nextAuthoritySupportScan = DateTime.MinValue;
         private DateTime _nextResponseModelStatusLog = DateTime.MinValue;
+        private DateTime _responseOfficerModelRequestStartedAt = DateTime.MinValue;
+        private DateTime _responseOfficerModelRetryAfter = DateTime.MinValue;
+        private string _responseOfficerModelName = string.Empty;
+        private bool _responseOfficerModelFallbackActive;
+        private bool _responseOfficerModelReadinessLogged;
         private int _nearbyAuthorityAllyCount;
         private int _dispatchCustodyRelationshipGroupHash;
         private int _lastDispatchCustodySignature;
@@ -111,6 +118,9 @@ namespace LSImmersiveLife
             internal int ModelHash;
             internal string OccurrenceId;
             internal string State;
+            internal bool CollisionProofOriginal;
+            internal bool CollisionProofCaptured;
+            internal bool CollisionProofApplied;
         }
 
         private sealed class DispatchCustodyRelationshipSnapshot
@@ -189,6 +199,38 @@ namespace LSImmersiveLife
             }
         }
 
+        internal bool IsCurrentDispatchDamageSource(
+            LSPDDispatchEvent incident,
+            Ped officer,
+            Ped suspect)
+        {
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff
+                || officer == null || !officer.Exists() || officer.IsDead
+                || suspect == null || !suspect.Exists() || suspect.IsDead)
+                return false;
+
+            foreach (PoliceResponseUnit unit in _units)
+            {
+                if (unit == null || !unit.Owned || !unit.Responding
+                    || !string.Equals(unit.IncidentId, incident.Id,
+                        StringComparison.Ordinal)
+                    || unit.Driver == null || !unit.Driver.Exists()
+                    || unit.Driver.Handle != officer.Handle)
+                    continue;
+                try
+                {
+                    return officer.IsInCombatAgainst(suspect)
+                        || suspect.IsInCombatAgainst(officer);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            return false;
+        }
+
         internal void AttachAmbientWorld(LSWorldAmbientBehavior ambientWorld)
         {
             _ambientWorld = ambientWorld;
@@ -248,26 +290,111 @@ namespace LSImmersiveLife
                     vehicleName = vehicle.ModelName;
             }
 
-            string officerName = "s_m_y_cop_01";
+            string selectedOfficerName = "s_m_y_cop_01";
             if (_profile != null)
             {
                 LSPDPoliceModelDefinition officer = _profile.FindPed("lspd_male_patrol");
                 if (officer != null)
-                    officerName = officer.ModelName;
+                    selectedOfficerName = officer.ModelName;
+            }
+
+            DateTime now = DateTime.UtcNow;
+            if (_responseOfficerModelRetryAfter != DateTime.MinValue
+                && now < _responseOfficerModelRetryAfter)
+                return false;
+            if (_responseOfficerModelRetryAfter != DateTime.MinValue)
+            {
+                _responseOfficerModelRetryAfter = DateTime.MinValue;
+                _responseOfficerModelRequestStartedAt = DateTime.MinValue;
+                _responseOfficerModelName = string.Empty;
+                _responseOfficerModelFallbackActive = false;
+                _responseOfficerModelReadinessLogged = false;
+            }
+            if (string.IsNullOrWhiteSpace(_responseOfficerModelName))
+            {
+                _responseOfficerModelName = selectedOfficerName;
+                _responseOfficerModelRequestStartedAt = now;
+                _responseOfficerModelFallbackActive = false;
+                _responseOfficerModelReadinessLogged = false;
+                LogDebug("POLICE_RESPONSE_MODEL_REQUEST_STARTED",
+                    "SelectedOfficer=" + _responseOfficerModelName
+                    + "; Fallback=AuthoredFemalePatrol; TimeoutSeconds="
+                    + ResponseOfficerModelTimeoutSeconds);
             }
 
             Model vehicleModel = new Model(vehicleName);
-            Model officerModel = new Model(officerName);
-            if (!RequestModel(vehicleModel, true) || !RequestModel(officerModel, false))
+            Model officerModel = new Model(_responseOfficerModelName);
+            bool vehicleReady = RequestModel(vehicleModel, true);
+            bool officerReady = RequestModel(officerModel, false);
+            if (!officerReady
+                && now >= _responseOfficerModelRequestStartedAt.AddSeconds(
+                    ResponseOfficerModelTimeoutSeconds))
             {
-                ReleaseModel(vehicleModel);
-                ReleaseModel(officerModel);
+                if (!_responseOfficerModelFallbackActive)
+                {
+                    ReleaseModel(officerModel);
+                    LSPDPoliceModelDefinition fallback = _profile == null
+                        ? null : _profile.FindPed("lspd_female_patrol");
+                    string fallbackName = fallback == null
+                        ? "s_f_y_cop_01" : fallback.ModelName;
+                    _responseOfficerModelName = fallbackName;
+                    _responseOfficerModelFallbackActive = true;
+                    _responseOfficerModelReadinessLogged = false;
+                    _responseOfficerModelRequestStartedAt = now;
+                    officerModel = new Model(fallbackName);
+                    officerReady = RequestModel(officerModel, false);
+                    LogDebug("POLICE_RESPONSE_MODEL_FALLBACK_SELECTED",
+                        "PreviousOfficer=s_m_y_cop_01; FallbackOfficer="
+                        + fallbackName + "; CatalogId=lspd_female_patrol"
+                        + "; RequestResult=" + (officerReady ? "Ready" : "Pending"));
+                }
+                else
+                {
+                    ReleaseModel(officerModel);
+                    ReleaseModel(vehicleModel);
+                    _responseOfficerModelRetryAfter = now.AddSeconds(
+                        ResponseOfficerModelRetryDelaySeconds);
+                    LogDebug("POLICE_RESPONSE_MODEL_TIMED_OUT",
+                        "Officer=" + _responseOfficerModelName
+                        + "; Fallback=true; WaitedSeconds="
+                        + ResponseOfficerModelTimeoutSeconds
+                        + "; RetryAfterSeconds="
+                        + ResponseOfficerModelRetryDelaySeconds
+                        + "; Result=ReleasedAndBackedOff");
+                    _responseOfficerModelName = string.Empty;
+                    _responseOfficerModelRequestStartedAt = DateTime.MinValue;
+                    _responseOfficerModelFallbackActive = false;
+                    _responseOfficerModelReadinessLogged = false;
+                    return false;
+                }
+            }
+
+            if (!officerReady || !vehicleReady)
+            {
                 if (DateTime.UtcNow >= _nextResponseModelStatusLog)
                 {
                     _nextResponseModelStatusLog = DateTime.UtcNow.AddSeconds(5);
-                    LogDebug("POLICE_RESPONSE_MODEL_PENDING", vehicleName + " / " + officerName);
+                    int elapsedSeconds = Math.Max(0,
+                        (int)(DateTime.UtcNow - _responseOfficerModelRequestStartedAt)
+                            .TotalSeconds);
+                    LogDebug("POLICE_RESPONSE_MODEL_PENDING",
+                        "Vehicle=" + vehicleName + "; VehicleReady=" + vehicleReady
+                        + "; Officer=" + _responseOfficerModelName
+                        + "; OfficerReady=" + officerReady
+                        + "; Fallback=" + _responseOfficerModelFallbackActive
+                        + "; ElapsedSeconds=" + elapsedSeconds
+                        + "; Result=RetryScheduled");
                 }
                 return false;
+            }
+
+            if (!_responseOfficerModelReadinessLogged)
+            {
+                _responseOfficerModelReadinessLogged = true;
+                LogDebug("POLICE_RESPONSE_MODEL_READY",
+                    "Officer=" + _responseOfficerModelName
+                    + "; Fallback=" + _responseOfficerModelFallbackActive
+                    + "; ModelLoaded=true; VehicleLoaded=true");
             }
 
             try
@@ -327,7 +454,8 @@ namespace LSImmersiveLife
                     + "; Mode=" + unit.ResponseMode
                     + "; EmergencySignals=" + urgent
                     + "; Vehicle=" + vehicleName
-                    + "; Driver=" + officerName
+                     + "; Driver=" + _responseOfficerModelName
+                     + "; DriverModelFallback=" + _responseOfficerModelFallbackActive
                     + "; Destination=" + destination);
                 Notify("~b~POLICE RESPONSE~s~\nA response unit is heading to the scene.");
                 return true;
@@ -341,6 +469,11 @@ namespace LSImmersiveLife
             {
                 ReleaseModel(vehicleModel);
                 ReleaseModel(officerModel);
+                _responseOfficerModelRequestStartedAt = DateTime.MinValue;
+                _responseOfficerModelName = string.Empty;
+                _responseOfficerModelFallbackActive = false;
+                _responseOfficerModelReadinessLogged = false;
+                _nextResponseModelStatusLog = DateTime.MinValue;
             }
         }
 
@@ -1068,10 +1201,10 @@ namespace LSImmersiveLife
         /// <summary>
         /// Maintains local, non-owning recognition from nearby vanilla Police
         /// and optional military personnel toward the active Police player and
-        /// the current Dispatch custody transition. Dispatch actors remain
-        /// owned by Dispatch/Convoy; this owner only changes a secured suspect's
-        /// temporary Police relationship and de-escalates an officer who is
-        /// actually targeting that suspect.
+        /// the current Dispatch suspect transition. Dispatch actors remain
+        /// owned by Dispatch/Convoy; this owner applies temporary Police
+        /// relationships and de-escalates an officer who targets a wounded,
+        /// compliant, or custody-owned suspect.
         /// </summary>
         internal void MaintainAuthoritySupport(
             Ped player,
@@ -1346,18 +1479,17 @@ namespace LSImmersiveLife
                     && value.Handle == suspect.Handle))
                 return null;
 
+            // A custody flag must not make an actively attacking suspect
+            // immune to necessary defensive world-Police response.
+            if (IsActiveArmedDispatchThreat(suspect))
+                return null;
+
             int handle = suspect.Handle;
             if ((incident.PlayerHandcuffInProgress
                     && incident.PlayerHandcuffTargetHandle == handle)
                 || (incident.BackupArrestInProgressSuspectHandles != null
                     && incident.BackupArrestInProgressSuspectHandles.Contains(handle)))
                 return "PhysicalArrestInProgress";
-
-            string response;
-            if (incident.SuspectResponses != null
-                && incident.SuspectResponses.TryGetValue(handle, out response)
-                && IsExplicitRenewedThreat(response))
-                return null;
 
             if (incident.ArrestedSuspects != null
                 && incident.ArrestedSuspects.Any(value => value != null
@@ -1367,16 +1499,50 @@ namespace LSImmersiveLife
                 && incident.CompliantSuspects.Any(value => value != null
                     && value.Handle == handle))
                 return "Compliant";
+
+            // Dispatch injury management owns shot attribution and hit counts.
+            // Police Response only reads the current physical wound state here
+            // so nearby officers stop acquiring a wounded suspect as a target.
+            // A live combat/aim/shoot task remains eligible for necessary
+            // defensive Police response until that active threat ends.
+            if (IsWoundedDispatchSuspect(suspect))
+                return "Wounded";
             return null;
         }
 
-        private static bool IsExplicitRenewedThreat(string response)
+        private static bool IsWoundedDispatchSuspect(Ped suspect)
         {
-            return string.Equals(response, "resist", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(response, "flee", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(response, "fight", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(response, "shoot", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(response, "combat", StringComparison.OrdinalIgnoreCase);
+            if (suspect == null || !suspect.Exists() || suspect.IsDead
+                || suspect.Health <= 0)
+                return false;
+
+            try
+            {
+                if (suspect.MaxHealth > 0 && suspect.Health < suspect.MaxHealth)
+                    return true;
+                return Function.Call<bool>(Hash.IS_PED_IN_WRITHE, suspect)
+                    || Function.Call<bool>(Hash.IS_PED_RAGDOLL, suspect);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsActiveArmedDispatchThreat(Ped suspect)
+        {
+            if (suspect == null || !suspect.Exists() || suspect.IsDead
+                || suspect.Health <= 0)
+                return false;
+
+            try
+            {
+                return suspect.IsInCombat || suspect.IsAiming || suspect.IsShooting;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private void ReconcileDispatchCustodyProtection(
@@ -1445,11 +1611,18 @@ namespace LSImmersiveLife
                     state = new DispatchCustodyActorState
                     {
                         Actor = suspect,
-                        OriginalRelationshipGroup = currentGroup,
+                        OriginalRelationshipGroup =
+                            LSPDDispatchEvent.ResolveDispatchCustodyOriginalRelationshipGroup(
+                                handle,
+                                currentGroup,
+                                incident.SuspectOccurrenceRelationshipGroupHash,
+                                incident.OriginalSuspectRelationshipGroupByHandle),
                         AssignedRelationshipGroup = _dispatchCustodyRelationshipGroupHash,
                         ModelHash = modelHash,
                         OccurrenceId = incident.Id ?? string.Empty,
-                        State = entry.Value
+                        State = entry.Value,
+                        CollisionProofOriginal = suspect.IsCollisionProof,
+                        CollisionProofCaptured = true
                     };
                     _dispatchCustodyActors[handle] = state;
                     if (currentGroup != _dispatchCustodyRelationshipGroupHash)
@@ -1470,7 +1643,12 @@ namespace LSImmersiveLife
                         // Keep the latest externally assigned group as the
                         // restoration target, then reapply this bounded custody
                         // state while the Dispatch transition remains active.
-                        state.OriginalRelationshipGroup = currentGroup;
+                        state.OriginalRelationshipGroup =
+                            LSPDDispatchEvent.ResolveDispatchCustodyOriginalRelationshipGroup(
+                                handle,
+                                currentGroup,
+                                incident.SuspectOccurrenceRelationshipGroupHash,
+                                incident.OriginalSuspectRelationshipGroupByHandle);
                         Function.Call(Hash.SET_PED_RELATIONSHIP_GROUP_HASH,
                             suspect, state.AssignedRelationshipGroup);
                     }
@@ -1479,6 +1657,15 @@ namespace LSImmersiveLife
                         || !string.Equals(state.State, entry.Value,
                             StringComparison.Ordinal))
                     {
+                        if (!string.Equals(entry.Value, "Compliant",
+                                StringComparison.Ordinal)
+                            && state.CollisionProofApplied)
+                        {
+                            // Physical arrest takes over the stronger proof
+                            // window in Dispatch. Leave the collision flag for
+                            // that owner to restore after its paired animation.
+                            state.CollisionProofApplied = false;
+                        }
                         LogRuntime(
                             "POLICE_DISPATCH_CUSTODY_PROTECTION_STATE",
                             "Occurrence=" + incident.Id
@@ -1489,6 +1676,28 @@ namespace LSImmersiveLife
                         state.OccurrenceId = incident.Id ?? string.Empty;
                         state.State = entry.Value;
                     }
+                }
+
+                if (string.Equals(entry.Value, "Compliant",
+                    StringComparison.Ordinal)
+                    && !suspect.IsCollisionProof)
+                {
+                    if (!state.CollisionProofCaptured)
+                    {
+                        state.CollisionProofOriginal = suspect.IsCollisionProof;
+                        state.CollisionProofCaptured = true;
+                    }
+                    bool collisionProofWasApplied = state.CollisionProofApplied;
+                    suspect.IsCollisionProof = true;
+                    state.CollisionProofApplied = suspect.IsCollisionProof;
+                    if (!collisionProofWasApplied)
+                        LogRuntime(
+                            "POLICE_DISPATCH_COMPLIANT_SUSPECT_COLLISION_PROTECTION",
+                            "Occurrence=" + state.OccurrenceId
+                            + "; Suspect=" + suspect.Handle
+                            + "; State=CompliantBeforePhysicalArrest"
+                            + "; CollisionProofOnly=" + state.CollisionProofApplied
+                            + "; BulletProof=false; FireProof=false; MeleeVulnerable=true");
                 }
 
                 retained.Add(handle);
@@ -1602,6 +1811,17 @@ namespace LSImmersiveLife
             {
                 if (state.Actor.Model.Hash != state.ModelHash)
                     return;
+                if (state.CollisionProofCaptured
+                    && state.CollisionProofApplied)
+                {
+                    state.Actor.IsCollisionProof = state.CollisionProofOriginal;
+                    LogRuntime(
+                        "POLICE_DISPATCH_COMPLIANT_SUSPECT_COLLISION_PROTECTION_RESTORED",
+                        "Occurrence=" + state.OccurrenceId
+                        + "; Suspect=" + state.Actor.Handle
+                        + "; Reason=" + (reason ?? string.Empty)
+                        + "; CollisionProof=" + state.CollisionProofOriginal);
+                }
                 int currentGroup = GetPedRelationshipGroupHash(state.Actor);
                 if (currentGroup != state.AssignedRelationshipGroup)
                     return;
@@ -1774,6 +1994,11 @@ namespace LSImmersiveLife
             {
                 return false;
             }
+        }
+
+        internal static bool IsKnownPoliceAuthorityModelHash(int modelHash)
+        {
+            return PoliceAuthorityModelHashes.Contains(modelHash);
         }
 
         private static bool IsMilitaryAlly(Ped ped)

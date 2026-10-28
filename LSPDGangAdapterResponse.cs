@@ -202,6 +202,9 @@ namespace LSImmersiveLife
                 return;
             }
 
+            _vanilla.ObservePlayerVehicleTaskAttempts(
+                player, nearby, _gangData, now);
+
             Ped found;
             string identity;
             bool aggressive = _vanilla.TryFindAttacker(
@@ -213,13 +216,10 @@ namespace LSImmersiveLife
 
             if (_threat == null)
             {
-                // A universal callout or a civilian contact owns the player's
-                // attention. Gang activity remains observable and can be
-                // reported on the next patrol scan, but never overlaps it.
-                if (!dispatchActive && !npcInteractionActive
-                    && !gangBackupActive && !aggressive)
-                    _vanilla.ProcessPoliceAwareness(
-                        player, nearby, _gangData, now);
+                // Gang model or member-pool recognition is identity context,
+                // not permission to replace an ambient task or create hostility.
+                // The external Gang & Turf state is not present in the read-only
+                // XML export; wait for a real attacker state before reporting.
                 if (dispatchActive || npcInteractionActive || !aggressive)
                     return;
                 Start(found, identity, player, now);
@@ -274,7 +274,7 @@ namespace LSImmersiveLife
             _activeCombatThreats.Clear();
             _protectedGangActors.Clear();
             _backupHeldThreatHandles.Clear();
-            _vanilla.ResetPoliceAwareness();
+            _vanilla.ResetObservationState();
             _gangName = string.Empty;
             _territoryName = string.Empty;
             _status = "No active gang incident.";

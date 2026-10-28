@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Xml;
 using System.Xml.Linq;
+using GTA;
+using GTA.Native;
 
 namespace LSImmersiveLife
 {
@@ -758,6 +760,26 @@ namespace LSImmersiveLife
                 LSPDPoliceWeaponDefinition library = SelectedWeapon;
                 return library == null ? string.Empty : library.WeaponName;
             }
+        }
+
+        internal static int ResolveWeaponHash(string name)
+        {
+            string value = (name ?? string.Empty).Trim();
+            uint numeric;
+            if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                && uint.TryParse(
+                    value.Substring(2),
+                    NumberStyles.HexNumber,
+                    CultureInfo.InvariantCulture,
+                    out numeric))
+                return unchecked((int)numeric);
+            if (uint.TryParse(
+                value,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out numeric))
+                return unchecked((int)numeric);
+            return unchecked((int)StringHash.AtStringHash(value, 0));
         }
 
         internal string SelectedWeaponDisplayName

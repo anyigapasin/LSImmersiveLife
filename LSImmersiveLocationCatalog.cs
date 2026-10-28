@@ -130,7 +130,7 @@ namespace LSImmersiveLife
             IDictionary<string, LSImmersiveLocationDefinition> locations)
         {
             var result = new List<LSImmersiveLocationInteriorAccessPair>();
-            if (relationshipsRoot == null || locations == null)
+            if (locations == null)
                 return result;
 
             var capturePoints = new Dictionary<string, LocationPointReference>(
@@ -171,59 +171,62 @@ namespace LSImmersiveLife
                 }
             }
 
-            foreach (XElement relationship in relationshipsRoot.Elements("Relationship"))
+            if (relationshipsRoot != null)
             {
-                if (!string.Equals(Optional(relationship, "type", string.Empty),
-                        "NearbyDifferentInteriorContext", StringComparison.OrdinalIgnoreCase)
-                    || !string.Equals(Optional(relationship, "sameInteriorIdContext", string.Empty),
-                        "false", StringComparison.OrdinalIgnoreCase))
-                    continue;
+                foreach (XElement relationship in relationshipsRoot.Elements("Relationship"))
+                {
+                    if (!string.Equals(Optional(relationship, "type", string.Empty),
+                            "NearbyDifferentInteriorContext", StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(Optional(relationship, "sameInteriorIdContext", string.Empty),
+                            "false", StringComparison.OrdinalIgnoreCase))
+                        continue;
 
-                double declaredDistance;
-                if (!double.TryParse((string)relationship.Attribute("distanceMeters"),
-                        NumberStyles.Float, CultureInfo.InvariantCulture, out declaredDistance)
-                    || double.IsNaN(declaredDistance) || double.IsInfinity(declaredDistance)
-                    || declaredDistance < 0.05d || declaredDistance > 2.25d)
-                    continue;
+                    double declaredDistance;
+                    if (!double.TryParse((string)relationship.Attribute("distanceMeters"),
+                            NumberStyles.Float, CultureInfo.InvariantCulture, out declaredDistance)
+                        || double.IsNaN(declaredDistance) || double.IsInfinity(declaredDistance)
+                        || declaredDistance < 0.05d || declaredDistance > 2.25d)
+                        continue;
 
-                string leftCapture = Optional(relationship, "leftCaptureId", string.Empty);
-                string rightCapture = Optional(relationship, "rightCaptureId", string.Empty);
-                if (string.IsNullOrWhiteSpace(leftCapture)
-                    || string.IsNullOrWhiteSpace(rightCapture))
-                    continue;
+                    string leftCapture = Optional(relationship, "leftCaptureId", string.Empty);
+                    string rightCapture = Optional(relationship, "rightCaptureId", string.Empty);
+                    if (string.IsNullOrWhiteSpace(leftCapture)
+                        || string.IsNullOrWhiteSpace(rightCapture))
+                        continue;
 
-                LocationPointReference left;
-                LocationPointReference right;
-                if (!capturePoints.TryGetValue(leftCapture, out left)
-                    || !capturePoints.TryGetValue(rightCapture, out right))
-                    continue;
+                    LocationPointReference left;
+                    LocationPointReference right;
+                    if (!capturePoints.TryGetValue(leftCapture, out left)
+                        || !capturePoints.TryGetValue(rightCapture, out right))
+                        continue;
 
-                LocationPointReference outside = IsOutsideAccessObservation(left)
-                    ? left : IsOutsideAccessObservation(right) ? right : null;
-                LocationPointReference inside = IsInteriorAccessObservation(left)
-                    ? left : IsInteriorAccessObservation(right) ? right : null;
-                if (outside == null || inside == null
-                    || ReferenceEquals(outside, inside)
-                    || !HasMatchingAccessStreet(outside.Location, inside.Location))
-                    continue;
+                    LocationPointReference outside = IsOutsideAccessObservation(left)
+                        ? left : IsOutsideAccessObservation(right) ? right : null;
+                    LocationPointReference inside = IsInteriorAccessObservation(left)
+                        ? left : IsInteriorAccessObservation(right) ? right : null;
+                    if (outside == null || inside == null
+                        || ReferenceEquals(outside, inside)
+                        || !HasMatchingAccessStreet(outside.Location, inside.Location))
+                        continue;
 
-                float actualDistance = outside.Point.Position.DistanceTo(inside.Point.Position);
-                if (float.IsNaN(actualDistance) || float.IsInfinity(actualDistance)
-                    || actualDistance > 2.25f
-                    || Math.Abs(actualDistance - declaredDistance) > 0.35d)
-                    continue;
+                    float actualDistance = outside.Point.Position.DistanceTo(inside.Point.Position);
+                    if (float.IsNaN(actualDistance) || float.IsInfinity(actualDistance)
+                        || actualDistance > 2.25f
+                        || Math.Abs(actualDistance - declaredDistance) > 0.35d)
+                        continue;
 
-                string pairKey = outside.Point.SourceRecord + "|" + inside.Point.SourceRecord;
-                if (!seenPairs.Add(pairKey))
-                    continue;
+                    string pairKey = outside.Point.SourceRecord + "|" + inside.Point.SourceRecord;
+                    if (!seenPairs.Add(pairKey))
+                        continue;
 
-                result.Add(new LSImmersiveLocationInteriorAccessPair(
-                    outside.Location,
-                    outside.Point,
-                    inside.Location,
-                    inside.Point,
-                    actualDistance,
-                    "NearbyDifferentInteriorContext"));
+                    result.Add(new LSImmersiveLocationInteriorAccessPair(
+                        outside.Location,
+                        outside.Point,
+                        inside.Location,
+                        inside.Point,
+                        actualDistance,
+                        "NearbyDifferentInteriorContext"));
+                }
             }
 
             // BuildingCandidateEvidence records the surveyed building anchor. A
@@ -231,151 +234,170 @@ namespace LSImmersiveLife
             // records, so pair every nearby anchor on the same authored street
             // and zone with the interior observation. AmbientWorld still has to
             // resolve the live sides and raycast a registered physical door.
+            string[] buildingInteriorRoles =
+            {
+                "InteriorPointCandidate",
+                "InteriorDoorCandidate",
+                "InteriorEgressCandidate",
+                "LinkedInteriorCoordinateCandidate"
+            };
             foreach (LSImmersiveLocationDefinition location in locations.Values)
             {
                 if (location == null)
                     continue;
 
-                foreach (LSImmersiveLocationPoint insidePoint
-                    in location.FindPoints("InteriorPointCandidate", false))
+                foreach (string interiorRole in buildingInteriorRoles)
                 {
-                    int interiorId;
-                    if (insidePoint == null
-                        || !int.TryParse(insidePoint.InteriorId,
-                            NumberStyles.Integer, CultureInfo.InvariantCulture,
-                            out interiorId)
-                        || interiorId == 0
-                        || string.IsNullOrWhiteSpace(insidePoint.SourceRecord))
-                        continue;
-
-                    foreach (BuildingCandidateReference candidateReference
-                        in buildingCandidateReferences)
-                    {
-                        if (candidateReference == null
-                            || candidateReference.Candidate == null
-                            || !HasMatchingAccessStreet(
-                                candidateReference.Location, location))
-                            continue;
-
-                        LSImmersiveLocationBuildingCandidate buildingCandidate =
-                            candidateReference.Candidate;
-                        float separation = buildingCandidate.Position.DistanceTo(
-                            insidePoint.Position);
-                        if (float.IsNaN(separation) || float.IsInfinity(separation)
-                            || separation < 0.05f || separation > 8f)
-                            continue;
-
-                        var thresholdCandidate = new LSImmersiveLocationPoint(
-                            "building-threshold."
-                                + candidateReference.Location.Id + "."
-                                + buildingCandidate.SourceCaptureId,
-                            "BuildingCandidatePosition",
-                            buildingCandidate.Position,
-                            false,
-                            0f,
-                            false,
-                            "Candidate",
-                            "Unknown",
-                            "Unknown",
-                            "Unknown",
-                            "0",
-                            "BuildingCandidateEvidence_RuntimeValidationRequired",
-                            "Unknown",
-                            "Unknown",
-                            candidateReference.Location.SourceRef,
-                            buildingCandidate.SourceCaptureId);
-
-                        string pairKey = candidateReference.Location.Id + "|"
-                            + thresholdCandidate.Id + "|" + insidePoint.SourceRecord;
-                        if (!seenPairs.Add(pairKey))
-                            continue;
-
-                        result.Add(new LSImmersiveLocationInteriorAccessPair(
-                            candidateReference.Location,
-                            thresholdCandidate,
-                            location,
-                            insidePoint,
-                            separation,
-                            string.Equals(buildingCandidate.SourceCaptureId,
-                                insidePoint.SourceRecord,
-                                StringComparison.OrdinalIgnoreCase)
-                                ? "BuildingCandidateEvidenceSameCapture"
-                                : "NearbyBuildingCandidateSameStreet"));
-                    }
-                }
-            }
-
-            // The owner-confirmed location import supplies a named exterior
-            // entrance and one or more nearby interior door references. Treat
-            // these as route candidates only; AmbientWorld must still confirm
-            // the live interior sides, walkable floor, door, and staging.
-            foreach (LSImmersiveLocationDefinition location in locations.Values)
-            {
-                if (location == null
-                    || !location.ExteriorVerified
-                    || !location.InteriorVerified
-                    || !string.Equals(location.IdentityStatus,
-                        "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                foreach (LSImmersiveLocationPoint outsidePoint
-                    in location.FindPoints("ObservedCoordinateCandidate", false))
-                {
-                    if (outsidePoint == null
-                        || !string.Equals(outsidePoint.PositionContext,
-                            "OwnerConfirmedExteriorEntranceReference",
-                            StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(outsidePoint.InteriorId, "0",
-                            StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(outsidePoint.InteriorStatus,
-                            "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase)
-                        || !string.Equals(outsidePoint.SourceRef, location.SourceRef,
-                            StringComparison.OrdinalIgnoreCase))
-                        continue;
-
                     foreach (LSImmersiveLocationPoint insidePoint
-                        in location.FindPoints("InteriorDoorCandidate", false))
+                        in location.FindPoints(interiorRole, false))
                     {
                         int interiorId;
                         if (insidePoint == null
-                            || !string.Equals(insidePoint.PositionContext,
-                                "OwnerConfirmedInteriorCoordinateReference",
-                                StringComparison.OrdinalIgnoreCase)
-                            || !string.Equals(insidePoint.InteriorStatus,
-                                "OwnerConfirmedReference", StringComparison.OrdinalIgnoreCase)
-                            || !string.Equals(insidePoint.SourceRef, location.SourceRef,
-                                StringComparison.OrdinalIgnoreCase)
                             || !int.TryParse(insidePoint.InteriorId,
                                 NumberStyles.Integer, CultureInfo.InvariantCulture,
                                 out interiorId)
                             || interiorId == 0)
                             continue;
 
-                        float actualDistance = outsidePoint.Position.DistanceTo(
-                            insidePoint.Position);
-                        if (float.IsNaN(actualDistance)
-                            || float.IsInfinity(actualDistance)
-                            || actualDistance < 0.05f
-                            || actualDistance > 8f)
-                            continue;
+                        foreach (BuildingCandidateReference candidateReference
+                            in buildingCandidateReferences)
+                        {
+                            if (candidateReference == null
+                                || candidateReference.Candidate == null
+                                || !HasMatchingAccessStreet(
+                                    candidateReference.Location, location))
+                                continue;
 
-                        string pairKey = "owner-reference|" + location.Id + "|"
-                            + outsidePoint.Id + "|" + insidePoint.Id;
-                        if (!seenPairs.Add(pairKey))
-                            continue;
+                            LSImmersiveLocationBuildingCandidate buildingCandidate =
+                                candidateReference.Candidate;
+                            float separation = buildingCandidate.Position.DistanceTo(
+                                insidePoint.Position);
+                            if (float.IsNaN(separation) || float.IsInfinity(separation)
+                                || separation < 0.05f || separation > 8f)
+                                continue;
 
-                        result.Add(new LSImmersiveLocationInteriorAccessPair(
-                            location,
-                            outsidePoint,
-                            location,
-                            insidePoint,
-                            actualDistance,
-                            "OwnerConfirmedMapInteriorDoor_RuntimeValidationRequired"));
+                            var thresholdCandidate = new LSImmersiveLocationPoint(
+                                "building-threshold."
+                                    + candidateReference.Location.Id + "."
+                                    + buildingCandidate.SourceCaptureId,
+                                "BuildingCandidatePosition",
+                                buildingCandidate.Position,
+                                false,
+                                0f,
+                                false,
+                                "Candidate",
+                                "Unknown",
+                                "Unknown",
+                                "Unknown",
+                                "0",
+                                "BuildingCandidateEvidence_RuntimeValidationRequired",
+                                "Unknown",
+                                "Unknown",
+                                candidateReference.Location.SourceRef,
+                                buildingCandidate.SourceCaptureId);
+
+                            string pairKey = candidateReference.Location.Id + "|"
+                                + thresholdCandidate.Id + "|" + insidePoint.Id;
+                            if (!seenPairs.Add(pairKey))
+                                continue;
+
+                            result.Add(new LSImmersiveLocationInteriorAccessPair(
+                                candidateReference.Location,
+                                thresholdCandidate,
+                                location,
+                                insidePoint,
+                                separation,
+                                string.Equals(buildingCandidate.SourceCaptureId,
+                                    insidePoint.SourceRecord,
+                                    StringComparison.OrdinalIgnoreCase)
+                                    ? "BuildingCandidateEvidenceSameCapture"
+                                    : "NearbyBuildingCandidateSameStreet"));
+                        }
+                    }
+                }
+            }
+
+            // A verified location with a mapped exterior observation and a
+            // nearby interior entrance, egress, or activity point can supply a
+            // route candidate. Older captures may not contain the newer review
+            // and position-context labels, so the physical verification flags,
+            // point roles, captured interior identity, and bounded distance are
+            // the compatibility contract. AmbientWorld still confirms the live
+            // interior, walkable floor, actual door, and staging before use.
+            foreach (LSImmersiveLocationDefinition location in locations.Values)
+            {
+                if (location == null
+                    || !location.ExteriorVerified
+                    || !location.InteriorVerified)
+                    continue;
+
+                foreach (LSImmersiveLocationPoint outsidePoint
+                    in location.FindPoints("ObservedCoordinateCandidate", false))
+                {
+                    if (outsidePoint == null
+                        || !string.Equals(outsidePoint.InteriorId, "0",
+                            StringComparison.OrdinalIgnoreCase)
+                        || !HasCompatibleLocationSource(outsidePoint, location))
+                        continue;
+
+                    string[] interiorEntranceRoles =
+                    {
+                        "InteriorDoorCandidate",
+                        "InteriorEgressCandidate",
+                        "InteriorPointCandidate",
+                        "LinkedInteriorCoordinateCandidate"
+                    };
+                    foreach (string interiorEntranceRole in interiorEntranceRoles)
+                    {
+                        foreach (LSImmersiveLocationPoint insidePoint
+                            in location.FindPoints(interiorEntranceRole, false))
+                        {
+                            int interiorId;
+                            if (insidePoint == null
+                                || !HasCompatibleLocationSource(insidePoint, location)
+                                || !int.TryParse(insidePoint.InteriorId,
+                                    NumberStyles.Integer, CultureInfo.InvariantCulture,
+                                    out interiorId)
+                                || interiorId == 0)
+                                continue;
+
+                            float actualDistance = outsidePoint.Position.DistanceTo(
+                                insidePoint.Position);
+                            if (float.IsNaN(actualDistance)
+                                || float.IsInfinity(actualDistance)
+                                || actualDistance < 0.05f
+                                || actualDistance > 8f)
+                                continue;
+
+                            string pairKey = "verified-reference|" + location.Id + "|"
+                                + outsidePoint.Id + "|" + insidePoint.Id;
+                            if (!seenPairs.Add(pairKey))
+                                continue;
+
+                            result.Add(new LSImmersiveLocationInteriorAccessPair(
+                                location,
+                                outsidePoint,
+                                location,
+                                insidePoint,
+                                actualDistance,
+                                "VerifiedMappedInteriorDoor_RuntimeValidationRequired"));
+                        }
                     }
                 }
             }
 
             return result;
+        }
+
+        private static bool HasCompatibleLocationSource(
+            LSImmersiveLocationPoint point,
+            LSImmersiveLocationDefinition location)
+        {
+            return point != null && location != null
+                && (string.IsNullOrWhiteSpace(point.SourceRef)
+                    || string.IsNullOrWhiteSpace(location.SourceRef)
+                    || string.Equals(point.SourceRef, location.SourceRef,
+                        StringComparison.OrdinalIgnoreCase));
         }
 
         private static bool IsOutsideAccessObservation(LocationPointReference reference)
@@ -391,11 +413,22 @@ namespace LSImmersiveLife
         {
             int interiorId;
             return reference != null
-                && string.Equals(reference.Point.Role, "InteriorPointCandidate",
-                    StringComparison.OrdinalIgnoreCase)
+                && IsMappedInteriorPointRole(reference.Point.Role)
                 && int.TryParse(reference.Point.InteriorId, NumberStyles.Integer,
                     CultureInfo.InvariantCulture, out interiorId)
                 && interiorId != 0;
+        }
+
+        private static bool IsMappedInteriorPointRole(string role)
+        {
+            return string.Equals(role, "InteriorDoorCandidate",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "InteriorEgressCandidate",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "InteriorPointCandidate",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "LinkedInteriorCoordinateCandidate",
+                    StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool HasMatchingAccessStreet(
