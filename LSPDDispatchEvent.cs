@@ -915,6 +915,7 @@ namespace LSImmersiveLife
         internal string SceneAnimationDictionary { get; private set; }
         internal string SceneAnimationPrimaryClip { get; private set; }
         internal string SceneAnimationSecondaryClip { get; private set; }
+        internal string PreparedActivity { get; private set; }
         internal string PreArrivalActivity { get; private set; }
         internal List<string> SuspectResponseBranches { get; private set; }
         internal List<string> VictimResponseBranches { get; private set; }
@@ -940,6 +941,7 @@ namespace LSImmersiveLife
         internal string SceneParticipantPoolId { get; private set; }
         internal int MinimumSceneParticipants { get; private set; }
         internal int MaximumSceneParticipants { get; private set; }
+        internal int AdditionalDeadVictims { get; private set; }
         internal bool VictimStartsDead { get; private set; }
         internal int Severity { get; private set; }
         internal int SelectionWeight { get; private set; }
@@ -959,7 +961,7 @@ namespace LSImmersiveLife
                     "Dispatch event has an unsupported locationContext: " + locationContext);
 
             string sceneBehavior = Optional(node, "sceneBehavior", "standard");
-            if (!new[] { "standard", "paired_meeting", "paired_exchange", "interior_store_custody", "interior_robbery_custody", "interior_attack_attempt", "interior_clerk_assault", "interior_clerk_snatch", "murder_victim_alley", "murder_victim_exterior", "murder_victim_interior" }
+            if (!new[] { "standard", "interior_activity", "paired_meeting", "paired_exchange", "interior_store_custody", "interior_robbery_custody", "interior_attack_attempt", "interior_clerk_assault", "interior_clerk_snatch", "murder_victim_alley", "murder_victim_exterior", "murder_victim_interior" }
                 .Contains(sceneBehavior, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException(
                     "Dispatch event has an unsupported sceneBehavior: " + sceneBehavior);
@@ -1039,7 +1041,8 @@ namespace LSImmersiveLife
                 && !mappedRetailAssault
                 && !mappedRetailSnatch
                 && !mappedRetailMurder
-                && !mappedRetailAttack)
+                && !mappedRetailAttack
+                && !string.Equals(sceneBehavior, "interior_activity", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException(
                     "A required physical store or bank type can only be used by a matching robbery or supported mapped retail scene.");
 
@@ -1098,10 +1101,10 @@ namespace LSImmersiveLife
                 node, "maximumVictims", minimumVictims, minimumVictims, 1);
             string sceneParticipantPoolId = Optional(node, "sceneParticipantPool", string.Empty);
             int minimumSceneParticipants = IntegerInRange(
-                node, "minimumSceneParticipants", 0, 0, 3);
+                node, "minimumSceneParticipants", 0, 0, 5);
             int maximumSceneParticipants = IntegerInRange(
                 node, "maximumSceneParticipants", minimumSceneParticipants,
-                minimumSceneParticipants, 3);
+                minimumSceneParticipants, 5);
             if (maximumSceneParticipants > 0
                 && string.IsNullOrWhiteSpace(sceneParticipantPoolId))
                 throw new InvalidDataException(
@@ -1111,11 +1114,14 @@ namespace LSImmersiveLife
                 throw new InvalidDataException(
                     "A Dispatch event cannot declare a sceneParticipantPool without scene participants.");
             if (!string.IsNullOrWhiteSpace(sceneParticipantPoolId)
-                && !new[] { "shop_clerk", "shop_customer", "gun_store_clerk", "tattoo_store_clerk" }.Contains(
+                && !new[] { "shop_clerk", "shop_customer", "gun_store_clerk", "tattoo_store_clerk", "bank_clerk", "ambient_civilian" }.Contains(
                     sceneParticipantPoolId, StringComparer.OrdinalIgnoreCase))
                 throw new InvalidDataException(
                     "Mapped retail scene participants must use an authored shop_clerk, shop_customer, gun_store_clerk, or tattoo_store_clerk NPC pool.");
             bool victimStartsDead = Bool(node, "victimStartsDead", false);
+            int additionalDeadVictims = IntegerInRange(node, "additionalDeadVictims", 0, 0, 4);
+            if (additionalDeadVictims > minimumSceneParticipants || (additionalDeadVictims > 0 && !victimStartsDead))
+                throw new InvalidDataException("Extra authored murder victims require reserved civilian slots and a murder scene.");
             if (maximumVictims > 0 && string.IsNullOrWhiteSpace(victimPoolId))
                 throw new InvalidDataException(
                     "A Dispatch event requiring a victim must declare its victimPool.");
@@ -1146,6 +1152,16 @@ namespace LSImmersiveLife
                 throw new InvalidDataException(
                     "A pre-existing dead victim requires a documented one-victim exterior, alley, or mapped-interior murder scene.");
 
+            string preparedActivity = Optional(node, "preparedActivity", string.Empty);
+            string[] supportedPreparedActivities = { "threat", "assault", "driver_assault", "shooting", "stalking", "camera", "intoxicated", "lying", "theft", "exchange", "gathering", "murder", "driving_fast", "driving_slow", "ramming", "carjacking" };
+            if (!string.IsNullOrEmpty(preparedActivity)
+                && !supportedPreparedActivities.Contains(preparedActivity, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidDataException("Unsupported preparedActivity: " + preparedActivity);
+            if ((preparedActivity == "exchange" || preparedActivity == "gathering") && minimumSuspects < 2)
+                throw new InvalidDataException("Exchange/gathering needs at least two criminal participants.");
+            if (preparedActivity.StartsWith("driving_", StringComparison.OrdinalIgnoreCase) || preparedActivity == "ramming")
+                if (!Bool(node, "requiresVehicle", false) || !Bool(node, "mobile", false))
+                    throw new InvalidDataException("A driving activity requires mobile vehicles.");
             string preArrivalActivity = Optional(node, "preArrivalActivity", "none");
             if (!new[] { "none", "guard", "disturbance", "murder_scene", "victim_threat", "victim_attack", "victim_snatch", "group_shootout", "active_shooter" }
                 .Contains(preArrivalActivity, StringComparer.OrdinalIgnoreCase))
@@ -1382,7 +1398,11 @@ namespace LSImmersiveLife
             bool mappedInteriorClerkSnatch = string.Equals(
                 sceneBehavior, "interior_clerk_snatch", StringComparison.OrdinalIgnoreCase);
             bool mappedInteriorMurderScene = interiorMurderScene;
-            bool inferredMappedInterior = mappedInteriorRobberyCustody
+            bool interiorActivity = string.Equals(sceneBehavior, "interior_activity", StringComparison.OrdinalIgnoreCase);
+            if (interiorActivity && (string.IsNullOrEmpty(preparedActivity)
+                || string.IsNullOrEmpty(requiredPhysicalType) || Bool(node, "requiresVehicle", false)))
+                throw new InvalidDataException("An authored interior activity needs a physical site, activity, and foot actors.");
+            bool inferredMappedInterior = interiorActivity || mappedInteriorRobberyCustody
                 || mappedInteriorAttackAttempt
                 || mappedInteriorClerkAssault
                 || mappedInteriorClerkSnatch
@@ -1422,7 +1442,7 @@ namespace LSImmersiveLife
                     || suspectCount < minimumSuspects
                     || suspectCount > maximumSuspects
                     || minimumSuspects < 1
-                    || maximumSuspects > 3
+                    || maximumSuspects > 5
                     || minimumVictims != 1
                     || maximumVictims != 1
                     || !string.Equals(victimPoolId, mappedInteriorRobberyVictimPool,
@@ -1434,12 +1454,12 @@ namespace LSImmersiveLife
                     || !new[] { "comply", "resist" }.All(value =>
                         suspectResponseBranches.Contains(value, StringComparer.OrdinalIgnoreCase))))
                 throw new InvalidDataException(
-                    "A mapped interior robbery requires one to three armed bank/store suspects, one matching clerk or civilian victim, compliance and resistance branches, no vehicle or exterior staging, and no paired animation.");
+                    "A mapped interior robbery requires one to five armed bank/store suspects, one matching clerk or civilian victim, compliance and resistance branches, no vehicle or exterior staging, and no paired animation.");
             if (mappedInteriorAttackAttempt
                 && (!string.Equals(Required(node, "type"), "violent_disturbance", StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(interiorLocationId)
                     || minimumSuspects < 1
-                    || maximumSuspects > 3
+                    || maximumSuspects > 5
                     || minimumVictims != 1
                     || maximumVictims != 1
                     || victimStartsDead
@@ -1455,7 +1475,7 @@ namespace LSImmersiveLife
                     || !string.Equals(locationContext, "commercial", StringComparison.OrdinalIgnoreCase)
                     || !string.IsNullOrWhiteSpace(interiorLocationId)
                     || minimumSuspects < 1
-                    || maximumSuspects > 3
+                    || maximumSuspects > 5
                     || minimumVictims != 1
                     || maximumVictims != 1
                     || victimStartsDead
@@ -1498,7 +1518,7 @@ namespace LSImmersiveLife
             if (mappedInteriorMurderScene
                 && (!string.Equals(Required(node, "type"), "violent_disturbance", StringComparison.OrdinalIgnoreCase)
                     || minimumSuspects < 1
-                    || maximumSuspects > 3
+                    || maximumSuspects > 5
                     || minimumVictims != 1
                     || maximumVictims != 1
                     || !victimStartsDead
@@ -1517,6 +1537,7 @@ namespace LSImmersiveLife
                 && (string.Equals(requiredPhysicalType, "Bank", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(requiredPhysicalType, "BankBranch", StringComparison.OrdinalIgnoreCase));
             if (maximumSceneParticipants > 0
+                && string.IsNullOrEmpty(preparedActivity)
                 && (!requiresMappedInterior
                     || (!mappedInteriorRobberyCustody && !mappedInteriorClerkAssault
                         && !mappedInteriorClerkSnatch && !mappedInteriorMurderScene
@@ -1526,7 +1547,7 @@ namespace LSImmersiveLife
                     || vehicleStagingRequired))
                 throw new InvalidDataException(
                     "Additional store or bank participants require a mapped commercial/financial scene without vehicle staging.");
-            if (!interiorStoreCustody && !mappedInteriorRobberyCustody
+            if (!interiorActivity && !interiorStoreCustody && !mappedInteriorRobberyCustody
                 && !mappedInteriorAttackAttempt && !mappedInteriorClerkAssault
                 && !mappedInteriorClerkSnatch && !mappedInteriorMurderScene
                 && (!string.IsNullOrWhiteSpace(interiorLocationId) || vehicleStagingRequired))
@@ -1552,6 +1573,7 @@ namespace LSImmersiveLife
                 SceneAnimationDictionary = sceneAnimationDictionary,
                 SceneAnimationPrimaryClip = sceneAnimationPrimaryClip,
                 SceneAnimationSecondaryClip = sceneAnimationSecondaryClip,
+                PreparedActivity = preparedActivity,
                 PreArrivalActivity = preArrivalActivity,
                 SuspectResponseBranches = suspectResponseBranches,
                 VictimResponseBranches = victimResponseBranches,
@@ -1576,6 +1598,7 @@ namespace LSImmersiveLife
                 SceneParticipantPoolId = sceneParticipantPoolId,
                 MinimumSceneParticipants = minimumSceneParticipants,
                 MaximumSceneParticipants = maximumSceneParticipants,
+                AdditionalDeadVictims = additionalDeadVictims,
                 VictimStartsDead = victimStartsDead,
                 Severity = Integer(node, "severity", 1),
                 SelectionWeight = IntegerInRange(node, "selectionWeight", 1, 1, 1000),
@@ -1830,6 +1853,23 @@ namespace LSImmersiveLife
         internal string SceneAnimationDictionary { get; set; }
         internal string SceneAnimationPrimaryClip { get; set; }
         internal string SceneAnimationSecondaryClip { get; set; }
+        internal string PreparedActivity { get; set; }
+        internal bool PreparedActivityStarted { get; set; }
+        internal bool PreparedActivityConfirmed { get; set; }
+        internal bool PreparedActivityAudioReported { get; set; }
+        internal HashSet<int> ResolvedSuspectHandles { get; private set; } = new HashSet<int>();
+        internal Dictionary<int, DateTime> ActivityLastEvidenceAt { get; private set; } = new Dictionary<int, DateTime>();
+        internal DateTime PreparedActivityStartedAt { get; set; }
+        internal DateTime PreparedActivityNextSampleAt { get; set; }
+        internal int PreparedActivitySamples { get; set; }
+        internal bool RammingImpactConfirmed { get; set; }
+        internal Dictionary<int, int> ActivityStages { get; private set; } = new Dictionary<int, int>();
+        internal int PreparedActivityRecoveryCount { get; set; }
+        internal Dictionary<int, Vector3> ActivitySamplePositions { get; private set; } = new Dictionary<int, Vector3>();
+        internal Dictionary<int, DateTime> ActivityTaskIssuedAt { get; private set; } = new Dictionary<int, DateTime>();
+        internal Dictionary<int, string> ActivityRoles { get; private set; } = new Dictionary<int, string>();
+        internal HashSet<int> ActivityEvidenceHandles { get; private set; } = new HashSet<int>();
+        internal List<Prop> ActivityProps { get; private set; } = new List<Prop>();
         internal string PreArrivalActivity { get; set; }
         internal List<string> SuspectResponseBranches { get; set; }
         internal List<string> VictimResponseBranches { get; set; }
@@ -1896,6 +1936,8 @@ namespace LSImmersiveLife
         internal HashSet<int> SceneParticipantAmbientClaimAttemptedIndexes { get; private set; } = new HashSet<int>();
         internal HashSet<int> ExistingAmbientSceneParticipantHandles { get; private set; } = new HashSet<int>();
         internal HashSet<int> SceneParticipantBehaviorInitializedHandles { get; private set; } = new HashSet<int>();
+        internal int AdditionalDeadVictims { get; set; }
+        internal HashSet<int> InvestigatedVictimHandles { get; private set; } = new HashSet<int>();
         internal bool VictimStartsDead { get; set; }
         internal bool VictimInvestigated { get; set; }
         internal bool VictimEncounterResponseStarted { get; set; }
@@ -2129,6 +2171,7 @@ namespace LSImmersiveLife
                 SceneAnimationDictionary = definition.SceneAnimationDictionary,
                 SceneAnimationPrimaryClip = definition.SceneAnimationPrimaryClip,
                 SceneAnimationSecondaryClip = definition.SceneAnimationSecondaryClip,
+                PreparedActivity = definition.PreparedActivity,
                 PreArrivalActivity = definition.PreArrivalActivity,
                 SuspectResponseBranches = definition.SuspectResponseBranches == null
                     ? new List<string>() : new List<string>(definition.SuspectResponseBranches),
@@ -2211,6 +2254,7 @@ namespace LSImmersiveLife
                 SceneParticipantAmbientClaimAttemptedIndexes = new HashSet<int>(),
                 ExistingAmbientSceneParticipantHandles = new HashSet<int>(),
                 SceneParticipantBehaviorInitializedHandles = new HashSet<int>(),
+                AdditionalDeadVictims = definition.AdditionalDeadVictims,
                 VictimStartsDead = definition.VictimStartsDead,
                 VictimInvestigated = false,
                 VictimEncounterResponseStarted = false,

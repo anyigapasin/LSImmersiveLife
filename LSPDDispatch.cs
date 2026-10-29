@@ -2693,6 +2693,13 @@ namespace LSImmersiveLife
                     }
                 }
 
+                if (_ambientWorld != null && !_ambientWorld.PrepareDispatchActivityResources(incident))
+                {
+                    reason = "Stage=ActivityResources; Result=DictionaryOrClipNotLoaded";
+                    incident.ScenePreparationNextRetryAt = DateTime.UtcNow.AddMilliseconds(750);
+                    return DateTime.UtcNow < incident.ScenePreparationDeadline
+                        ? SceneOfferPreflightStatus.Pending : SceneOfferPreflightStatus.Failed;
+                }
                 incident.ScenePreparationCompleted = true;
                 LogRuntime(
                     "POLICE_DISPATCH_SCENE_PREFLIGHTED",
@@ -3176,7 +3183,8 @@ namespace LSImmersiveLife
             if (player.IsInVehicle())
                 return "Exit the vehicle and approach the murder victim before using I.";
 
-            Ped investigationVictim = _incident.Victim;
+            Ped investigationVictim = PendingAuthoredMurderVictims(_incident)
+                .OrderBy(p => p.Position.DistanceTo(player.Position)).FirstOrDefault();
             float victimDistance = investigationVictim != null
                 && investigationVictim.Exists()
                 ? player.Position.DistanceTo(investigationVictim.Position) : -1f;
@@ -3198,6 +3206,8 @@ namespace LSImmersiveLife
                     + MurderVictimInvestigationRadius.ToString("0.0", CultureInfo.InvariantCulture)
                     + " metres of the murder victim after entering the mapped doorway, if this scene is indoors.";
 
+            if (HasPendingVictimInvestigation)
+                return "Victim examination recorded. Investigate the remaining authored victims with I before transport or completion.";
             List<Ped> arrestedSuspects = CurrentArrestedSuspects.ToList();
             if (arrestedSuspects.Count > 0)
             {
@@ -3221,6 +3231,13 @@ namespace LSImmersiveLife
             Complete(completion);
             return completion;
         }
+        private static IEnumerable<Ped> PendingAuthoredMurderVictims(LSPDDispatchEvent incident)
+        {
+            if (incident == null || !incident.VictimStartsDead) return Enumerable.Empty<Ped>();
+            return new[] { incident.Victim }.Concat(incident.AdditionalParticipants.Take(incident.AdditionalDeadVictims))
+                .Where(p => p != null && p.Exists() && !incident.InvestigatedVictimHandles.Contains(p.Handle));
+        }
+
         private bool TryRecordMurderVictimInvestigation(
             LSPDDispatchEvent incident,
             Ped player)
@@ -3228,7 +3245,8 @@ namespace LSImmersiveLife
             if (incident == null || !incident.VictimStartsDead
                 || incident.VictimInvestigated)
                 return true;
-            Ped victim = incident.Victim;
+            Ped victim = PendingAuthoredMurderVictims(incident)
+                .OrderBy(p => player == null ? 0f : p.Position.DistanceTo(player.Position)).FirstOrDefault();
             bool mappedInteriorMurder = string.Equals(
                 incident.SceneBehavior, "murder_victim_interior",
                 StringComparison.OrdinalIgnoreCase);
@@ -3291,7 +3309,8 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            incident.VictimInvestigated = true;
+            incident.InvestigatedVictimHandles.Add(victim.Handle);
+            incident.VictimInvestigated = incident.InvestigatedVictimHandles.Count >= 1 + incident.AdditionalDeadVictims;
             LogRuntime("POLICE_DISPATCH_MURDER_VICTIM_INVESTIGATED",
                 "Incident=" + incident.Id
                 + "; Victim=" + victim.Handle
@@ -3709,6 +3728,7 @@ namespace LSImmersiveLife
                 || !IsArrested(incident, suspect))
                 return "The released suspect no longer belongs to the active Dispatch custody.";
 
+            incident.ResolvedSuspectHandles.Add(releasedHandle);
             incident.Suspects.RemoveAll(ped => ped == null || !ped.Exists()
                 || ped.Handle == releasedHandle);
             incident.ArrestedSuspects.RemoveAll(ped => ped == null || !ped.Exists()
@@ -8381,11 +8401,13 @@ namespace LSImmersiveLife
                     && state.Actor.Handle == prisoner.Handle)))
                 return false;
 
-            _incident.OwnedByDispatch = false;
-            _incident.SurrenderRequested = false;
-            _incident.HasConvoyCustodyHandoff = true;
             foreach (Ped prisoner in prisoners)
                 _incident.ConvoyCustodySuspectHandles.Add(prisoner.Handle);
+            bool allLivingTransferred = LiveSuspects(_incident).All(p =>
+                _incident.ConvoyCustodySuspectHandles.Contains(p.Handle));
+            _incident.OwnedByDispatch = !allLivingTransferred;
+            _incident.HasConvoyCustodyHandoff = allLivingTransferred;
+            if (allLivingTransferred) _incident.SurrenderRequested = false;
             foreach (LSPDSuspectInjuryState state in adoptedInjuryStates)
             {
                 if (state == null || state.Actor == null || !state.Actor.Exists())
@@ -8412,9 +8434,13 @@ namespace LSImmersiveLife
             // custody markers. Leaving the Dispatch scene/suspect markers in
             // place created duplicate blue targets when the station handoff
             // immediately opened the prison-transfer phase.
-            CleanupBlip(_sceneBlip);
-            CleanupSuspectBlips();
-            _sceneBlip = null;
+            if (allLivingTransferred)
+            {
+                CleanupBlip(_sceneBlip);
+                CleanupSuspectBlips();
+                _sceneBlip = null;
+            }
+            else SetStateForUnresolvedSuspects(LSPDDispatchState.Investigating);
             LogRuntime(
                 "POLICE_DISPATCH_CUSTODY_MARKERS_RELEASED",
                 "Dispatch markers released to Convoy ownership; Prisoners="
@@ -8525,10 +8551,13 @@ namespace LSImmersiveLife
                 _incident.Suspect = valid[0];
                 _incident.Suspects.Clear();
                 _incident.Suspects.AddRange(retainedExisting);
+                List<Ped> retainedArrested = _incident.ArrestedSuspects
+                    .Where(p => p != null && p.Exists() && !p.IsDead).Concat(valid)
+                    .GroupBy(p => p.Handle).Select(g => g.First()).ToList();
                 _incident.ArrestedSuspects.Clear();
-                _incident.ArrestedSuspects.AddRange(valid);
-                _incident.CompliantSuspects.Clear();
-                _incident.PlayerCommandedSecureSuspectHandles.Clear();
+                _incident.ArrestedSuspects.AddRange(retainedArrested);
+                // Other suspects retain their individual compliance and explicit
+                // secure decisions while this physical custody subset recovers.
                 _incident.OwnedByDispatch = true;
                 _incident.HasConvoyCustodyHandoff = false;
                 _incident.ConvoyCustodySuspectHandles.Clear();
@@ -8623,24 +8652,51 @@ namespace LSImmersiveLife
             SetState(state);
         }
 
+        internal bool HasAnyConvoyCustody
+        {
+            get { return _incident != null && _incident.ConvoyCustodySuspectHandles.Count > 0; }
+        }
+
         internal string CompleteTransport()
         {
-            if (_incident == null)
-                return "No active Police dispatch remains.";
-            if (!_incident.HasConvoyCustodyHandoff)
-                return "No active prisoner convoy is linked to this Dispatch case.";
-            Complete("Prisoner delivered and booking completed.");
-            return "Prisoner delivered and booking completed. Dispatch completed.";
+            return ResolveCompletedConvoyCustody("Prisoner delivered and booking completed.");
         }
 
         internal string CompleteTransportCrewHandoff()
         {
-            if (_incident == null)
-                return "No active Police dispatch remains.";
-            if (!_incident.HasConvoyCustodyHandoff)
-                return "No active prisoner convoy is linked to this Dispatch case.";
-            Complete("Station transport was declined. The loaded suspects remain in transport-officer custody as the crew departs.");
-            return "Station transport declined. Transport crew has custody; Player Dispatch completed.";
+            return ResolveCompletedConvoyCustody("Transport officers have physically assumed the loaded custody group.");
+        }
+
+        private string ResolveCompletedConvoyCustody(string result)
+        {
+            if (_incident == null || !HasAnyConvoyCustody) return "No linked Dispatch custody remains.";
+            LSPDDispatchEvent incident = _incident;
+            var transferred = new HashSet<int>(incident.ConvoyCustodySuspectHandles);
+            incident.ResolvedSuspectHandles.UnionWith(transferred);
+            foreach (int handle in transferred)
+            {
+                _managedSuspectPresenceObservations.Remove(handle);
+                _managedActorLostSuspectHandles.Remove(handle);
+                _lastCompliantTaskAt.Remove(handle);
+                ClearSecuredPoseTracking(handle);
+                incident.SuspectResponses.Remove(handle);
+                incident.ActivityTaskIssuedAt.Remove(handle);
+            }
+            incident.Suspects.RemoveAll(p => p == null || transferred.Contains(p.Handle));
+            incident.ArrestedSuspects.RemoveAll(p => p == null || transferred.Contains(p.Handle));
+            incident.CompliantSuspects.RemoveAll(p => p == null || transferred.Contains(p.Handle));
+            if (incident.Suspect != null && transferred.Contains(incident.Suspect.Handle))
+                incident.Suspect = incident.Suspects.FirstOrDefault(p => p != null && p.Exists() && !p.IsDead);
+            incident.ConvoyCustodySuspectHandles.Clear();
+            incident.HasConvoyCustodyHandoff = false;
+            incident.OwnedByDispatch = true;
+            if (LiveSuspects(incident).Any() || HasPendingVictimInvestigation)
+            {
+                SetStateForUnresolvedSuspects(LSPDDispatchState.Investigating);
+                return result + " Other suspects or investigation remain; Dispatch stays active.";
+            }
+            Complete(result);
+            return result + " Dispatch completed.";
         }
 
         internal string Cancel(string reason)
@@ -8786,7 +8842,7 @@ namespace LSImmersiveLife
                     if (ResolveDisarmedVehiclePursuitStop(
                         incident, suspect, player, vehicle, now))
                         return true;
-                    bool authoredVehicleStopResponse = IsVehicleEntryActivity(incident.VehicleActivity)
+                    bool authoredVehicleStopResponse = (IsVehicleEntryActivity(incident.VehicleActivity) || IsAuthoredDrivingActivity(incident))
                         && incident.SuspectResponseBranches != null
                         && incident.SuspectResponseBranches.Count > 0;
                     if (!authoredVehicleStopResponse
@@ -9184,6 +9240,7 @@ namespace LSImmersiveLife
                     return;
             }
 
+            if (!MaintainAuthoredDispatchActivity(now, player)) return;
             ReportSceneApproach(player);
             MaintainEnRouteStatus(now);
             MaintainPursuitWaypoint(now, player);
@@ -9199,10 +9256,10 @@ namespace LSImmersiveLife
                 && _incident.SuspectResponseBranches != null
                 && _incident.SuspectResponseBranches.Count > 0
                 && (!_incident.PlayerEncounterResponseStarted
-                    || IsVehicleEntryActivity(_incident.VehicleActivity))
+                    || IsVehicleEntryActivity(_incident.VehicleActivity) || IsAuthoredDrivingActivity(_incident))
                 && !TrackedSuspects(_incident).Any(value =>
                     IsDispatchMeleeRecoveryPending(value, now))
-                && (IsVehicleEntryActivity(_incident.VehicleActivity)
+                && ((IsVehicleEntryActivity(_incident.VehicleActivity) || IsAuthoredDrivingActivity(_incident))
                     ? IsPlayerNearVehicleEncounter(_incident, player)
                     : IsPlayerNearDispatchOrigin(player)))
                 StartPlayerEncounterResponse(player);
@@ -9215,9 +9272,12 @@ namespace LSImmersiveLife
                 bool wounded = IsWoundedSuspect(suspect);
                 if (!meleeReactionPending && !wounded)
                 {
-                    TryStartInteriorStoreRobberyFlight(player);
-                    MaintainStagedSceneBehavior(now);
-                    MaintainVehicleSceneActivity(now, player);
+                    if (string.IsNullOrEmpty(_incident.PreparedActivity))
+                    {
+                        TryStartInteriorStoreRobberyFlight(player);
+                        MaintainStagedSceneBehavior(now);
+                        MaintainVehicleSceneActivity(now, player);
+                    }
                 }
                 ReportSuspectGunfire(player);
                 List<Ped> unresolvedSuspects = LiveSuspects(_incident)
@@ -9322,7 +9382,8 @@ namespace LSImmersiveLife
 
         private static bool IsMappedInteriorDispatchBehavior(string sceneBehavior)
         {
-            return string.Equals(sceneBehavior, "interior_store_custody",
+            return string.Equals(sceneBehavior, "interior_activity", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(sceneBehavior, "interior_store_custody",
                     StringComparison.OrdinalIgnoreCase)
                 || string.Equals(sceneBehavior, "interior_robbery_custody",
                     StringComparison.OrdinalIgnoreCase)
@@ -11033,6 +11094,55 @@ namespace LSImmersiveLife
             }
         }
 
+        private bool MaintainAuthoredDispatchActivity(DateTime now, Ped player)
+        {
+            if (_incident == null || string.IsNullOrEmpty(_incident.PreparedActivity)) return true;
+            string reason = "AmbientWorld is unavailable";
+            if (_ambientWorld == null) { Fail(reason); return false; }
+            bool confirmed = _ambientWorld.MaintainPreparedDispatchActivity(_incident, now, out reason);
+            if (!confirmed && reason.StartsWith("FAILED:", StringComparison.Ordinal))
+            {
+                Fail("The incident could not establish its authored activity after bounded recovery. " + reason);
+                return false;
+            }
+            if (confirmed && !_incident.PreparedActivityAudioReported)
+            {
+                _incident.PreparedActivityAudioReported = true;
+                ReportAudioStage("lsimmersivelife.police.scene.activity_confirmed", _incident, "activity-confirmed", true);
+            }
+            if (IsAuthoredDrivingActivity(_incident) && _incident.Suspect != null && _incident.Suspect.Exists())
+            {
+                // Location follows the actual lead car; passengers and the second
+                // driver remain in the same occurrence and existing pursuit roster.
+                _incident.Origin = _incident.Suspect.Position;
+                if (!_incident.PlayerEncounterResponseStarted && player != null && player.Exists()
+                    && LiveSuspects(_incident).Any(p => player.Position.DistanceTo(p.Position) < 45f))
+                {
+                    foreach (Ped actor in LiveSuspects(_incident))
+                    {
+                        _incident.SuspectResponses[actor.Handle] = "flee";
+                        BeginDispatchVehicleFlightProtection(actor, _incident);
+                        CapturePursuitVehicleHealthBaseline(_incident, actor);
+                    }
+                    _incident.PlayerEncounterResponseStarted = true;
+                    SetStateForUnresolvedSuspects(LSPDDispatchState.SuspectFleeing);
+                    ReportAudioStage("lsimmersivelife.police.pursuit.continuing", _incident, "vehicle-encounter", true);
+                }
+                // Each stopped driver/passenger can enter its own foot response.
+                if (_incident.PlayerEncounterResponseStarted)
+                    foreach (Ped actor in LiveSuspects(_incident).ToList())
+                        MaintainStoppedPursuitVehicle(_incident, actor, player, now);
+            }
+            return true;
+        }
+
+        private static bool IsAuthoredDrivingActivity(LSPDDispatchEvent incident)
+        {
+            return incident != null && !string.IsNullOrEmpty(incident.PreparedActivity)
+                && (incident.PreparedActivity.StartsWith("driving_", StringComparison.Ordinal)
+                    || incident.PreparedActivity == "ramming");
+        }
+
         private void StartSceneBehavior(Ped player)
         {
             if (_incident == null || _incident.HasConvoyCustodyHandoff
@@ -11040,6 +11150,17 @@ namespace LSImmersiveLife
                 !_incident.Suspect.Exists() || _incident.Suspect.IsDead ||
                 _incident.SceneBehaviorInitialized)
                 return;
+
+            if (!string.IsNullOrEmpty(_incident.PreparedActivity))
+            {
+                _incident.SceneBehaviorInitialized = true;
+                _incident.PreArrivalSceneBehaviorInitialized = true;
+                _incident.SceneBehaviorNextStepAt = DateTime.MaxValue;
+                string activityReason;
+                if (_ambientWorld != null)
+                    _ambientWorld.MaintainPreparedDispatchActivity(_incident, DateTime.UtcNow, out activityReason);
+                return;
+            }
 
             bool pairedScene = string.Equals(
                     _incident.SceneBehavior, "paired_meeting", StringComparison.OrdinalIgnoreCase)
@@ -12107,8 +12228,8 @@ namespace LSImmersiveLife
             LSPDDispatchEvent incident,
             Ped player)
         {
-            if (incident == null || !IsVehicleEntryActivity(incident.VehicleActivity)
-                || incident.VehicleActivityStage < 3
+            if (incident == null || (!IsAuthoredDrivingActivity(incident) && !IsVehicleEntryActivity(incident.VehicleActivity))
+                || (!IsAuthoredDrivingActivity(incident) && incident.VehicleActivityStage < 3)
                 || player == null || !player.Exists() || player.IsDead)
                 return false;
 
@@ -12133,7 +12254,7 @@ namespace LSImmersiveLife
         {
             LSPDDispatchEvent incident = _incident;
             bool vehicleEncounter = incident != null
-                && IsVehicleEntryActivity(incident.VehicleActivity);
+                && (IsVehicleEntryActivity(incident.VehicleActivity) || IsAuthoredDrivingActivity(incident));
             bool genericDisturbance = IsDisturbanceActivityScene(incident);
             bool activeShooter = IsActiveShooterScene(incident);
             int disturbanceCommandTargetHandle = genericDisturbance
@@ -13749,12 +13870,11 @@ namespace LSImmersiveLife
         {
             if (incident == null)
                 return false;
-            int required = Math.Max(0, Math.Min(3, incident.SceneParticipantCount));
+            int required = Math.Max(0, Math.Min(5, incident.SceneParticipantCount));
             if (required == 0)
                 return true;
             if (_ambientWorld == null || incident.SceneResolution == null
-                || !incident.SceneResolution.IsInteriorScene
-                || incident.SceneResolution.LiveInteriorId == 0
+                || (incident.SceneResolution.IsInteriorScene && incident.SceneResolution.LiveInteriorId == 0)
                 || string.IsNullOrWhiteSpace(incident.SceneParticipantPoolId)
                 || incident.AdditionalParticipants == null
                 || incident.AdditionalParticipants.Count < required)
@@ -13766,7 +13886,8 @@ namespace LSImmersiveLife
                 Ped participant = incident.AdditionalParticipants[index];
                 int liveInteriorId;
                 if (participant == null || !participant.Exists()
-                    || participant.IsDead || participant.Health <= 0
+                    || !LSPDDispatchEventDefinition.IsVictimStateReady(
+                        index < incident.AdditionalDeadVictims, participant.IsDead, participant.Health)
                     || !handles.Add(participant.Handle)
                     || !_ambientWorld.IsDispatchVictimModelInPool(
                         incident.SceneParticipantPoolId, participant.Model.Hash)
@@ -13969,7 +14090,9 @@ namespace LSImmersiveLife
                 foreach (Ped participant in incident.AdditionalParticipants)
                 {
                     if (participant == null || !participant.Exists()
-                        || participant.IsDead || participant.Health <= 0)
+                        || !LSPDDispatchEventDefinition.IsVictimStateReady(
+                            incident.AdditionalParticipants.IndexOf(participant) < incident.AdditionalDeadVictims,
+                            participant.IsDead, participant.Health))
                     {
                         reason = "Stage=InteriorActorIdentity; Role=" + participantRole
                             + "; Result=ParticipantNotLivingAtPreflight";
@@ -14858,12 +14981,11 @@ namespace LSImmersiveLife
         {
             if (incident == null)
                 return false;
-            int required = Math.Max(0, Math.Min(3, incident.SceneParticipantCount));
+            int required = Math.Max(0, Math.Min(5, incident.SceneParticipantCount));
             if (required == 0)
                 return true;
             if (_ambientWorld == null || incident.SceneResolution == null
-                || !incident.SceneResolution.IsInteriorScene
-                || incident.SceneResolution.LiveInteriorId == 0
+                || (incident.SceneResolution.IsInteriorScene && incident.SceneResolution.LiveInteriorId == 0)
                 || string.IsNullOrWhiteSpace(incident.SceneParticipantPoolId))
             {
                 SetScenePreparationFailure(
@@ -14896,7 +15018,8 @@ namespace LSImmersiveLife
                 if (participant != null && participant.Exists())
                 {
                     int actualInteriorId = 0;
-                    bool ready = !participant.IsDead && participant.Health > 0
+                    bool ready = LSPDDispatchEventDefinition.IsVictimStateReady(
+                            index < incident.AdditionalDeadVictims, participant.IsDead, participant.Health)
                         && _ambientWorld.IsDispatchVictimModelInPool(
                             incident.SceneParticipantPoolId, participant.Model.Hash)
                         && _ambientWorld.TryGetActorInteriorId(
@@ -14947,7 +15070,7 @@ namespace LSImmersiveLife
                     participant = null;
                 }
 
-                if (participant == null
+                if (participant == null && index >= incident.AdditionalDeadVictims
                     && incident.SceneParticipantAmbientClaimAttemptedIndexes.Add(index))
                 {
                     Vector3 ambientPreferred = spawn
@@ -15073,7 +15196,7 @@ namespace LSImmersiveLife
                             model,
                             preferredPosition,
                             incident.SceneResolution,
-                            false,
+                            index < incident.AdditionalDeadVictims,
                             reservedPositions,
                             out participant,
                             out placementReason))
@@ -15132,6 +15255,7 @@ namespace LSImmersiveLife
                         + "; Source=NPCDatabaseGeneratedFallback");
                 }
 
+                if (!string.IsNullOrEmpty(incident.PreparedActivity)) continue;
                 string threatPoseReason = string.Empty;
                 if (_ambientWorld == null
                     || !_ambientWorld.TryApplyDispatchParticipantThreatPose(
@@ -15266,6 +15390,19 @@ namespace LSImmersiveLife
                         && incident.SuspectVehicles != null
                         && index < incident.SuspectVehicles.Count
                             ? incident.SuspectVehicles[index] : null;
+                    VehicleSeat assignedSeat = VehicleSeat.Driver;
+                    if (assignedVehicle == null && incident.RequiresVehicle
+                        && !IsVehicleEntryActivity(incident.VehicleActivity)
+                        && incident.SceneResolution != null && !incident.SceneResolution.IsInteriorScene)
+                    {
+                        assignedVehicle = incident.SuspectVehicles[index % incident.SuspectVehicles.Count];
+                        int capacity = Function.Call<int>(Hash.GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS, assignedVehicle);
+                        int seat = Enumerable.Range(0, Math.Max(0, capacity)).Where(
+                            value => Function.Call<bool>(Hash.IS_VEHICLE_SEAT_FREE, assignedVehicle, value, false))
+                            .DefaultIfEmpty(-99).First();
+                        if (seat == -99) { failureReason = "Insufficient real passenger seats for the authored group."; break; }
+                        assignedSeat = (VehicleSeat)seat;
+                    }
                     Vector3 suspectPosition = Vector3.Zero;
                     if (assignedVehicle == null || !assignedVehicle.Exists())
                     {
@@ -15273,7 +15410,7 @@ namespace LSImmersiveLife
                     }
 
                     Ped suspect = assignedVehicle != null && assignedVehicle.Exists()
-                        ? assignedVehicle.CreatePedOnSeat(VehicleSeat.Driver, suspectModel)
+                        ? assignedVehicle.CreatePedOnSeat(assignedSeat, suspectModel)
                         : World.CreatePed(suspectModel, suspectPosition);
                     if (suspect == null || !suspect.Exists())
                     {
@@ -16422,6 +16559,13 @@ namespace LSImmersiveLife
             if (_incident == null)
                 return;
             LSPDDispatchEvent incident = _incident;
+            if (LiveSuspects(incident).Any(p => !incident.ConvoyCustodySuspectHandles.Contains(p.Handle))
+                || HasPendingVictimInvestigation)
+            {
+                LogDebugTransition("POLICE_DISPATCH_COMPLETION_DEFERRED", incident.Id,
+                    "Unresolved suspects or required investigation remain.");
+                return;
+            }
             ObserveManagedDispatchSuspectPresence(DateTime.UtcNow, true);
             if (_incident != incident)
                 return;
@@ -16528,7 +16672,7 @@ namespace LSImmersiveLife
             ClearPlayerHandcuffState();
             RestoreAllSuspectInjuryStates();
             SetState(state);
-            if (deferSceneCleanup)
+            if (deferSceneCleanup || incident.PreparedActivityStarted)
                 QueueCleanup(incident, "Terminal:" + state + "; " + (reason ?? string.Empty));
             else
                 CleanupIncident(incident, false);
@@ -16577,7 +16721,10 @@ namespace LSImmersiveLife
             if (incident == null)
                 return;
             if (_ambientWorld != null)
+            {
+                _ambientWorld.ReleasePreparedDispatchActivity(incident);
                 _ambientWorld.CleanupDispatchDisturbanceProp(incident, cleanupReason);
+            }
             ReleaseIncidentModelRequests(incident);
             DateTime now = DateTime.UtcNow;
 
@@ -16587,7 +16734,8 @@ namespace LSImmersiveLife
             if (incident.OwnedByDispatch)
             {
                 foreach (Ped suspect in TrackedSuspects(incident)
-                    .Where(ped => ped != null && ped.Exists()))
+                    .Where(ped => ped != null && ped.Exists()
+                        && !incident.ConvoyCustodySuspectHandles.Contains(ped.Handle)))
                 {
                     bool deadAftermath = suspect.IsDead;
                     _deferredCleanup.Add(new DeferredCleanup
@@ -16601,7 +16749,7 @@ namespace LSImmersiveLife
                         CleanupReason = cleanupReason,
                         Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
                         Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
-                        PreserveUntilPlayerLeavesArea = deadAftermath
+                        PreserveUntilPlayerLeavesArea = deadAftermath || !string.IsNullOrEmpty(incident.PreparedActivity)
                     });
                     if (deadAftermath)
                         LogRuntime("POLICE_DISPATCH_DEAD_SCENE_RETAINED",
@@ -16625,7 +16773,8 @@ namespace LSImmersiveLife
                         Owner = "Dispatch",
                         CleanupReason = cleanupReason,
                         Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
-                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds)
+                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
+                        PreserveUntilPlayerLeavesArea = !string.IsNullOrEmpty(incident.PreparedActivity)
                     });
                 if (incident.SuspectVehicle != null && incident.SuspectVehicle.Exists()
                     && !(incident.SuspectVehicles ?? new List<Vehicle>()).Any(value =>
@@ -16641,7 +16790,8 @@ namespace LSImmersiveLife
                         Owner = "Dispatch",
                         CleanupReason = cleanupReason,
                         Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
-                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds)
+                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
+                        PreserveUntilPlayerLeavesArea = !string.IsNullOrEmpty(incident.PreparedActivity)
                     });
             }
             if (incident.Victim != null && incident.Victim.Exists())
@@ -16674,7 +16824,7 @@ namespace LSImmersiveLife
                         CleanupReason = cleanupReason,
                         Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
                         Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
-                        PreserveUntilPlayerLeavesArea = murderVictimAftermath
+                        PreserveUntilPlayerLeavesArea = murderVictimAftermath || !string.IsNullOrEmpty(incident.PreparedActivity)
                     });
                     if (murderVictimAftermath)
                         LogRuntime("POLICE_DISPATCH_DEAD_VICTIM_RETAINED",
@@ -16715,7 +16865,8 @@ namespace LSImmersiveLife
                         Owner = "Dispatch",
                         CleanupReason = cleanupReason,
                         Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
-                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds)
+                        Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
+                        PreserveUntilPlayerLeavesArea = !string.IsNullOrEmpty(incident.PreparedActivity)
                     });
             }
         }
@@ -16899,7 +17050,10 @@ namespace LSImmersiveLife
                 return;
 
             if (_ambientWorld != null)
+            {
+                _ambientWorld.ReleasePreparedDispatchActivity(incident);
                 _ambientWorld.CleanupDispatchDisturbanceProp(incident, cleanupReason);
+            }
             ReleaseIncidentModelRequests(incident);
 
             // Convoy owns the arrested suspect and its transport after the
@@ -17300,6 +17454,7 @@ namespace LSImmersiveLife
         {
             if (incident == null)
                 return false;
+            if (IsAuthoredDrivingActivity(incident)) return true;
             bool legacyRoadSpeedBranch = incident.BranchIds != null
                 && incident.BranchIds.Contains(
                     "dispatch-road-vehicle-speed-chaos",

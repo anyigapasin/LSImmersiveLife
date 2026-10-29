@@ -27,7 +27,7 @@
 
     <Patrol enabled="true" reuseCurrentPoliceVehicle="true" preventDuplicatePersonalVehicle="true" />
 
-    <Dispatch enabled="true" minimumQuietPatrolSeconds="180" maximumQuietPatrolSeconds="600" repeatProtectionMinutes="20" maximumActiveIncidents="1" maximumSuspects="3" audioMinimumGapSeconds="5" contextClearQuietSeconds="30" playerRadiusFallbackMinimumDistanceMeters="80" playerRadiusFallbackMaximumDistanceMeters="150" />
+    <Dispatch enabled="true" minimumQuietPatrolSeconds="180" maximumQuietPatrolSeconds="600" repeatProtectionMinutes="20" maximumActiveIncidents="1" maximumSuspects="5" audioMinimumGapSeconds="5" contextClearQuietSeconds="30" playerRadiusFallbackMinimumDistanceMeters="80" playerRadiusFallbackMaximumDistanceMeters="150" />
 
     <!-- Quiet, player-led criminal intelligence. This is intentionally separate
          from Dispatch and uses LSPDCrimeActivityEvent.xml only as scene data. -->

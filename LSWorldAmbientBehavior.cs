@@ -12102,6 +12102,425 @@ namespace LSImmersiveLife
             }
         }
 
+        // Dispatch retains the occurrence and custody roster; AmbientWorld owns
+        // physical scene tasks. Sampling is bounded to this roster at 750 ms.
+        internal bool PrepareDispatchActivityResources(LSPDDispatchEvent incident)
+        {
+            try { return PrepareDispatchActivityResourcesCore(incident); }
+            catch (Exception ex)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_RESOURCE_PENDING", "Occurrence=" + (incident == null ? "" : incident.Id)
+                    + "; NativeResourceFailure=" + ex.GetType().Name);
+                return false;
+            }
+        }
+
+        private bool PrepareDispatchActivityResourcesCore(LSPDDispatchEvent incident)
+        {
+            if (incident == null || string.IsNullOrEmpty(incident.PreparedActivity)) return true;
+            string action = incident.PreparedActivity;
+            if ((action == "ramming" || action == "driver_assault") && !PrepareDispatchRammingTarget(incident)) return false;
+            if ((action == "exchange" || action == "theft") && !PrepareDispatchExchangeProp(incident)) return false;
+            if (action == "exchange")
+                return LSImmersiveDictionaryAnimation.RequestDispatchAction("exchange_giver")
+                    & LSImmersiveDictionaryAnimation.RequestDispatchAction("exchange_receiver");
+            if (action == "theft") return LSImmersiveDictionaryAnimation.RequestDispatchAction("exchange_giver");
+            if (new[] { "camera", "intoxicated", "lying" }.Contains(action))
+                return LSImmersiveDictionaryAnimation.RequestDispatchAction(action);
+            return LSImmersiveDictionaryAnimation.RequestDispatchAction("conversation")
+                & LSImmersiveDictionaryAnimation.RequestDispatchAction("cower");
+        }
+
+        internal bool MaintainPreparedDispatchActivity(LSPDDispatchEvent incident, DateTime now, out string reason)
+        {
+            try { return MaintainPreparedDispatchActivityCore(incident, now, out reason); }
+            catch (Exception ex)
+            {
+                reason = "FAILED:Activity native failure: " + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_ACTIVITY_FAILED", "Occurrence=" + (incident == null ? "" : incident.Id) + "; " + reason);
+                return false;
+            }
+        }
+
+        private bool MaintainPreparedDispatchActivityCore(LSPDDispatchEvent incident, DateTime now, out string reason)
+        {
+            reason = string.Empty;
+            if (incident == null || string.IsNullOrEmpty(incident.PreparedActivity)) return true;
+            if (!incident.OwnedByDispatch || incident.HasConvoyCustodyHandoff) return true;
+            if (now < incident.PreparedActivityNextSampleAt) return incident.PreparedActivityConfirmed;
+            incident.PreparedActivityNextSampleAt = now.AddMilliseconds(750);
+            List<Ped> suspects = incident.Suspects.Where(p => p != null && p.Exists())
+                .Concat(new[] { incident.Suspect }).Where(p => p != null && p.Exists())
+                .GroupBy(p => p.Handle).Select(g => g.First()).ToList();
+            if (!incident.PreparedActivityStarted)
+            {
+                if (suspects.Count != incident.SuspectCount || suspects.Any(p => p.IsDead))
+                { reason = "Required suspect roster unavailable"; return false; }
+                if (!PrepareDispatchActivityResources(incident))
+                { reason = "Animation dictionary/clip is unavailable or still streaming"; return false; }
+                incident.PreparedActivityStarted = true;
+                incident.PreparedActivityStartedAt = now;
+                incident.PreparedActivitySamples = 0;
+            }
+            bool encountered = incident.PlayerEncounterResponseStarted || incident.SuspectResponses.Count > 0
+                || incident.SurrenderRequested || incident.PlayerHandcuffInProgress;
+            bool allActive = suspects.Count == incident.SuspectCount - incident.ResolvedSuspectHandles.Count;
+            var civilians = incident.AdditionalParticipants.Where(p => p != null && p.Exists()).ToList();
+            if (incident.Victim != null && incident.Victim.Exists()) civilians.Insert(0, incident.Victim);
+            allActive &= civilians.Count == incident.SceneParticipantCount + incident.VictimCount;
+            if (incident.PreparedActivity == "exchange" && !encountered && suspects.Count >= 2)
+                AttachDispatchExchangeProp(incident,
+                    ((int)(now - incident.PreparedActivityStartedAt).TotalSeconds % 8) < 4 ? suspects[0] : suspects[1]);
+            // Civilian roles remain independent of criminal response decisions.
+            for (int i = 0; i < civilians.Count; i++)
+            {
+                Ped civilian = civilians[i];
+                if (civilian.IsDead) { allActive &= incident.PreparedActivityConfirmed || (incident.VictimStartsDead && (civilian == incident.Victim
+                    || incident.AdditionalParticipants.IndexOf(civilian) < incident.AdditionalDeadVictims)); continue; }
+                string role = CivilianActivityRole(incident, i);
+                allActive &= MaintainDispatchRole(incident, civilian, role, suspects.FirstOrDefault(), now);
+            }
+            for (int i = 0; i < suspects.Count; i++)
+            {
+                Ped actor = suspects[i];
+                if (encountered || incident.ConvoyCustodySuspectHandles.Contains(actor.Handle) || incident.ArrestedSuspects.Any(p => p != null && p.Handle == actor.Handle)
+                    || incident.CompliantSuspects.Any(p => p != null && p.Handle == actor.Handle)
+                    || actor.IsDead || actor.Health < actor.MaxHealth - 15
+                    || Function.Call<bool>(Hash.IS_PED_RAGDOLL, actor))
+                    continue; // Injury, arrest, Backup and encounter tasks keep priority.
+                string role = SuspectActivityRole(incident, i);
+                if (role == "ramming" && incident.RammingImpactConfirmed && !actor.IsInVehicle()) role = "lookout";
+                if (incident.Victim != null && incident.Victim.Exists() && incident.Victim.IsDead
+                    && (role == "assault" || role == "shooting" || role == "driver_assault")) role = "lookout";
+                allActive &= MaintainDispatchRole(incident, actor, role,
+                    role == "exchange_giver" ? suspects.ElementAtOrDefault(1)
+                    : role == "exchange_receiver" ? suspects[0] : incident.Victim, now);
+            }
+            if (encountered) return incident.PreparedActivityConfirmed;
+            incident.PreparedActivitySamples++;
+            if (allActive && incident.PreparedActivitySamples >= 2)
+            {
+                if (!incident.PreparedActivityConfirmed)
+                    Log("AMBIENT_WORLD_DISPATCH_ACTIVITY_CONFIRMED", "Occurrence=" + incident.Id
+                        + "; Activity=" + incident.PreparedActivity + "; Evidence="
+                        + string.Join(",", incident.ActivityEvidenceHandles) + "; Owner=AmbientWorld");
+                incident.PreparedActivityConfirmed = true;
+                return true;
+            }
+            reason = "Awaiting physical activity: " + incident.PreparedActivity + "; confirmed actors="
+                + incident.ActivityEvidenceHandles.Count;
+            // Only bounded, targeted recovery. Never repeatedly reset progressing tasks.
+            if (!encountered && now > incident.PreparedActivityStartedAt.AddSeconds(12))
+            {
+                if (incident.PreparedActivityRecoveryCount < 2)
+                {
+                    incident.PreparedActivityRecoveryCount++;
+                    incident.PreparedActivityStartedAt = now;
+                    incident.PreparedActivityConfirmed = false;
+                    foreach (int handle in incident.ActivityTaskIssuedAt.Keys.ToArray())
+                    {
+                        DateTime last;
+                        if (!incident.ActivityLastEvidenceAt.TryGetValue(handle, out last) || now > last.AddSeconds(5))
+                        {
+                            incident.ActivityTaskIssuedAt.Remove(handle);
+                            incident.ActivityEvidenceHandles.Remove(handle);
+                        }
+                    }
+                    Log("AMBIENT_WORLD_DISPATCH_ACTIVITY_RETRY", "Occurrence=" + incident.Id
+                        + "; Attempt=" + incident.PreparedActivityRecoveryCount + "; " + reason);
+                }
+                else
+                {
+                    incident.PreparedActivityConfirmed = false;
+                    reason = "FAILED:" + reason;
+                }
+            }
+            return incident.PreparedActivityConfirmed;
+        }
+
+        private static string SuspectActivityRole(LSPDDispatchEvent incident, int index)
+        {
+            string action = incident.PreparedActivity;
+            if (action.StartsWith("driving_") || action == "ramming") return action;
+            if (action == "exchange") return index == 0 ? "exchange_giver" : index == 1
+                ? "exchange_receiver" : index % 2 == 0 ? "lookout" : "conversation";
+            if (action == "gathering") return index % 3 == 0 ? "conversation" : "lookout";
+            if (action == "murder") return index % 2 == 0 ? "lookout" : "conversation";
+            if (index > 1) return index % 2 == 0 ? "lookout" : "conversation";
+            if (index == 1 && action != "assault" && action != "shooting") return "lookout";
+            return action;
+        }
+
+        private static string CivilianActivityRole(LSPDDispatchEvent incident, int index)
+        {
+            string action = incident.PreparedActivity;
+            if (index == 0 && (action == "stalking" || action == "theft")) return "walk";
+            if (action.StartsWith("driving_") || action == "ramming") return "witness";
+            if (action == "gathering" || action == "exchange" || action == "intoxicated" || action == "lying")
+                return index % 2 == 0 ? "witness" : "walk";
+            return index % 3 == 0 ? "cower" : index % 3 == 1 ? "witness" : "retreat";
+        }
+
+        private bool MaintainDispatchRole(LSPDDispatchEvent incident, Ped actor, string role, Ped target, DateTime now)
+        {
+            if (actor == null || !actor.Exists() || actor.IsDead) return false;
+            actor.IsPositionFrozen = false;
+            string previousRole;
+            DateTime issuedAt;
+            bool issued = incident.ActivityTaskIssuedAt.TryGetValue(actor.Handle, out issuedAt)
+                && incident.ActivityRoles.TryGetValue(actor.Handle, out previousRole) && previousRole == role;
+            Vector3 previous;
+            bool moved = incident.ActivitySamplePositions.TryGetValue(actor.Handle, out previous)
+                && actor.Position.DistanceTo(previous) > 0.25f;
+            incident.ActivitySamplePositions[actor.Handle] = actor.Position;
+            bool active = false;
+            if (role.StartsWith("driving_") || role == "ramming")
+                active = MaintainDispatchDriving(incident, actor, role, issued, moved);
+            else if ((role == "threat" || role == "carjacking") && incident.Armed
+                && target != null && target.Exists() && !target.IsDead)
+            {
+                // Script-task hashes are joaat(SCRIPT_TASK_*), not native hashes.
+                int status = Function.Call<int>(Hash.GET_SCRIPT_TASK_STATUS, actor, 0x6134071B);
+                active = issued && (status == 0 || status == 1)
+                    && Function.Call<bool>(Hash.IS_PED_ARMED, actor, 4);
+                if (!issued || (!active && now > issuedAt.AddSeconds(6)))
+                {
+                    Function.Call(Hash.TASK_AIM_GUN_AT_ENTITY, actor, target, -1, true);
+                    issuedAt = now;
+                }
+            }
+            else if (role == "driver_assault" && target != null && target.Exists()
+                && incident.VictimVehicle != null && incident.VictimVehicle.Exists()
+                && target.Position.DistanceTo(incident.VictimVehicle.Position) > 5f)
+            {
+                if (!issued)
+                {
+                    Function.Call(Hash.TASK_GO_TO_ENTITY, target, incident.VictimVehicle, -1, 3f, 1f, 0f, 0);
+                    Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY, actor, target, 0f, -1f, 0f, 1.4f, -1, 1f, true);
+                }
+                active = moved;
+            }
+            else if (role == "assault" || role == "driver_assault" || role == "shooting")
+            {
+                if (target == null || !target.Exists() || target.IsDead) return false;
+                active = actor.IsInCombatAgainst(target) && (role != "shooting" || actor.IsShooting
+                    || incident.ActivityEvidenceHandles.Contains(actor.Handle));
+                if (!issued || (role == "driver_assault" && !actor.IsInCombatAgainst(target))) actor.Task.Combat(target);
+            }
+            else if (role == "stalking" || role == "theft")
+            {
+                if (target == null || !target.Exists() || target.IsDead) return false;
+                int stage;
+                incident.ActivityStages.TryGetValue(actor.Handle, out stage);
+                if (role == "theft" && stage == 2)
+                {
+                    active = moved;
+                    if (!issued)
+                    {
+                        Vector3 center = incident.Origin;
+                        Function.Call(Hash.TASK_WANDER_IN_AREA, actor, center.X, center.Y, center.Z, 7f, 2, 3);
+                    }
+                }
+                else if (role == "theft" && stage == 1)
+                {
+                    active = LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(actor, "exchange_giver");
+                    if (now > issuedAt.AddSeconds(2))
+                    {
+                        incident.ActivityStages[actor.Handle] = 2;
+                        incident.ActivityTaskIssuedAt.Remove(actor.Handle);
+                        return active;
+                    }
+                }
+                else
+                {
+                    active = moved && actor.Position.DistanceTo(target.Position) < 30f;
+                    if (!issued) Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY, actor, target,
+                        0f, role == "theft" ? -0.6f : -3f, 0f, role == "theft" ? 1.8f : 1.1f, -1, 0.6f, true);
+                    if (role == "theft" && actor.Position.DistanceTo(target.Position) < 1.6f)
+                    {
+                        actor.Task.ClearAll();
+                        if (!LSImmersiveDictionaryAnimation.TryPlayDispatchAction(actor, "exchange_giver", false)) return false;
+                        AttachDispatchExchangeProp(incident, actor);
+                        incident.ActivityStages[actor.Handle] = 1;
+                        issuedAt = now;
+                    }
+                }
+            }
+            else if (role == "walk" || role == "lookout" || role == "retreat")
+            {
+                active = moved;
+                if (!issued || (!moved && now > issuedAt.AddSeconds(7)))
+                {
+                    Vector3 point = incident.Origin;
+                    if (role == "retreat" && target != null && target.Exists()
+                        && !incident.SceneResolution.IsInteriorScene) actor.Task.ReactAndFlee(target);
+                    else Function.Call(Hash.TASK_WANDER_IN_AREA, actor, point.X, point.Y, point.Z,
+                        incident.SceneResolution.IsInteriorScene ? 2.5f : 7f, 2, 3);
+                    issuedAt = now;
+                }
+            }
+            else
+            {
+                string action = role == "witness" ? "conversation" : role == "carjacking" ? "threat" : role;
+                active = LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(actor, action);
+                // Exchange clips alternate naturally with watch/conversation time.
+                bool shortClip = action.StartsWith("exchange_");
+                if (!issued || (!active && now > issuedAt.AddSeconds(shortClip ? 4 : 6)))
+                {
+                    if (target != null && target.Exists()) actor.Task.LookAt(target, 3000);
+                    if (action == "camera" && !EnsureDispatchCamera(incident, actor)) return false;
+                    if (!LSImmersiveDictionaryAnimation.TryPlayDispatchAction(actor, action, !shortClip)) return false;
+                    issuedAt = now;
+                }
+            }
+            if (!issued) issuedAt = now;
+            incident.ActivityTaskIssuedAt[actor.Handle] = issuedAt;
+            incident.ActivityRoles[actor.Handle] = role;
+            if (active)
+            {
+                incident.ActivityEvidenceHandles.Add(actor.Handle);
+                incident.ActivityLastEvidenceAt[actor.Handle] = now;
+            }
+            DateTime lastEvidence;
+            return active || (incident.ActivityLastEvidenceAt.TryGetValue(actor.Handle, out lastEvidence)
+                && now < lastEvidence.AddSeconds(5));
+        }
+
+        private bool MaintainDispatchDriving(LSPDDispatchEvent incident, Ped actor, string role, bool issued, bool moved)
+        {
+            Vehicle vehicle = incident.VehicleForSuspect(actor);
+            if (vehicle == null || !vehicle.Exists() || !actor.IsInVehicle(vehicle)) return false;
+            if (role == "ramming" && incident.VictimVehicle != null && incident.VictimVehicle.Exists()
+                && !incident.RammingImpactConfirmed
+                && vehicle.Position.DistanceTo(incident.VictimVehicle.Position) < 10f
+                && Function.Call<bool>(Hash.HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY, incident.VictimVehicle, vehicle, true))
+            {
+                incident.RammingImpactConfirmed = true;
+                Log("AMBIENT_WORLD_DISPATCH_RAMMING_IMPACT_CONFIRMED", "Occurrence=" + incident.Id
+                    + "; Vehicle=" + vehicle.Handle + "; Target=" + incident.VictimVehicle.Handle
+                    + "; Native=HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY; TaskAssignmentAlone=false");
+            }
+            if (role == "ramming" && incident.RammingImpactConfirmed)
+            {
+                if (!Function.Call<bool>(Hash.IS_VEHICLE_DRIVEABLE, vehicle, false)) actor.Task.LeaveVehicle();
+                return true;
+            }
+            if (!Function.Call<bool>(Hash.IS_VEHICLE_DRIVEABLE, vehicle, false)) return false;
+            int driver = Function.Call<int>(Hash.GET_PED_IN_VEHICLE_SEAT, vehicle, -1, false);
+            if (driver != actor.Handle)
+                return driver != 0 && moved && vehicle.Speed > 1f; // Actual occupied passenger role.
+            if (!issued)
+            {
+                Vector3 road = World.GetNextPositionOnStreet(vehicle.Position);
+                if (road == Vector3.Zero || road.DistanceTo(vehicle.Position) > 40f) return false;
+                vehicle.IsPositionFrozen = false;
+                Function.Call(Hash.SET_VEHICLE_ENGINE_ON, vehicle, true, true, false);
+                Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, false);
+                Function.Call(Hash.SET_VEHICLE_BRAKE, vehicle, false);
+                float speed = role == "driving_slow" ? 3.5f : 28f;
+                if (role == "ramming" && incident.VictimVehicle != null && incident.VictimVehicle.Exists())
+                    Function.Call(Hash.TASK_VEHICLE_MISSION, actor, vehicle, incident.VictimVehicle,
+                        2, 20f, 786468, 2f, 1f, true); // MISSION_RAM targets an actual catalog vehicle.
+                else Function.Call(Hash.TASK_VEHICLE_DRIVE_WANDER, actor, vehicle, speed,
+                    role == "driving_slow" ? 786603 : 786468);
+            }
+            // A task assignment or a running engine is never movement evidence.
+            return role != "ramming" && moved && vehicle.Speed > (role == "driving_slow" ? 0.8f : 5f);
+        }
+
+        private bool PrepareDispatchRammingTarget(LSPDDispatchEvent incident)
+        {
+            if (incident.VictimVehicle != null && incident.VictimVehicle.Exists()) return true;
+            Vector3 position;
+            float heading;
+            string reason;
+            if (!TryResolveAdditionalDispatchVehicleStaging(incident.SceneResolution, out position, out heading, out reason))
+                return false;
+            string name = (incident.VehicleModelCandidates ?? new List<string>()).LastOrDefault();
+            if (string.IsNullOrEmpty(name)) name = incident.VehicleModel;
+            var model = new Model(name);
+            if (!model.IsValid || !model.IsInCdImage) return false;
+            model.Request();
+            if (!model.IsLoaded) return false;
+            Vehicle target = World.CreateVehicle(model, position, heading);
+            model.MarkAsNoLongerNeeded();
+            if (target == null || !target.Exists()) return false;
+            target.IsPersistent = true;
+            target.IsPositionFrozen = false;
+            incident.VictimVehicle = target;
+            return true;
+        }
+
+        private bool PrepareDispatchExchangeProp(LSPDDispatchEvent incident)
+        {
+            if (incident.ActivityProps.Any(p => p != null && p.Exists())) return true;
+            Model model;
+            if (incident.IncidentType == "weapons_incident")
+            {
+                int weapon = unchecked((int)StringHash.AtStringHash(incident.WeaponName, 0));
+                model = new Model(Function.Call<int>(Hash.GET_WEAPONTYPE_MODEL, weapon));
+            }
+            else model = new Model(incident.PreparedActivity == "theft" ? "prop_ld_wallet_01" : "prop_cash_pile_01");
+            if (!model.IsValid || !model.IsInCdImage) return false;
+            model.Request();
+            if (!model.IsLoaded) return false;
+            Prop prop = World.CreateProp(model, incident.Suspect.Position, false, false);
+            model.MarkAsNoLongerNeeded();
+            if (prop == null || !prop.Exists()) return false;
+            Function.Call(Hash.SET_ENTITY_VISIBLE, prop, false, false);
+            incident.ActivityProps.Add(prop);
+            return true;
+        }
+
+        private void AttachDispatchExchangeProp(LSPDDispatchEvent incident, Ped actor)
+        {
+            Prop prop = incident.ActivityProps.FirstOrDefault(p => p != null && p.Exists());
+            if (prop == null || actor == null || !actor.Exists()) return;
+            Function.Call(Hash.SET_ENTITY_VISIBLE, prop, true, false);
+            if (Function.Call<bool>(Hash.IS_ENTITY_ATTACHED_TO_ENTITY, prop, actor)) return;
+            Function.Call(Hash.ATTACH_ENTITY_TO_ENTITY, prop, actor,
+                Function.Call<int>(Hash.GET_PED_BONE_INDEX, actor, 28422),
+                0.05f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, 2, true);
+        }
+
+        private bool EnsureDispatchCamera(LSPDDispatchEvent incident, Ped actor)
+        {
+            if (incident.ActivityProps.Any(p => p != null && p.Exists())) return true;
+            var model = new Model("prop_pap_camera_01");
+            if (!model.IsValid || !model.IsInCdImage) return false;
+            model.Request();
+            if (!model.IsLoaded) return false;
+            Prop prop = World.CreateProp(model, actor.Position, false, false);
+            model.MarkAsNoLongerNeeded();
+            if (prop == null || !prop.Exists()) return false;
+            Function.Call(Hash.ATTACH_ENTITY_TO_ENTITY, prop, actor,
+                Function.Call<int>(Hash.GET_PED_BONE_INDEX, actor, 28422),
+                0f, 0f, 0f, 0f, 0f, 0f, false, false, false, false, 2, true);
+            incident.ActivityProps.Add(prop);
+            return true;
+        }
+
+        internal void ReleasePreparedDispatchActivity(LSPDDispatchEvent incident)
+        {
+            if (incident == null) return;
+            foreach (Prop prop in incident.ActivityProps)
+                if (prop != null && prop.Exists())
+                {
+                    Function.Call(Hash.DETACH_ENTITY, prop, true, true);
+                    prop.MarkAsNoLongerNeeded();
+                }
+            incident.ActivityProps.Clear();
+            if (incident.PreparedActivityStarted && incident.OwnedByDispatch)
+                foreach (Ped actor in incident.Suspects.Where(p => p != null && p.Exists() && !p.IsDead
+                    && !incident.ConvoyCustodySuspectHandles.Contains(p.Handle)
+                    && !incident.ArrestedSuspects.Any(a => a != null && a.Handle == p.Handle)))
+                {
+                    actor.IsPositionFrozen = false;
+                    actor.BlockPermanentEvents = false;
+                    Function.Call(Hash.TASK_WANDER_STANDARD, actor, 10f, 10);
+                }
+        }
+
         internal bool TryStartDispatchPreArrivalActivity(
             LSPDDispatchEvent incident,
             Ped suspect,

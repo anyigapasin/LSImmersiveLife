@@ -1,5 +1,13 @@
 # LSImmersiveLife Implementation Status
 
+## October 29 Dispatch one-to-five expansion — source/build validated, GTA pending
+
+- Repository baseline `738c25e2cdfa9def79442407daf788f87e995083`; implementation branch `codex/dispatch-one-to-five-active-scenes`. Preserve all 104 existing event IDs; 17 additional definitions supply missing activities. Activity begins after acceptance, per the owner's clarification.
+- Responsible owners: DispatchEvent reads authored activities and civilian casualty slots; AnimationDictionary validates semantic clips; AmbientWorld performs distinct roles and observes physical activity at 750 ms; Dispatch maintains occurrence/reaction/investigation/custody progression; Core reconciles transferred custody subsets; AudioDispatch resolves existing recordings. Backup's foot-target ceiling now includes five. No Crime Activity, standalone Convoy or location source was changed.
+- Full details, category/branch matrix, build reference limits, missing recordings and exact GTA observation cases: [DispatchExpansionHandoff.md](../DispatchExpansionHandoff.md) and [DispatchExpansionCatalog.md](../DispatchExpansionCatalog.md).
+- Source milestones compile; all 121 event definitions pass the real C# reader and count selection; audio alias/deduplication/scope and XML integrity checks pass. Final Release/x64 project build redirects deployment to NoGame. Source publication and downloadable payload are provided; no live GTA installation/deployment or gameplay confirmation exists in this environment.
+
+
 ## October 28 regression recovery — Milestone 4 selected-Station receiving and physical receipt (source complete, GTA check pending)
 
 - **Observed/runtime evidence:** In session `20261028-061918196-315e5661`, Convoy created the Davis receiving marker/waypoint at 14:24:46 (`LSRuntime.log:1188`). At 14:25:22, the bounded vehicle-pose search found no candidate, while the same log confirms standby officer `690181` was prepared and custody remained active (`:1246–1247`). At 14:25:33, van `725507` was stopped about 2.5 m from the receiving marker, but actual-pose validation rejected it because the ground/nearby-road test failed (`:1252`). This session therefore confirms marker and standby preparation, not physical Station receipt.

@@ -1,0 +1,18 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Optional cross-platform source validation. Keep third-party reference
+       assemblies outside the repository and provide CloudReferenceRoot. -->
+  <PropertyGroup>
+    <CloudReferenceRoot Condition="'$(CloudReferenceRoot)' == ''">$(MSBuildProjectDirectory)/BuildReferences</CloudReferenceRoot>
+    <FrameworkPathOverride>$(CloudReferenceRoot)/net48/build/.NETFramework/v4.8</FrameworkPathOverride>
+  </PropertyGroup>
+  <Import Project="LSImmersiveLife.csproj" />
+  <PropertyGroup>
+    <GTAVEnhancedRoot>$(MSBuildProjectDirectory)/obj/NoGame</GTAVEnhancedRoot>
+  </PropertyGroup>
+  <Target Name="ProvideCloudValidationReferences" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <ReferencePathWithRefAssemblies Include="$(CloudReferenceRoot)/net48/build/.NETFramework/v4.8/*.dll" Exclude="$(CloudReferenceRoot)/net48/build/.NETFramework/v4.8/System.EnterpriseServices.Wrapper.dll;$(CloudReferenceRoot)/net48/build/.NETFramework/v4.8/System.EnterpriseServices.Thunk.dll" />
+      <ReferencePathWithRefAssemblies Include="$(CloudReferenceRoot)/references/*.dll" />
+    </ItemGroup>
+  </Target>
+</Project>

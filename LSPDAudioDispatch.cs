@@ -40,6 +40,7 @@ namespace LSImmersiveLife
         private readonly HashSet<string> _warnings = new HashSet<string>(StringComparer.Ordinal);
         private readonly Dictionary<string, long> _cooldowns = new Dictionary<string, long>();
         private readonly Dictionary<string, string> _lastClips = new Dictionary<string, string>();
+        private Dictionary<string, string> _incidentRecordingTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private Dictionary<string, AudioEvent> _events = new Dictionary<string, AudioEvent>(StringComparer.Ordinal);
         private ILSPDPlayback _player;
         private Pending _current;
@@ -131,6 +132,8 @@ namespace LSImmersiveLife
             }
 
             Dictionary<string, AudioEvent> events = null;
+            var incidentRecordingTypes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var reusedEvents = new Dictionary<string, string>(StringComparer.Ordinal);
             int capacity = 12;
             string language = "en-US";
             int unavailable = 0;
@@ -224,7 +227,31 @@ namespace LSImmersiveLife
                         }
                         entry.Clips.Add(clip);
                     }
+                    string reuse = (string)node.Attribute("reuseEvent");
+                    if (!string.IsNullOrWhiteSpace(reuse))
+                    {
+                        if (entry.Clips.Count > 0) throw new InvalidDataException("A reused audio event cannot also declare clips: " + id);
+                        reusedEvents.Add(id, reuse);
+                    }
                     events.Add(id, entry);
+                }
+                foreach (var reuse in reusedEvents)
+                {
+                    AudioEvent source;
+                    if (reuse.Key == reuse.Value || reusedEvents.ContainsKey(reuse.Value)
+                        || !events.TryGetValue(reuse.Value, out source) || source.Clips.Count == 0)
+                        throw new InvalidDataException("Invalid recording reuse target: " + reuse.Value);
+                    if (source.Speaker != events[reuse.Key].Speaker)
+                        throw new InvalidDataException("Recording reuse must retain its actual speaker.");
+                    events[reuse.Key].Clips.AddRange(source.Clips);
+                }
+                foreach (XElement alias in root.Elements("IncidentAliases").Elements("Alias"))
+                {
+                    string type = Required(alias, "type"), recording = Required(alias, "recordingType");
+                    if (incidentRecordingTypes.ContainsKey(type)
+                        || !events.Values.SelectMany(e => e.Clips).Any(c => c.Kind == recording))
+                        throw new InvalidDataException("Invalid incident recording alias: " + type);
+                    incidentRecordingTypes.Add(type, recording);
                 }
                 if (events.Count == 0 || events.Count > 2000 || clipIds.Count > 10000)
                     throw new InvalidDataException("Catalog size is outside supported limits.");
@@ -234,7 +261,8 @@ namespace LSImmersiveLife
                     if (_disposed)
                         return false;
                     StopLocked();
-                    _events = events; _capacity = capacity; _language = language;
+                    _events = events; _incidentRecordingTypes = incidentRecordingTypes;
+                    _capacity = capacity; _language = language;
                     _lastClips.Clear(); _warnings.Clear(); _faulted = false;
                     _log.Runtime("AUDIO_CATALOG_LOADED", events.Count + " events; " + ReadyClipCount
                         + " ready clips; " + unavailable + " unavailable ready clips.");
@@ -282,9 +310,17 @@ namespace LSImmersiveLife
                 if (!_seen.Add(key)) return LSPDAudioResult.Duplicate;
                 _seenOrder.Enqueue(key);
                 if (_seenOrder.Count > 8192) _seen.Remove(_seenOrder.Dequeue());
+                string recordingType;
+                string resolvedKind = incidentType ?? "";
+                if (_incidentRecordingTypes.TryGetValue(resolvedKind, out recordingType))
+                {
+                    WarnOnce("recording-fallback:" + resolvedKind,
+                        "No dedicated recording for " + resolvedKind + "; using catalog meaning " + recordingType + ".");
+                    resolvedKind = recordingType;
+                }
                 var message = new Pending
                 {
-                    Event = entry, Scope = scopeId, Kind = incidentType ?? "", Agency = agency ?? "",
+                    Event = entry, Scope = scopeId, Kind = resolvedKind, Agency = agency ?? "",
                     Sequence = ++_sequence, Expires = _clock() + entry.Expiry
                 };
                 if (Candidates(message).Count == 0)

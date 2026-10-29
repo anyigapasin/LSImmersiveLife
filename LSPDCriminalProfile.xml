@@ -26,6 +26,8 @@
     <Profile id="disturbance_subject" model="a_m_y_stbla_01" vehicleModel="stanier" weapon="WEAPON_UNARMED" armed="false" disposition="situational" pedPoolId="dispatch_unarmed_peds" vehiclePoolId="dispatch_street_vehicles" weaponPoolId="dispatch_unarmed_weapons" convoyPedPoolId="convoy_prisoner_peds" convoyVehiclePoolId="convoy_threat_vehicles" convoyWeaponPoolId="convoy_threat_weapons" weight="5" dispatchEligible="true" crimeActivityEligible="true" convoyEligible="true" />
     <Profile id="armed_robber" model="a_m_m_bankrobber_01" vehicleModel="rumpo" weapon="WEAPON_ASSAULTRIFLE" armed="true" disposition="resisting" pedPoolId="dispatch_armed_peds" vehiclePoolId="dispatch_crew_vehicles" weaponPoolId="dispatch_longgun_weapons" convoyPedPoolId="convoy_threat_peds" convoyVehiclePoolId="convoy_threat_vehicles" convoyWeaponPoolId="convoy_threat_weapons" weight="2" dispatchEligible="true" crimeActivityEligible="true" convoyEligible="true" />
     <Profile id="player_franklin_reference" model="player_one" armed="false" disposition="player_reference" weight="1" dispatchEligible="false" crimeActivityEligible="false" convoyEligible="false" playerReference="true" />
+      <Profile id="dispatch_naked_subject" model="a_m_y_stbla_01" vehicleModel="stanier" weapon="WEAPON_UNARMED" armed="false" disposition="situational" pedPoolId="dispatch_naked_peds" vehiclePoolId="dispatch_street_vehicles" weaponPoolId="dispatch_unarmed_weapons" convoyPedPoolId="convoy_prisoner_peds" convoyVehiclePoolId="convoy_threat_vehicles" convoyWeaponPoolId="convoy_threat_weapons" weight="5" dispatchEligible="true" crimeActivityEligible="false" convoyEligible="false" />
+    <Profile id="dispatch_knife_assailant" model="a_m_y_stbla_01" vehicleModel="stanier" weapon="WEAPON_UNARMED" armed="true" disposition="situational" pedPoolId="dispatch_armed_peds" vehiclePoolId="dispatch_street_vehicles" weaponPoolId="dispatch_knife_weapons" convoyPedPoolId="convoy_prisoner_peds" convoyVehiclePoolId="convoy_threat_vehicles" convoyWeaponPoolId="convoy_threat_weapons" weight="5" dispatchEligible="true" crimeActivityEligible="false" convoyEligible="false" />
   </Profiles>
   <Peds>
     <Ped id="criminal_ped_001" model="a_f_m_beach_01" hashHex="0x303638A7" hashUnsigned="808859815" hashSigned="808859815" source="GTA V Enhanced Steam" modelType="human" role="ambient_suspect" category="civilian" weight="10" criminalEligible="true" />
@@ -2981,6 +2983,8 @@
       <Ref id="criminal_weapon_025" />
       <Ref id="criminal_weapon_026" />
     </Pool>
+      <Pool id="dispatch_naked_peds" assetType="ped" useFor="dispatch"><Ref id="criminal_ped_085" /></Pool>
+    <Pool id="dispatch_knife_weapons" assetType="weapon" useFor="dispatch"><Ref id="criminal_weapon_002" /></Pool>
   </AssetPools>
   <ActivityMappings>
     <Mapping id="crime_default" activity="crime_activity" category="*" pedPoolId="crime_general_peds" vehiclePoolId="crime_general_vehicles" weaponPoolId="crime_general_weapons" />

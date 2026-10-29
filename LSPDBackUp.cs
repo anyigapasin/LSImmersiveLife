@@ -8975,7 +8975,7 @@ namespace LSImmersiveLife
                     || !string.Equals(response, "flee", StringComparison.OrdinalIgnoreCase))
                     continue;
                 targets.Add(suspect);
-                if (targets.Count >= 3)
+                if (targets.Count >= 5)
                     break;
             }
             return targets;

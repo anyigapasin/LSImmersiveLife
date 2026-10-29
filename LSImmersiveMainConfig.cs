@@ -723,7 +723,7 @@ namespace LSImmersiveLife
         internal int ContextClearQuietSeconds { get; set; }
         internal int PlayerRadiusFallbackMinimumDistanceMeters { get; set; }
         internal int PlayerRadiusFallbackMaximumDistanceMeters { get; set; }
-        internal static LSPoliceDispatchSettings Default() { return new LSPoliceDispatchSettings { Enabled = true, MinimumQuietPatrolSeconds = 180, MaximumQuietPatrolSeconds = 600, RepeatProtectionMinutes = 20, MaximumActiveIncidents = 1, MaximumSuspects = 3, AudioMinimumGapSeconds = 5, ContextClearQuietSeconds = 30, PlayerRadiusFallbackMinimumDistanceMeters = 80, PlayerRadiusFallbackMaximumDistanceMeters = 150 }; }
+        internal static LSPoliceDispatchSettings Default() { return new LSPoliceDispatchSettings { Enabled = true, MinimumQuietPatrolSeconds = 180, MaximumQuietPatrolSeconds = 600, RepeatProtectionMinutes = 20, MaximumActiveIncidents = 1, MaximumSuspects = 5, AudioMinimumGapSeconds = 5, ContextClearQuietSeconds = 30, PlayerRadiusFallbackMinimumDistanceMeters = 80, PlayerRadiusFallbackMaximumDistanceMeters = 150 }; }
         internal static LSPoliceDispatchSettings Read(XElement n, LSPoliceDispatchSettings f)
         {
             LSPoliceDispatchSettings d = f ?? Default(); if (n == null) return d;

@@ -886,11 +886,11 @@ namespace LSImmersiveLife
                     releasedDispatchSuspect);
 
             if (Convoy.ConsumeDispatchCrewCustodyHandoffReady()
-                && Dispatch.HasConvoyCustodyHandoff)
+                && Dispatch.HasAnyConvoyCustody)
             {
                 LastOperationMessage = Dispatch.CompleteTransportCrewHandoff();
                 Response.ReleaseAll();
-                Backup.BeginStandDown(
+                if (!Dispatch.HasIncident) Backup.BeginStandDown(
                     "Player declined the station drive; Convoy crew is departing with loaded Dispatch custody.");
             }
 
@@ -1150,14 +1150,14 @@ namespace LSImmersiveLife
                 return;
             }
 
-            if (Dispatch.HasConvoyCustodyHandoff)
+            if (Dispatch.HasAnyConvoyCustody)
                 LastOperationMessage = Dispatch.CompleteTransport();
             else
                 _log.Runtime("POLICE_CONVOY_STALE_COMPLETION_CLEARED",
                     "A completed Convoy state had no linked Dispatch custody handoff.");
             Convoy.ConsumeCompletedState();
             Response.ReleaseAll();
-            Backup.BeginStandDown("Custody operation completed.");
+            if (!Dispatch.HasIncident) Backup.BeginStandDown("Custody operation completed.");
         }
 
         private static bool IsActiveRoadScene(LSPDDispatchState state)
@@ -4065,7 +4065,7 @@ namespace LSImmersiveLife
             }
 
             string result = Convoy.DeclineAtStation();
-            if (Convoy.Completed && Dispatch.HasConvoyCustodyHandoff)
+            if (Convoy.Completed && Dispatch.HasAnyConvoyCustody)
             {
                 result = Dispatch.CompleteTransport();
                 Response.ReleaseAll();
@@ -4087,7 +4087,7 @@ namespace LSImmersiveLife
                 return LastOperationMessage;
             }
             string result = Convoy.CompleteNow();
-            if (Convoy.Completed && Dispatch.HasConvoyCustodyHandoff)
+            if (Convoy.Completed && Dispatch.HasAnyConvoyCustody)
             {
                 result = Dispatch.CompleteTransport();
                 Response.ReleaseAll();
