@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Globalization;
 using LemonUI.Elements;
 using System.Drawing;
 using GTA;
@@ -53,14 +55,16 @@ namespace LSImmersiveLife
         private readonly ScaledText _statusSubtitle;
         private readonly ScaledText _operationsHeader;
         private readonly ScaledText _operationsSubtitle;
-        private readonly ScaledText _operationsWatermark;
-        private readonly ScaledText _operationsWatermarkSubtitle;
         private readonly ScaledText _departmentDetails;
         private readonly ScaledText _playerDetails;
         private readonly ScaledText _backupDetails;
         private readonly ScaledText _citizenStatusDetails;
         private readonly ScaledText _gangStatusDetails;
         private readonly ScaledText _crimeStatusDetails;
+        private readonly ScaledRectangle _dispatchSuspectDivider;
+        private readonly ScaledText _dispatchSuspectHeader;
+        private readonly ScaledText[] _dispatchSuspectDetails = new ScaledText[5];
+        private readonly ScaledText _almanacExitPrompt;
         private int _playerHeadshotHandle;
         private int _playerHeadshotPedHandle;
         private int _playerHeadshotModelHash;
@@ -154,13 +158,6 @@ namespace LSImmersiveLife
                 "ONGOING OPERATIONS", 0.31f);
             _operationsSubtitle = CreateHeading(operationsX + 0.240f, operationsY + 0.014f,
                 "REAL-TIME FIELD ACTIVITY", 0.190f);
-            _operationsWatermark = CreateRightAlignedText(
-                operationsX + operationsWidth - 0.025f, operationsY + 0.061f,
-                "LSPD", 0.50f, Color.FromArgb(55, 88, 191, 227));
-            _operationsWatermarkSubtitle = CreateRightAlignedText(
-                operationsX + operationsWidth - 0.025f, operationsY + 0.118f,
-                "LOS SANTOS", 0.19f, Color.FromArgb(100, 180, 206, 224));
-
             _catalogHeader.Color = Color.White;
             _statusHeader.Color = Color.White;
             _operationsHeader.Color = Color.White;
@@ -216,6 +213,30 @@ namespace LSImmersiveLife
             _citizenStatusDetails.WordWrap = ScaledWidth(operationsWidth - 0.060f);
             _gangStatusDetails.WordWrap = ScaledWidth(operationsWidth - 0.060f);
             _crimeStatusDetails.WordWrap = ScaledWidth(operationsWidth - 0.060f);
+
+            float dispatchDetailsX = operationsX + 0.382f;
+            _citizenStatusDetails.WordWrap = ScaledWidth(0.31f);
+            _gangStatusDetails.WordWrap = ScaledWidth(0.31f);
+            _crimeStatusDetails.WordWrap = ScaledWidth(0.31f);
+            _dispatchSuspectDivider = CreateAccentBar(
+                operationsX + 0.365f, operationsY + 0.040f, 0.0014f, 0.108f);
+            _dispatchSuspectDivider.Color = Color.FromArgb(120, 74, 123, 148);
+            _dispatchSuspectHeader = CreateHeading(
+                dispatchDetailsX, operationsY + 0.014f,
+                "DISPATCH SUSPECT LOCATIONS", 0.205f);
+            for (int i = 0; i < _dispatchSuspectDetails.Length; i++)
+            {
+                _dispatchSuspectDetails[i] = CreateDetails(
+                    dispatchDetailsX,
+                    operationsY + 0.042f + (i * 0.021f),
+                    0.18f);
+            }
+            _almanacExitPrompt = CreateHeading(
+                AlmanacLeft + 0.028f,
+                AlmanacTop + AlmanacHeight - 0.027f,
+                "PRESS Y TO CLOSE ALMANAC",
+                0.205f);
+            _almanacExitPrompt.Color = Color.FromArgb(255, 176, 203, 217);
         }
 
         internal bool AlmanacVisible { get; private set; }
@@ -721,12 +742,15 @@ namespace LSImmersiveLife
         /// status is read from its current owner; this view never changes
         /// patrol, assignment, profile, or incident state.
         /// </summary>
-        internal void DrawPoliceAlmanac(LSImmersivePoliceCore core, bool paused)
+        internal void DrawPoliceAlmanac(
+            LSImmersivePoliceCore core,
+            List<LSPDDispatchSuspectLocation> suspectLocations,
+            bool paused)
         {
             if (!AlmanacVisible || paused || core == null || !core.IsPoliceAuthorityActive)
                 return;
 
-            AlmanacValues values = ReadAlmanacValues(core);
+            AlmanacValues values = ReadAlmanacValues(core, suspectLocations);
             _agencyDetails.Text = Compact(values.AgencyTag, 32);
             _departmentDetails.Text = "DEPT: " + Compact(values.Department, 42);
             _playerDetails.Text = "OFF. " + Compact(values.PlayerOfficer, 20) + " [USER]\n"
@@ -744,6 +768,12 @@ namespace LSImmersiveLife
                 + Compact(values.GangActivity, 30);
             _crimeStatusDetails.Text = "ACTIVE CRIME OBSERVATION: "
                 + Compact(values.CrimeActivity, 30);
+            string[] dispatchSuspects = values.DispatchSuspects;
+            for (int i = 0; i < _dispatchSuspectDetails.Length; i++)
+                _dispatchSuspectDetails[i].Text = dispatchSuspects != null
+                    && i < dispatchSuspects.Length
+                    ? dispatchSuspects[i] ?? string.Empty
+                    : string.Empty;
 
             _citizenStatusDot.Color = values.CitizenActive
                 ? Color.FromArgb(255, 55, 184, 232) : Color.FromArgb(255, 125, 139, 154);
@@ -773,8 +803,6 @@ namespace LSImmersiveLife
             _catalogAccent.Draw();
             _statusAccent.Draw();
             _operationsAccent.Draw();
-            _operationsWatermark.Draw();
-            _operationsWatermarkSubtitle.Draw();
             _playerEntryBackground.Draw();
             _backupEntryBackground.Draw();
             foreach (ScaledRectangle rowBackground in _statusRowBackgrounds)
@@ -810,9 +838,16 @@ namespace LSImmersiveLife
             _citizenStatusDetails.Draw();
             _gangStatusDetails.Draw();
             _crimeStatusDetails.Draw();
+            _dispatchSuspectDivider.Draw();
+            _dispatchSuspectHeader.Draw();
+            foreach (ScaledText suspectDetails in _dispatchSuspectDetails)
+                suspectDetails.Draw();
+            _almanacExitPrompt.Draw();
         }
 
-        private static AlmanacValues ReadAlmanacValues(LSImmersivePoliceCore core)
+        private static AlmanacValues ReadAlmanacValues(
+            LSImmersivePoliceCore core,
+            List<LSPDDispatchSuspectLocation> suspectLocations)
         {
             LSPDPoliceAgencyDefinition agency = core.Profile.FindAgency(
                 core.Profile.Selection.AgencyId);
@@ -859,6 +894,7 @@ namespace LSImmersiveLife
             string crimeActivity = crimeActive || core.CrimeActivity.HasAvailableActivity
                 ? core.CrimeActivityStatus
                 : "Yet to be observed";
+            string[] suspectDetails = BuildDispatchSuspectDetails(suspectLocations);
 
             return new AlmanacValues
             {
@@ -888,8 +924,48 @@ namespace LSImmersiveLife
                 CrimeActivity = crimeActivity,
                 CitizenActive = citizenActive,
                 GangActive = gangActive,
-                CrimeActive = crimeActive
+                CrimeActive = crimeActive,
+                DispatchSuspects = suspectDetails
             };
+        }
+
+        private static string[] BuildDispatchSuspectDetails(
+            List<LSPDDispatchSuspectLocation> suspectLocations)
+        {
+            string[] details = new string[5];
+            for (int i = 0; i < details.Length; i++)
+                details[i] = string.Empty;
+
+            if (suspectLocations == null || suspectLocations.Count == 0)
+            {
+                details[0] = "No active suspects.";
+                return details;
+            }
+
+            int count = Math.Min(details.Length, suspectLocations.Count);
+            for (int i = 0; i < count; i++)
+            {
+                LSPDDispatchSuspectLocation suspect = suspectLocations[i];
+                if (suspect == null)
+                {
+                    details[i] = "Suspects #" + (i + 1)
+                        + " — Position unavailable.";
+                    continue;
+                }
+
+                string distance = Math.Round(
+                    suspect.DistanceMeters, MidpointRounding.AwayFromZero)
+                    .ToString("0", CultureInfo.InvariantCulture) + " m";
+                float vertical = suspect.VerticalMeters;
+                string height = Math.Abs(vertical) < 2f
+                    ? "same level"
+                    : Math.Round(Math.Abs(vertical), MidpointRounding.AwayFromZero)
+                        .ToString("0", CultureInfo.InvariantCulture) + " m "
+                        + (vertical > 0f ? "above" : "below");
+                details[i] = suspect.DisplayLabel
+                    + " — " + distance + " | " + height;
+            }
+            return details;
         }
 
         private static string BuildDispatchStatus(LSImmersivePoliceCore core)
@@ -1095,6 +1171,7 @@ namespace LSImmersiveLife
             internal bool CitizenActive;
             internal bool GangActive;
             internal bool CrimeActive;
+            internal string[] DispatchSuspects;
         }
 
         private static ScaledRectangle CreateAccentBar(float x, float y, float width, float height)

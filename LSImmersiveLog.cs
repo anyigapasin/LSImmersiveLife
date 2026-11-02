@@ -29,6 +29,9 @@ namespace LSImmersiveLife
             new Dictionary<string, ThrottleState>(StringComparer.Ordinal);
         private readonly Dictionary<string, string> _transitionStates =
             new Dictionary<string, string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, long> _transitionStateLastAccess =
+            new Dictionary<string, long>(StringComparer.Ordinal);
+        private long _transitionAccessSequence;
 
         private bool _sessionStarted;
         private bool _sessionEnded;
@@ -355,20 +358,23 @@ namespace LSImmersiveLife
                 string normalizedCategory = NormalizeCategory(category);
                 string key = level + "|" + normalizedCategory;
                 string normalizedState = NormalizeMessage(state);
+                long accessSequence = ++_transitionAccessSequence;
                 string previousState;
-                if (_transitionStates.TryGetValue(key, out previousState)
-                    && string.Equals(previousState, normalizedState,
-                        StringComparison.Ordinal))
+                if (_transitionStates.TryGetValue(key, out previousState))
                 {
-                    _suppressedEntryCount++;
-                    return;
+                    _transitionStateLastAccess[key] = accessSequence;
+                    if (string.Equals(previousState, normalizedState,
+                            StringComparison.Ordinal))
+                    {
+                        _suppressedEntryCount++;
+                        return;
+                    }
                 }
-
-                if (!_transitionStates.ContainsKey(key)
-                    && _transitionStates.Count >= MaximumTransitionStates)
-                    _transitionStates.Clear();
+                else if (_transitionStates.Count >= MaximumTransitionStates)
+                    EvictLeastRecentlyUsedTransitionLocked();
 
                 _transitionStates[key] = normalizedState;
+                _transitionStateLastAccess[key] = accessSequence;
                 if (string.Equals(level, "RUNTIME", StringComparison.Ordinal))
                     WriteRuntimeLocked(normalizedCategory, message);
                 else
@@ -382,7 +388,26 @@ namespace LSImmersiveLife
             {
                 string key = level + "|" + NormalizeCategory(category);
                 _transitionStates.Remove(key);
+                _transitionStateLastAccess.Remove(key);
             }
+        }
+
+        private void EvictLeastRecentlyUsedTransitionLocked()
+        {
+            string leastRecentlyUsedKey = null;
+            long leastRecentAccess = long.MaxValue;
+            foreach (KeyValuePair<string, long> entry
+                in _transitionStateLastAccess)
+                if (entry.Value < leastRecentAccess)
+                {
+                    leastRecentlyUsedKey = entry.Key;
+                    leastRecentAccess = entry.Value;
+                }
+
+            if (leastRecentlyUsedKey == null)
+                return;
+            _transitionStates.Remove(leastRecentlyUsedKey);
+            _transitionStateLastAccess.Remove(leastRecentlyUsedKey);
         }
 
         /// <summary>

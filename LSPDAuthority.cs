@@ -7,6 +7,13 @@ using GTA.Native;
 
 namespace LSImmersiveLife
 {
+    internal enum LSPDInteriorWeaponAccessContext
+    {
+        None,
+        ActivePatrol,
+        AcceptedDispatch
+    }
+
     /// <summary>
     /// Police Authority session boundary.
     ///
@@ -26,8 +33,7 @@ namespace LSImmersiveLife
         private int _previousWantedLevel;
         private bool _hasMaximumWantedSnapshot;
         private int _previousMaximumWantedLevel;
-        private bool _changedPoliceIgnore;
-        private bool _changedDispatchCops;
+        private bool _legacyPlayerWidePoliceOverridesReleaseAttempted;
         private bool _hasPoliceRelationshipSnapshot;
         private int _policePlayerRelationshipGroup;
         private int _policeCopRelationshipGroup;
@@ -38,9 +44,6 @@ namespace LSImmersiveLife
         private bool _clearedWantedLevel;
         private int _lastObservedWantedLevel;
         private int _lastObservedMaximumWantedLevel;
-        private string _lastWantedCapContextSignature = string.Empty;
-        private DateTime _lastWantedCapContextLogAt = DateTime.MinValue;
-        private bool _controlFaulted;
         private int _lastControlCheck = int.MinValue;
         private int _lastWantedCheck = int.MinValue;
         private const int WantedProtectionRefreshMilliseconds = 150;
@@ -86,9 +89,12 @@ namespace LSImmersiveLife
             InteriorDispatchWeaponControlAvailability.Unavailable();
         private string _interiorDispatchWeaponOccurrenceId = string.Empty;
         private string _interiorDispatchWeaponLocationId = string.Empty;
+        private LSPDInteriorWeaponAccessContext _interiorDispatchWeaponAccessContext;
         private LSPDDispatchState _interiorDispatchWeaponDispatchState;
         private int _interiorDispatchWeaponSceneInteriorId;
         private int _interiorDispatchWeaponPlayerInteriorId;
+        private int _interiorDispatchWeaponPlayerHandle;
+        private int _interiorDispatchWeaponPlayerModelHash;
 
         internal LSPDAuthority(
             LSPDProfile profile,
@@ -104,7 +110,6 @@ namespace LSImmersiveLife
 
         internal bool IsActive { get; private set; }
         internal LSPDAuthoritySettings Settings { get; private set; }
-
         internal bool HasInteriorDispatchWeaponAccess
         {
             get { return _interiorDispatchWeaponAccessActive; }
@@ -119,13 +124,11 @@ namespace LSImmersiveLife
                 ?? LSPDAuthoritySettings.Default();
             Settings.Normalize();
             IsActive = true;
-            _controlFaulted = false;
             _lastControlCheck = int.MinValue;
             _lastWantedCheck = int.MinValue;
             _lastObservedWantedLevel = 0;
             _lastObservedMaximumWantedLevel = 0;
-            _lastWantedCapContextSignature = string.Empty;
-            _lastWantedCapContextLogAt = DateTime.MinValue;
+            _legacyPlayerWidePoliceOverridesReleaseAttempted = false;
             _log.Runtime(
                 "POLICE_AUTHORITY_STATE",
                 "Police Authority entered. Player-scoped vanilla Police protection is pending the next game tick.");
@@ -147,11 +150,8 @@ namespace LSImmersiveLife
             Settings = _config.PoliceAuthoritySettings
                 ?? LSPDAuthoritySettings.Default();
             Settings.Normalize();
-            _controlFaulted = false;
             _lastControlCheck = int.MinValue;
             _lastWantedCheck = int.MinValue;
-            _lastWantedCapContextSignature = string.Empty;
-            _lastWantedCapContextLogAt = DateTime.MinValue;
 
             // Do not restore all player state merely because a Main Settings
             // row changed. The next Process call reconciles only the changed
@@ -161,13 +161,68 @@ namespace LSImmersiveLife
                 "Central Police Authority settings refreshed for the active session.");
         }
 
+        private void ReleaseLegacyPlayerWidePoliceOverrides(bool paused)
+        {
+            if (_legacyPlayerWidePoliceOverridesReleaseAttempted || paused)
+                return;
+
+            Player player = Game.Player;
+            if (player == null || player.Character == null
+                || !player.Character.Exists())
+                return;
+
+            // Older Authority builds applied these global controls together
+            // with wanted protection. Release that stale state once on Duty
+            // entry, then leave vanilla dispatch and police-ignore untouched.
+            // Wanted handling and nearby officer recognition have separate
+            // owners and do not depend on these player-wide switches.
+            _legacyPlayerWidePoliceOverridesReleaseAttempted = true;
+            bool policeIgnoreReleased = false;
+            bool vanillaDispatchEnabled = false;
+            try
+            {
+                Function.Call(Hash.SET_POLICE_IGNORE_PLAYER,
+                    player.Handle, false);
+                policeIgnoreReleased = true;
+            }
+            catch (Exception ex)
+            {
+                _log.Exception(
+                    "POLICE_AUTHORITY_LEGACY_POLICE_IGNORE_RELEASE_FAILED", ex);
+            }
+
+            try
+            {
+                Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER,
+                    player.Handle, true);
+                vanillaDispatchEnabled = true;
+            }
+            catch (Exception ex)
+            {
+                _log.Exception(
+                    "POLICE_AUTHORITY_LEGACY_DISPATCH_RELEASE_FAILED", ex);
+            }
+
+            _log.Runtime(
+                "POLICE_AUTHORITY_LEGACY_GLOBAL_OVERRIDES_RELEASED",
+                "Police Authority stopped applying player-wide police-ignore and vanilla dispatch suppression. PoliceIgnoreReleased="
+                + policeIgnoreReleased + "; VanillaDispatchEnabled="
+                + vanillaDispatchEnabled
+                + "; WantedProtectionRemainsIndependent=true");
+        }
+
         internal void Process(
             bool paused,
             LSPDDispatchEvent activeIncident,
             bool patrolActive,
             IEnumerable<Ped> gangPedCandidates)
         {
-            if (!IsActive || paused)
+            if (!IsActive)
+                return;
+
+            ReleaseLegacyPlayerWidePoliceOverrides(paused);
+
+            if (paused)
                 return;
 
             int now = Environment.TickCount;
@@ -175,20 +230,6 @@ namespace LSImmersiveLife
                 || unchecked(now - _lastWantedCheck) < 0
                 || unchecked(now - _lastWantedCheck)
                     >= WantedProtectionRefreshMilliseconds;
-            if (_controlFaulted)
-            {
-                // Keep the Police wanted-level suppression independent of a
-                // transient failure in another Authority control. The normal
-                // control pass remains faulted until settings are refreshed.
-                if (wantedRefreshDue)
-                {
-                    _lastWantedCheck = now;
-                    ReconcileWantedProtectionDuringControlWait(
-                        activeIncident, patrolActive, gangPedCandidates);
-                }
-                return;
-            }
-
             int refreshMilliseconds = Settings.AuthorityControlRefreshMilliseconds;
             bool controlRefreshDue = _lastControlCheck == int.MinValue
                 || unchecked(now - _lastControlCheck) < 0
@@ -217,41 +258,30 @@ namespace LSImmersiveLife
                 if (player == null || player.Character == null || !player.Character.Exists())
                     return;
 
-                if (!Settings.EnableWorldBehaviorChanges)
-                {
-                    // Wanted suppression is a Police-role control, not an
-                    // ambient-world behavior toggle. Restore the ordinary
-                    // Police reactions while continuing the independently
-                    // configured wanted protection.
-                    RestorePoliceProtection(player);
-                    CapturePlayerSnapshot(player);
-                    ReconcileWantedProtection(
-                        player, activeIncident, patrolActive, gangPedCandidates);
-                    return;
-                }
-
                 CapturePlayerSnapshot(player);
-                ReconcilePoliceProtection(player);
+                ReconcilePoliceRecognition(player);
                 ReconcileWantedProtection(
                     player, activeIncident, patrolActive, gangPedCandidates);
             }
             catch (Exception ex)
             {
-                _controlFaulted = true;
-                _log.Exception("POLICE_AUTHORITY_CONTROL_FAILED", ex);
-                RestorePlayerControls();
+                // Wanted protection is the only periodic player-control
+                // reconciliation here. Keep the saved maximum/wanted snapshot
+                // intact so a transient native failure can retry and Duty exit
+                // can still restore the Authority-owned state accurately.
+                _log.Exception("POLICE_AUTHORITY_WANTED_CONTROL_FAILED", ex);
             }
         }
 
         /// <summary>
-        /// Maintains a temporary Player weapon-control exception for one
-        /// already-validated Interior-Type Dispatch occurrence. PoliceCore
-        /// supplies the active Dispatch/interior decision; this owner captures
-        /// and restores the Player switch capability and reconciles only the
-        /// weapon controls for the current frame. It never grants or selects a
-        /// weapon.
+        /// Maintains a temporary Player weapon-control exception for either an
+        /// accepted, validated Interior-Type Dispatch or an eligible active
+        /// Patrol interior. PoliceCore supplies the owning gameplay context;
+        /// this owner captures/restores switch capability and reconciles only
+        /// the required controls. It never grants or selects a weapon.
         /// </summary>
-        internal void ProcessInteriorDispatchWeaponAccess(
+        internal void ProcessInteriorWeaponAccess(
+            LSPDInteriorWeaponAccessContext accessContext,
             bool contextAuthorized,
             Ped playerPed,
             bool paused,
@@ -269,27 +299,39 @@ namespace LSImmersiveLife
             bool playerAvailable = playerPed != null && playerPed.Exists();
             bool playerAlive = playerAvailable && !playerPed.IsDead;
             bool authorized = IsActive
+                && accessContext != LSPDInteriorWeaponAccessContext.None
                 && contextAuthorized
                 && !paused
                 && playerAlive
                 && exactInteriorMatch;
 
+            int playerModelHash = 0;
+            if (playerAvailable)
+            {
+                try { playerModelHash = playerPed.Model.Hash; }
+                catch { }
+            }
+
             string normalizedOccurrenceId = occurrenceId ?? string.Empty;
             string normalizedLocationId = locationId ?? string.Empty;
             bool sameContext = _interiorDispatchWeaponAccessActive
+                && _interiorDispatchWeaponAccessContext == accessContext
                 && string.Equals(_interiorDispatchWeaponOccurrenceId,
                     normalizedOccurrenceId, StringComparison.Ordinal)
                 && _interiorDispatchWeaponSceneInteriorId == sceneLiveInteriorId
                 && string.Equals(_interiorDispatchWeaponLocationId,
-                    normalizedLocationId, StringComparison.Ordinal);
+                    normalizedLocationId, StringComparison.Ordinal)
+                && playerAvailable
+                && playerPed.Handle == _interiorDispatchWeaponPlayerHandle
+                && playerModelHash == _interiorDispatchWeaponPlayerModelHash;
 
             if (!authorized)
             {
                 RestoreInteriorDispatchWeaponAccess(
                     playerPed,
-                    string.IsNullOrWhiteSpace(contextDecision)
-                        ? paused ? "GameplayPaused" : "DispatchInteriorAuthorizationEnded"
-                        : contextDecision,
+                        string.IsNullOrWhiteSpace(contextDecision)
+                            ? paused ? "GameplayPaused" : "InteriorWeaponAccessAuthorizationEnded"
+                            : contextDecision,
                     dispatchState,
                     playerLiveInteriorId,
                     playerInteriorIdentityAvailable);
@@ -307,6 +349,7 @@ namespace LSImmersiveLife
                 try
                 {
                     BeginInteriorDispatchWeaponAccess(
+                        accessContext,
                         playerPed,
                         normalizedOccurrenceId,
                         dispatchState,
@@ -320,7 +363,8 @@ namespace LSImmersiveLife
                     {
                         _interiorDispatchAccessFailureLogged = true;
                         _log.Exception(
-                            "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS_FAILED",
+                            ResolveInteriorWeaponAccessEventName(
+                                "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS_FAILED"),
                             ex);
                     }
                     RestoreInteriorDispatchWeaponAccess(
@@ -358,8 +402,9 @@ namespace LSImmersiveLife
                         >= InteriorDispatchWeaponEvidenceIntervalMilliseconds;
 
                 bool canSwitchBefore = playerPed.CanSwitchWeapons;
-                bool meleeControlsRequired =
-                    IsInteriorDispatchMeleeAccessState(dispatchState);
+                bool meleeControlsRequired = accessContext
+                        == LSPDInteriorWeaponAccessContext.ActivePatrol
+                    || IsInteriorDispatchMeleeAccessState(dispatchState);
                 InteriorDispatchWeaponControlAvailability controlsBefore =
                     sampleEvidence
                         ? ReadInteriorDispatchWeaponControlAvailability(
@@ -379,7 +424,7 @@ namespace LSImmersiveLife
                 if (!canSwitchBefore)
                     playerPed.CanSwitchWeapons = true;
 
-                EnableInteriorDispatchWeaponControls();
+                EnableInteriorDispatchWeaponControls(meleeControlsRequired);
 
                 bool canSwitchAfter = playerPed.CanSwitchWeapons;
                 InteriorDispatchWeaponControlAvailability controlsAfter =
@@ -544,13 +589,15 @@ namespace LSImmersiveLife
                 {
                     _interiorDispatchAccessFailureLogged = true;
                     _log.Exception(
-                        "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS_FAILED",
+                        ResolveInteriorWeaponAccessEventName(
+                            "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS_FAILED"),
                         ex);
                 }
             }
         }
 
         private void BeginInteriorDispatchWeaponAccess(
+            LSPDInteriorWeaponAccessContext accessContext,
             Ped playerPed,
             string occurrenceId,
             LSPDDispatchState dispatchState,
@@ -559,10 +606,14 @@ namespace LSImmersiveLife
             int playerLiveInteriorId)
         {
             _interiorDispatchWeaponAccessActive = true;
+            _interiorDispatchWeaponAccessContext = accessContext;
             _interiorDispatchWeaponOccurrenceId = occurrenceId ?? string.Empty;
             _interiorDispatchWeaponLocationId = locationId ?? string.Empty;
             _interiorDispatchWeaponSceneInteriorId = sceneLiveInteriorId;
             _interiorDispatchWeaponPlayerInteriorId = playerLiveInteriorId;
+            _interiorDispatchWeaponPlayerHandle = playerPed.Handle;
+            try { _interiorDispatchWeaponPlayerModelHash = playerPed.Model.Hash; }
+            catch { _interiorDispatchWeaponPlayerModelHash = 0; }
             _interiorDispatchWeaponDispatchState = dispatchState;
             _previousInteriorDispatchCanSwitch = playerPed.CanSwitchWeapons;
             _hasInteriorDispatchCanSwitchSnapshot = true;
@@ -582,8 +633,9 @@ namespace LSImmersiveLife
             bool inventoryKnown = TryCountSavedPoliceWeapons(
                 playerPed, out savedWeaponsPresent, out savedWeaponsExpected);
             bool canSwitchBefore = _previousInteriorDispatchCanSwitch;
-            bool meleeControlsRequired =
-                IsInteriorDispatchMeleeAccessState(dispatchState);
+            bool meleeControlsRequired = accessContext
+                    == LSPDInteriorWeaponAccessContext.ActivePatrol
+                || IsInteriorDispatchMeleeAccessState(dispatchState);
             InteriorDispatchWeaponControlAvailability controlsBefore =
                 ReadInteriorDispatchWeaponControlAvailability(
                     meleeControlsRequired);
@@ -594,7 +646,7 @@ namespace LSImmersiveLife
                 playerPed.CanSwitchWeapons = true;
                 _changedInteriorDispatchCanSwitchWeapons = true;
             }
-            EnableInteriorDispatchWeaponControls();
+            EnableInteriorDispatchWeaponControls(meleeControlsRequired);
 
             bool canSwitchAfter = playerPed.CanSwitchWeapons;
             InteriorDispatchWeaponControlAvailability controlsAfter =
@@ -604,8 +656,11 @@ namespace LSImmersiveLife
             int now = Environment.TickCount;
             _interiorDispatchWeaponEvidenceTick = now;
             _log.Runtime(
-                "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS",
-                "Authorization=Granted; Occurrence=" + _interiorDispatchWeaponOccurrenceId
+                ResolveInteriorWeaponAccessEventName(
+                    "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS"),
+                "Authorization=Granted; AccessContext="
+                + DescribeInteriorWeaponAccessContext(accessContext)
+                + "; Occurrence=" + _interiorDispatchWeaponOccurrenceId
                 + "; DispatchState=" + dispatchState
                 + "; Location=" + _interiorDispatchWeaponLocationId
                 + "; SceneLiveInteriorId=" + _interiorDispatchWeaponSceneInteriorId
@@ -650,7 +705,7 @@ namespace LSImmersiveLife
                     inventoryKnown,
                     savedWeaponsPresent,
                     savedWeaponsExpected,
-                    "ValidatedAcceptedInteriorDispatchMatch");
+                    DescribeInteriorWeaponAccessContext(accessContext) + "InteriorMatch");
             }
 
             if ((!canSwitchAfter || !controlsAfter.AllEnabled)
@@ -674,8 +729,22 @@ namespace LSImmersiveLife
                     inventoryKnown,
                     savedWeaponsPresent,
                     savedWeaponsExpected,
-                    "ValidatedAcceptedInteriorDispatchMatch");
+                    DescribeInteriorWeaponAccessContext(accessContext) + "InteriorMatch");
             }
+        }
+
+        internal void PrepareForPlayerModelChange(Ped playerPed)
+        {
+            if (!_interiorDispatchWeaponAccessActive
+                && !_hasInteriorDispatchCanSwitchSnapshot)
+                return;
+
+            RestoreInteriorDispatchWeaponAccess(
+                playerPed,
+                "PlayerModelChanging",
+                _interiorDispatchWeaponDispatchState,
+                _interiorDispatchWeaponPlayerInteriorId,
+                _interiorDispatchWeaponPlayerInteriorId != 0);
         }
 
         private void RestoreInteriorDispatchWeaponAccess(
@@ -696,6 +765,9 @@ namespace LSImmersiveLife
             bool inventoryKnown = false;
             int savedWeaponsPresent = -1;
             int savedWeaponsExpected = -1;
+            bool snapshotTargetsCurrentPlayer = playerPed != null
+                && playerPed.Exists()
+                && playerPed.Handle == _interiorDispatchWeaponPlayerHandle;
             try
             {
                 if (playerPed != null && playerPed.Exists())
@@ -708,7 +780,8 @@ namespace LSImmersiveLife
                         playerPed, out savedWeaponsPresent, out savedWeaponsExpected);
                     if (_hasInteriorDispatchCanSwitchSnapshot
                         && _changedInteriorDispatchCanSwitchWeapons
-                        && playerPed.CanSwitchWeapons)
+                        && playerPed.CanSwitchWeapons
+                        && snapshotTargetsCurrentPlayer)
                         playerPed.CanSwitchWeapons = _previousInteriorDispatchCanSwitch;
                 }
             }
@@ -718,7 +791,8 @@ namespace LSImmersiveLife
                 {
                     _interiorDispatchAccessFailureLogged = true;
                     _log.Exception(
-                        "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_RESTORE_FAILED",
+                        ResolveInteriorWeaponAccessEventName(
+                            "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_RESTORE_FAILED"),
                         ex);
                 }
             }
@@ -729,8 +803,13 @@ namespace LSImmersiveLife
             if (_interiorDispatchWeaponAccessActive)
             {
                 _log.Runtime(
-                    "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS_RESTORED",
-                    "Authorization=Revoked; Reason=" + (reason ?? "Unspecified")
+                    ResolveInteriorWeaponAccessEventName(
+                        "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_ACCESS_RESTORED"),
+                    "Authorization=Revoked; AccessContext="
+                    + DescribeInteriorWeaponAccessContext(
+                        _interiorDispatchWeaponAccessContext)
+                    + "; SnapshotTargetsCurrentPlayer=" + snapshotTargetsCurrentPlayer
+                    + "; Reason=" + (reason ?? "Unspecified")
                     + "; Occurrence=" + _interiorDispatchWeaponOccurrenceId
                     + "; DispatchState=" + dispatchState
                     + "; Location=" + _interiorDispatchWeaponLocationId
@@ -762,9 +841,13 @@ namespace LSImmersiveLife
             _lastInteriorDispatchWeaponHash = int.MinValue;
             _interiorDispatchWeaponOccurrenceId = string.Empty;
             _interiorDispatchWeaponLocationId = string.Empty;
+            _interiorDispatchWeaponAccessContext =
+                LSPDInteriorWeaponAccessContext.None;
             _interiorDispatchWeaponDispatchState = LSPDDispatchState.None;
             _interiorDispatchWeaponSceneInteriorId = 0;
             _interiorDispatchWeaponPlayerInteriorId = 0;
+            _interiorDispatchWeaponPlayerHandle = 0;
+            _interiorDispatchWeaponPlayerModelHash = 0;
             _lastInteriorDispatchControlsBefore =
                 InteriorDispatchWeaponControlAvailability.Unavailable();
             _lastInteriorDispatchControlsAfter =
@@ -790,8 +873,11 @@ namespace LSImmersiveLife
             string contextDecision)
         {
             _log.Runtime(
-                eventName,
-                "Reason=" + (reason ?? "Unspecified")
+                ResolveInteriorWeaponAccessEventName(eventName),
+                "AccessContext="
+                + DescribeInteriorWeaponAccessContext(
+                    _interiorDispatchWeaponAccessContext)
+                + "; Reason=" + (reason ?? "Unspecified")
                 + "; ContextDecision=" + (contextDecision ?? string.Empty)
                 + "; Occurrence=" + _interiorDispatchWeaponOccurrenceId
                 + "; DispatchState=" + dispatchState
@@ -810,6 +896,32 @@ namespace LSImmersiveLife
                 + "; CanSwitchWeaponsAfter=" + canSwitchAfter
                 + "; ControlsBefore=" + controlsBefore.Describe()
                 + "; ControlsAfter=" + controlsAfter.Describe());
+        }
+
+        private string ResolveInteriorWeaponAccessEventName(string dispatchEventName)
+        {
+            if (_interiorDispatchWeaponAccessContext
+                    != LSPDInteriorWeaponAccessContext.ActivePatrol
+                || string.IsNullOrWhiteSpace(dispatchEventName))
+                return dispatchEventName;
+
+            return dispatchEventName.Replace(
+                "POLICE_AUTHORITY_INTERIOR_DISPATCH_WEAPON_",
+                "POLICE_AUTHORITY_PATROL_INTERIOR_WEAPON_");
+        }
+
+        private static string DescribeInteriorWeaponAccessContext(
+            LSPDInteriorWeaponAccessContext context)
+        {
+            switch (context)
+            {
+                case LSPDInteriorWeaponAccessContext.ActivePatrol:
+                    return "ActivePatrol";
+                case LSPDInteriorWeaponAccessContext.AcceptedDispatch:
+                    return "AcceptedDispatch";
+                default:
+                    return "None";
+            }
         }
 
         private bool TryCountSavedPoliceWeapons(
@@ -862,7 +974,8 @@ namespace LSImmersiveLife
             }
         }
 
-        private void EnableInteriorDispatchWeaponControls()
+        private void EnableInteriorDispatchWeaponControls(
+            bool meleeControlsRequired)
         {
             for (int i = 0; i < InteriorDispatchWeaponControls.Length; i++)
             {
@@ -872,8 +985,7 @@ namespace LSImmersiveLife
                     (int)InteriorDispatchWeaponControls[i],
                     true);
             }
-            if (!IsInteriorDispatchMeleeAccessState(
-                _interiorDispatchWeaponDispatchState))
+            if (!meleeControlsRequired)
                 return;
             for (int i = 0; i < InteriorDispatchMeleeControls.Length; i++)
             {
@@ -1002,42 +1114,8 @@ namespace LSImmersiveLife
             _log.Runtime(
                 "POLICE_AUTHORITY_CONTROLS",
                 "Captured wanted state for this Police Authority session. Wanted="
-                + _previousWantedLevel + "; MaximumWanted="
-                + _previousMaximumWantedLevel + ".");
-        }
-
-        private void ReconcilePoliceProtection(Player player)
-        {
-            bool protectFromPolice = Settings.ProtectPlayerFromVanillaPoliceEscalation
-                || Settings.SuppressAmbientPoliceHostility;
-            if (protectFromPolice)
-            {
-                EnsurePoliceAllyRelationship(player.Character);
-                if (!_changedPoliceIgnore)
-                {
-                    Function.Call(Hash.SET_POLICE_IGNORE_PLAYER, player.Handle, true);
-                    _changedPoliceIgnore = true;
-                    _log.Runtime("POLICE_AUTHORITY_POLICE_IGNORE", "Vanilla Police now ignore the active Police player.");
-                }
-
-                if (Settings.SuppressVanillaDispatch && !_changedDispatchCops)
-                {
-                    Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER, player.Handle, false);
-                    _changedDispatchCops = true;
-                    _log.Runtime("POLICE_AUTHORITY_DISPATCH_SUPPRESSED", "Vanilla Police dispatch disabled for the active Police player.");
-                }
-            }
-            else
-            {
-                RestorePoliceProtection(player);
-            }
-
-            if (!Settings.SuppressVanillaDispatch && _changedDispatchCops)
-            {
-                Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER, player.Handle, true);
-                _changedDispatchCops = false;
-                _log.Runtime("POLICE_AUTHORITY_DISPATCH_RESTORED", "Vanilla Police dispatch restored by Main Settings.");
-            }
+                + _previousWantedLevel
+                + "; MaximumWanted=" + _previousMaximumWantedLevel + ".");
         }
 
         private void ReconcileWantedProtection(
@@ -1050,34 +1128,8 @@ namespace LSImmersiveLife
             {
                 RestoreWantedProtection(player);
                 _lastObservedWantedLevel = 0;
-                _lastObservedMaximumWantedLevel = 0;
-                _lastWantedCapContextSignature = string.Empty;
+                _lastObservedMaximumWantedLevel = ReadMaximumWantedLevel();
                 return;
-            }
-
-            bool protectFromPolice = Settings.EnableWorldBehaviorChanges
-                && (Settings.ProtectPlayerFromVanillaPoliceEscalation
-                    || Settings.SuppressAmbientPoliceHostility);
-            if (protectFromPolice)
-            {
-                Function.Call(Hash.SET_POLICE_IGNORE_PLAYER, player.Handle, true);
-                if (!_changedPoliceIgnore)
-                {
-                    _changedPoliceIgnore = true;
-                    _log.Runtime("POLICE_AUTHORITY_POLICE_IGNORE",
-                        "Vanilla Police ignore is now asserted throughout the active Police Authority session.");
-                }
-                if (Settings.SuppressVanillaDispatch)
-                {
-                    Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER,
-                        player.Handle, false);
-                    if (!_changedDispatchCops)
-                    {
-                        _changedDispatchCops = true;
-                        _log.Runtime("POLICE_AUTHORITY_DISPATCH_SUPPRESSED",
-                            "Vanilla dispatch suppression is now asserted throughout the active Police Authority session.");
-                    }
-                }
             }
 
             int maximumWanted = ReadMaximumWantedLevel();
@@ -1086,43 +1138,33 @@ namespace LSImmersiveLife
                 player, activeIncident, patrolActive, gangPedCandidates);
             if (maximumWanted != 0)
             {
+                // This wanted-only cap prevents repeated visible stars while
+                // leaving police-ignore, vanilla dispatch, Police recognition,
+                // and managed officer tasks in their separate owners.
                 Function.Call(Hash.SET_MAX_WANTED_LEVEL, 0);
                 _changedMaximumWantedLevel = true;
-                bool capAttemptDue = !string.Equals(
-                        _lastWantedCapContextSignature,
-                        maximumWanted + "|" + context,
-                        StringComparison.Ordinal)
-                    || _lastWantedCapContextLogAt == DateTime.MinValue
-                    || DateTime.UtcNow >= _lastWantedCapContextLogAt
-                        .AddSeconds(2);
-                if (capAttemptDue)
-                {
-                    _lastWantedCapContextSignature = maximumWanted + "|" + context;
-                    _lastWantedCapContextLogAt = DateTime.UtcNow;
-                    int correctedMaximum = ReadMaximumWantedLevel();
+                int correctedMaximum = ReadMaximumWantedLevel();
+                if (maximumWanted != _lastObservedMaximumWantedLevel)
                     _log.Runtime(
-                        "POLICE_AUTHORITY_WANTED_CAP_OVERWRITE_ATTEMPT",
-                        "PreviousMaximumWanted=" + _lastObservedMaximumWantedLevel
-                        + "; AttemptedMaximumWanted=" + maximumWanted
+                        "POLICE_AUTHORITY_WANTED_MAXIMUM_APPLIED",
+                        "PreviousMaximumWanted=" + maximumWanted
                         + "; CorrectedMaximumWanted=" + correctedMaximum
-                        + "; CorrectionResult=" + (correctedMaximum == 0
-                            ? "ZeroConfirmed" : "StillOverwritten")
+                        + "; Result=" + (correctedMaximum == 0
+                            ? "CappedForPoliceDuty" : "CapNotConfirmed")
                         + "; " + context);
-                }
+                _lastObservedMaximumWantedLevel = correctedMaximum;
             }
+            else
+                _lastObservedMaximumWantedLevel = maximumWanted;
 
-            // Some game-side systems can reassert wanted between the
-            // 150 ms checks. Clear on every reconciliation, while only
-            // reporting each observed non-zero transition from the preceding
-            // native read. This preserves evidence without logging every frame.
-            Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, player.Handle);
-            Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, player.Handle, false);
             if (currentWanted > 0)
             {
+                Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, player.Handle);
+                Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, player.Handle, false);
+                int correctedWanted = ReadWantedLevel(player);
                 _clearedWantedLevel = true;
                 if (currentWanted != _lastObservedWantedLevel)
                 {
-                    int correctedWanted = ReadWantedLevel(player);
                     _log.Runtime(
                         "POLICE_AUTHORITY_WANTED_TRANSITION_ATTEMPT",
                         "PreviousWantedLevel=" + _lastObservedWantedLevel
@@ -1132,9 +1174,10 @@ namespace LSImmersiveLife
                             ? "WantedCleared" : "WantedStillPresent")
                         + "; " + context);
                 }
+                _lastObservedWantedLevel = correctedWanted;
             }
-            _lastObservedWantedLevel = currentWanted > 0 ? currentWanted : 0;
-            _lastObservedMaximumWantedLevel = maximumWanted;
+            else
+                _lastObservedWantedLevel = 0;
         }
 
         private static string BuildWantedAttemptContext(
@@ -1257,12 +1300,12 @@ namespace LSImmersiveLife
                         false);
                 }
 
-                if (player != null)
-                {
-                    if (_hasPlayerSnapshot)
-                        RestorePoliceProtection(player);
-                    RestoreWantedProtection(player, clearPoliceModeWantedLevel);
-                }
+                if (_hasPlayerSnapshot)
+                    RestorePoliceProtection();
+                // Relationship and global wanted-maximum snapshots do not
+                // depend on the Player entity remaining available during a
+                // reset or script shutdown.
+                RestoreWantedProtection(player, clearPoliceModeWantedLevel);
             }
             catch (Exception ex)
             {
@@ -1275,10 +1318,9 @@ namespace LSImmersiveLife
                 _previousWantedLevel = 0;
                 _hasMaximumWantedSnapshot = false;
                 _previousMaximumWantedLevel = 0;
-                _changedPoliceIgnore = false;
-                _changedDispatchCops = false;
                 _changedMaximumWantedLevel = false;
                 _clearedWantedLevel = false;
+                _lastObservedMaximumWantedLevel = 0;
                 _lastControlCheck = int.MinValue;
                 _lastWantedCheck = int.MinValue;
             }
@@ -1309,19 +1351,27 @@ namespace LSImmersiveLife
             }
         }
 
-        private void RestorePoliceProtection(Player player)
+        private void RestorePoliceProtection()
         {
             RestorePoliceAllyRelationship();
-            if (_changedPoliceIgnore)
+        }
+
+        private void ReconcilePoliceRecognition(Player player)
+        {
+            bool recognizePlayerAsPolice = Settings.EnableWorldBehaviorChanges
+                && (Settings.ProtectPlayerFromVanillaPoliceEscalation
+                    || Settings.SuppressAmbientPoliceHostility);
+            if (!recognizePlayerAsPolice)
             {
-                Function.Call(Hash.SET_POLICE_IGNORE_PLAYER, player.Handle, false);
-                _changedPoliceIgnore = false;
+                RestorePoliceAllyRelationship();
+                return;
             }
-            if (_changedDispatchCops)
-            {
-                Function.Call(Hash.SET_DISPATCH_COPS_FOR_PLAYER, player.Handle, true);
-                _changedDispatchCops = false;
-            }
+
+            // This per-group recognition is separate from wanted protection.
+            // It prevents standard COP-group officers in foot or vehicle
+            // contexts from reacquiring the on-duty Player without clearing
+            // their current driving or pursuit tasks.
+            EnsurePoliceAllyRelationship(player == null ? null : player.Character);
         }
 
         private void EnsurePoliceAllyRelationship(Ped playerPed)
@@ -1480,11 +1530,16 @@ namespace LSImmersiveLife
         {
             if (_changedMaximumWantedLevel && _hasMaximumWantedSnapshot)
             {
-                Function.Call(Hash.SET_MAX_WANTED_LEVEL, _previousMaximumWantedLevel);
+                Function.Call(Hash.SET_MAX_WANTED_LEVEL,
+                    _previousMaximumWantedLevel);
                 _changedMaximumWantedLevel = false;
+                _lastObservedMaximumWantedLevel = _previousMaximumWantedLevel;
             }
 
-            if (clearPoliceModeWantedLevel)
+            bool playerAvailable = player != null
+                && player.Character != null
+                && player.Character.Exists();
+            if (clearPoliceModeWantedLevel && playerAvailable)
             {
                 Function.Call(Hash.CLEAR_PLAYER_WANTED_LEVEL, player.Handle);
                 Function.Call(Hash.SET_PLAYER_WANTED_LEVEL_NOW, player.Handle, false);
@@ -1492,7 +1547,7 @@ namespace LSImmersiveLife
                     "POLICE_AUTHORITY_WANTED_CLEARED_ON_EXIT",
                     "Police Authority exit cleared wanted status instead of restoring a saved wanted level.");
             }
-            else if (_clearedWantedLevel && _hasWantedSnapshot
+            else if (playerAvailable && _clearedWantedLevel && _hasWantedSnapshot
                 && _previousWantedLevel > 0)
             {
                 Function.Call(Hash.SET_PLAYER_WANTED_LEVEL,
@@ -1526,6 +1581,8 @@ namespace LSImmersiveLife
         internal bool ProtectPlayerFromVanillaPoliceEscalation { get; set; }
         internal bool SuppressVanillaWantedEscalation { get; set; }
         internal bool SuppressAmbientPoliceHostility { get; set; }
+        // Retained in saved XML for compatibility; Authority deliberately
+        // leaves player-wide vanilla Police dispatch enabled during duty.
         internal bool SuppressVanillaDispatch { get; set; }
         internal bool SuppressMilitaryHostility { get; set; }
         internal int AuthorityControlRefreshMilliseconds { get; set; }

@@ -14,6 +14,7 @@
     <Vehicle id="policeold2" name="LSPD Esperanto Classic" model="policeold2" vehicleType="Classic Patrol Cruiser" agencyId="lspd" source="GTA V" addon="false" />
     <Vehicle id="policet" name="LSPD Prisoner Transporter" model="policet" vehicleType="Prisoner Transport" agencyId="lspd" source="GTA V" addon="false" />
     <Vehicle id="policeb" name="LSPD Police Motorcycle" model="policeb" vehicleType="Motor Unit" agencyId="lspd" source="GTA V" addon="false" />
+    <Vehicle id="policeb2" name="Western Police Bike" model="policeb2" vehicleType="Enhanced Motor Unit" agencyId="lspd" source="GTA V Enhanced" addon="false" />
     <Vehicle id="sheriff" name="LSSD Sheriff Cruiser" model="sheriff" vehicleType="Sheriff Cruiser" agencyId="lssd" source="GTA V" addon="false" />
     <Vehicle id="sheriff2" name="LSSD Sheriff SUV" model="sheriff2" vehicleType="Sheriff Utility" agencyId="lssd" source="GTA V" addon="false" />
     <Vehicle id="pranger" name="San Andreas Park Ranger SUV" model="pranger" vehicleType="Ranger Utility" agencyId="sahp" source="GTA V" addon="false" />

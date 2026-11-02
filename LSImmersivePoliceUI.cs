@@ -23,6 +23,17 @@ namespace LSImmersiveLife
         private readonly LSPDStation _station = new LSPDStation();
         private readonly LSPDCitizenRecordPanel _citizenRecordPanel = new LSPDCitizenRecordPanel();
         private readonly List<NativeMenu> _menus = new List<NativeMenu>();
+        private string _dispatchResponsePromptText = string.Empty;
+        private string _dispatchResponsePromptIncidentId = string.Empty;
+        private string _dispatchResponsePromptTitle = string.Empty;
+        private string _dispatchResponsePromptBriefing = string.Empty;
+        private string _dispatchResponsePromptAction = string.Empty;
+        private string _dispatchResponsePromptAcceptKey = string.Empty;
+        private string _dispatchResponsePromptRejectKey = string.Empty;
+        private bool _dispatchResponsePromptIsOffer;
+        private readonly DispatchSuspectLocatorPanel _dispatchSuspectLocatorPanel =
+            new DispatchSuspectLocatorPanel();
+        private bool _stationAlmanacReturnKeyDown;
 
         private NativeMenu _stationDatabaseMenu;
         private NativeMenu _policeResponseMenu;
@@ -55,6 +66,9 @@ namespace LSImmersiveLife
         private NativeItem _investigateDispatch;
         private NativeItem _secureDispatch;
         private NativeItem _arrestDispatch;
+        private NativeItem _askOfficerToArrestDispatchSuspect;
+        private NativeItem _askOfficerToLoadDispatchSuspect;
+        private NativeItem _askOfficerToUnloadDispatchSuspect;
         private NativeItem _releaseDispatchSuspect;
         private NativeItem _requestDispatch;
         private NativeItem _approveTransport;
@@ -117,18 +131,6 @@ namespace LSImmersiveLife
         private string _pendingStationSetupPedId = string.Empty;
         private string _pendingStationSetupVehicleId = string.Empty;
         private string _stationEntrySuppressedUntilLeaveId = string.Empty;
-        private string _dispatchOfferPromptOfferId = string.Empty;
-        private string _dispatchOfferPromptTitle = string.Empty;
-        private string _dispatchOfferPromptBriefing = string.Empty;
-        private string _dispatchOfferPromptAcceptKey = "Y";
-        private string _dispatchOfferPromptRejectKey = "N";
-        private string _dispatchOfferPromptText = string.Empty;
-        private Keys _dispatchOfferPromptAcceptKeyCode;
-        private Keys _dispatchOfferPromptRejectKeyCode;
-        private bool _dispatchOfferPromptKeysInitialized;
-
-        private const int DispatchOfferPromptMaximumTitleCharacters = 58;
-        private const int DispatchOfferPromptMaximumBriefingCharacters = 46;
 
         internal LSImmersivePoliceUI(LSImmersivePoliceCore core)
         {
@@ -232,10 +234,16 @@ namespace LSImmersiveLife
                 _stationDatabaseMenu,
                 "Set GPS to Selected Police Station",
                 delegate { RunCoreCommand(_core.SetSelectedStationWaypoint); });
-            _stationAlmanacToggle = new NativeItem("Police Almaniac");
+            _stationAlmanacToggle = new NativeItem("Police Almanac");
             _stationAlmanacToggle.Activated += delegate
             {
                 _station.ToggleAlmanac();
+                if (_station.AlmanacVisible)
+                {
+                    foreach (NativeMenu menu in _menus)
+                        menu.Visible = false;
+                    _stationAlmanacReturnKeyDown = Game.IsKeyPressed(Keys.Y);
+                }
             };
             _stationDatabaseMenu.Add(_stationAlmanacToggle);
             AddSubMenuEntry(_stationDatabaseMenu, _stationMenu, "Choose Police Station");
@@ -528,7 +536,8 @@ namespace LSImmersiveLife
             _convoyStatus.Enabled = false;
             _requestConvoyActivity.Enabled = quietPatrol;
             _continueTransport.Enabled = _core.Convoy.HoldingAtStation;
-            _finishCustody.Enabled = _core.Convoy.CanUseTerminalCompletion;
+            _finishCustody.Enabled = _core.CanCompleteTransportNow;
+            _finishCustody.Description = _core.CompleteTransportUnavailableReason;
             _cancelActiveDispatch.Enabled = _core.Dispatch.HasIncident || _core.Convoy.Active
                 || _core.CrimeActivity.BlocksOtherPoliceActivities;
             _cancelActiveDispatch.Title = _core.Convoy.IsRequestedConvoyActivity
@@ -670,7 +679,31 @@ namespace LSImmersiveLife
                 if (_approveTransport != null)
                     _approveTransport.Enabled = _core.IsPoliceAuthorityActive;
                 if (_finishCustody != null)
-                    _finishCustody.Enabled = _core.IsPoliceAuthorityActive;
+                {
+                    _finishCustody.Enabled = _core.CanCompleteTransportNow;
+                    _finishCustody.Description = _core.CompleteTransportUnavailableReason;
+                }
+                if (_askOfficerToArrestDispatchSuspect != null)
+                {
+                    _askOfficerToArrestDispatchSuspect.Enabled =
+                        _core.CanAskOfficerToArrestDispatchSuspect;
+                    _askOfficerToArrestDispatchSuspect.Description =
+                        _core.AskOfficerToArrestDispatchSuspectUnavailableReason;
+                }
+                if (_askOfficerToLoadDispatchSuspect != null)
+                {
+                    _askOfficerToLoadDispatchSuspect.Enabled =
+                        _core.CanAskOfficerToLoadSuspect;
+                    _askOfficerToLoadDispatchSuspect.Description =
+                        _core.AskOfficerToLoadSuspectUnavailableReason;
+                }
+                if (_askOfficerToUnloadDispatchSuspect != null)
+                {
+                    _askOfficerToUnloadDispatchSuspect.Enabled =
+                        _core.CanAskOfficerToUnloadSuspect;
+                    _askOfficerToUnloadDispatchSuspect.Description =
+                        _core.AskOfficerToUnloadSuspectUnavailableReason;
+                }
                 if (_requestCrimeActivity != null)
                     _requestCrimeActivity.Enabled = quietPatrol;
                 if (_requestDispatch != null)
@@ -702,6 +735,12 @@ namespace LSImmersiveLife
             _arrestDispatch = new NativeItem(
                 "Arrest the Suspect",
                 "Use E when the suspect is compliant or wounded to begin physical handcuffing.");
+            _askOfficerToArrestDispatchSuspect = new NativeItem(
+                "Ask the Officer to Arrest Suspect");
+            _askOfficerToLoadDispatchSuspect = new NativeItem(
+                "Ask the Officer to Load Suspect to Utility");
+            _askOfficerToUnloadDispatchSuspect = new NativeItem(
+                "Ask the Officer to Unload Suspect from Utility");
             _releaseDispatchSuspect = new NativeItem("Release the Ped");
             _approveTransport = new NativeItem("Request Transport");
             _finishCustody = new NativeItem("Complete the Transport");
@@ -711,6 +750,18 @@ namespace LSImmersiveLife
             _investigateDispatch.Activated += delegate { RunCoreCommand(_core.InvestigateDispatch); };
             _secureDispatch.Activated += delegate { RunCoreCommand(_core.SecureDispatchSuspect); };
             _arrestDispatch.Activated += delegate { RunCoreCommand(_core.ArrestDispatchSuspect); };
+            _askOfficerToArrestDispatchSuspect.Activated += delegate
+            {
+                RunCoreCommand(_core.AskOfficerToArrestDispatchSuspect);
+            };
+            _askOfficerToLoadDispatchSuspect.Activated += delegate
+            {
+                RunCoreCommand(_core.AskOfficerToLoadSuspect);
+            };
+            _askOfficerToUnloadDispatchSuspect.Activated += delegate
+            {
+                RunCoreCommand(_core.AskOfficerToUnloadSuspect);
+            };
             _releaseDispatchSuspect.Activated += delegate { RunCoreCommand(_core.ReleaseDispatchSuspect); };
             _approveTransport.Activated += delegate { RunCoreCommand(_core.ApproveDispatchTransportAction); };
             _finishCustody.Activated += delegate { RunCoreCommand(_core.CompletePrisonerTransport); };
@@ -718,10 +769,10 @@ namespace LSImmersiveLife
             dispatch.Add(_investigateDispatch);
             dispatch.Add(_secureDispatch);
             dispatch.Add(_arrestDispatch);
-            AddUnavailableChoice(dispatch, "Instruct the Back Up Ped to Arrest a Suspect");
-            AddUnavailableChoice(dispatch, "Instruct the Back Up Ped to Load the Suspect inside the Utility");
+            dispatch.Add(_askOfficerToArrestDispatchSuspect);
+            dispatch.Add(_askOfficerToLoadDispatchSuspect);
+            dispatch.Add(_askOfficerToUnloadDispatchSuspect);
             dispatch.Add(_approveTransport);
-            AddUnavailableChoice(dispatch, "Instruct the Escort Ped to Arrest a Suspect");
             dispatch.Add(_finishCustody);
             dispatch.Add(_recoverPersonalUtility);
             dispatch.Add(_releaseDispatchSuspect);
@@ -1976,9 +2027,18 @@ namespace LSImmersiveLife
         {
             bool setupWasComplete = _core.Profile.StationSetupComplete;
             bool setupBlocksGameplay = !_core.Profile.StationSetupComplete || _stationSetupSessionActive;
-            ProcessResponseFrameworkHotkeys(paused, setupBlocksGameplay, allowStationSetupEntry);
+            bool almanacWasVisible = _station.AlmanacVisible;
+            bool almanacBlocksGameplay = ProcessAlmanacReturnInput(paused);
+            ProcessResponseFrameworkHotkeys(
+                paused,
+                setupBlocksGameplay || almanacWasVisible,
+                allowStationSetupEntry);
             bool menuVisible = _menus.Any(menu => menu != null && menu.Visible);
-            _core.Process(paused, !menuVisible && !setupBlocksGameplay && allowStationSetupEntry);
+            _core.Process(
+                paused,
+                !menuVisible && !setupBlocksGameplay && !almanacBlocksGameplay
+                    && allowStationSetupEntry,
+                almanacWasVisible);
             ProcessPendingProfilePedSelection();
             UpdateInitialStationSetup(paused, allowStationSetupEntry);
             if (!setupWasComplete && _core.Profile.StationSetupComplete
@@ -1996,9 +2056,17 @@ namespace LSImmersiveLife
                 && citizenRecord != null;
             bool citizenFrameworkVisible = _citizenFrameworkMenu != null
                 && _citizenFrameworkMenu.Visible;
+            List<LSPDDispatchSuspectLocation> suspectLocations =
+                _core.Dispatch.GetCurrentSuspectLocations(Game.Player.Character);
             _station.DrawPoliceAlmanac(
                 _core,
+                suspectLocations,
                 paused || menuVisible || citizenRecordVisible);
+            _dispatchSuspectLocatorPanel.Draw(
+                _core,
+                suspectLocations,
+                paused || menuVisible || citizenRecordVisible
+                    || _station.AlmanacVisible || !allowStationSetupEntry);
             _citizenRecordPanel.Draw(
                 citizenRecordVisible ? citizenRecord : null,
                 _core.NpcResponse.ActiveSubject,
@@ -2010,102 +2078,141 @@ namespace LSImmersiveLife
             // handlers on each tick, so controls cannot remain stale until reopen.
             if (_refreshOffer != null) _refreshOffer();
             RefreshConvoyMenu();
-            DrawDispatchOfferPrompt();
+            DrawDispatchResponsePrompt(
+                menuVisible || citizenRecordVisible || !allowStationSetupEntry
+                    || setupBlocksGameplay || _station.AlmanacVisible);
         }
 
-        private void DrawDispatchOfferPrompt()
+        private bool ProcessAlmanacReturnInput(bool paused)
         {
-            if (!_core.Dispatch.HasOffer)
+            bool keyDown = Game.IsKeyPressed(Keys.Y);
+            bool keyPressed = keyDown && !_stationAlmanacReturnKeyDown;
+            _stationAlmanacReturnKeyDown = keyDown;
+            if (!_station.AlmanacVisible)
+                return false;
+
+            if (!paused && keyPressed)
             {
-                ClearDispatchOfferPrompt();
+                _station.CloseAlmanac();
+                if (_stationDatabaseMenu != null)
+                    _stationDatabaseMenu.Visible = true;
+            }
+
+            // Almanac viewing owns Y for its close action and suppresses Police
+            // controls for this tick even when Y just closed the display.
+            return true;
+        }
+
+        private void DrawDispatchResponsePrompt(bool frameworkVisible)
+        {
+            LSPDDispatchEvent incident = _core.Dispatch.Current;
+            if (!_core.IsPoliceAuthorityActive
+                || !_core.Dispatch.HasIncident
+                || incident == null
+                || incident.State == LSPDDispatchState.Completed
+                || incident.State == LSPDDispatchState.Cancelled
+                || incident.State == LSPDDispatchState.Failed)
+            {
+                ClearDispatchResponsePrompt();
                 return;
             }
 
-            LSPDDispatchEvent offer = _core.Dispatch.Current;
-            if (offer == null)
-            {
-                ClearDispatchOfferPrompt();
+            // The legacy GTA help display has a fixed native position. Keep it
+            // out of the way while one of the Police frameworks is open, then
+            // restore the same call as soon as that framework closes.
+            if (frameworkVisible)
                 return;
-            }
 
             LSPDControlBindings controls = _core.PoliceControls;
-            Keys acceptKeyCode = controls == null ? Keys.Y : controls.AcceptKey;
-            Keys rejectKeyCode = controls == null ? Keys.N : controls.RejectKey;
-            bool promptKeysChanged = !_dispatchOfferPromptKeysInitialized
-                || _dispatchOfferPromptAcceptKeyCode != acceptKeyCode
-                || _dispatchOfferPromptRejectKeyCode != rejectKeyCode;
-            if (promptKeysChanged)
+            string acceptKey = controls == null
+                ? "Y" : controls.AcceptKey.ToString().ToUpperInvariant();
+            string rejectKey = controls == null
+                ? "N" : controls.RejectKey.ToString().ToUpperInvariant();
+            bool hasOffer = _core.Dispatch.HasOffer;
+            string title = string.IsNullOrWhiteSpace(incident.Title)
+                ? "Emergency call" : incident.Title;
+            string briefing = string.IsNullOrWhiteSpace(incident.Briefing)
+                ? "Dispatch details are not available." : incident.Briefing;
+            string action = hasOffer
+                ? "~c~RESPOND?~s~  ~g~" + acceptKey
+                    + " / Circle ACCEPT~s~  ~r~" + rejectKey + " / X DECLINE~s~"
+                : "~c~STATUS:~s~ " + DispatchResponseStateLabel(incident.State);
+
+            bool changed = !string.Equals(_dispatchResponsePromptIncidentId,
+                    incident.Id ?? string.Empty, StringComparison.Ordinal)
+                || !string.Equals(_dispatchResponsePromptTitle, title,
+                    StringComparison.Ordinal)
+                || !string.Equals(_dispatchResponsePromptBriefing, briefing,
+                    StringComparison.Ordinal)
+                || !string.Equals(_dispatchResponsePromptAction, action,
+                    StringComparison.Ordinal)
+                || !string.Equals(_dispatchResponsePromptAcceptKey, acceptKey,
+                    StringComparison.Ordinal)
+                || !string.Equals(_dispatchResponsePromptRejectKey, rejectKey,
+                    StringComparison.Ordinal)
+                || _dispatchResponsePromptIsOffer != hasOffer;
+            if (changed)
             {
-                _dispatchOfferPromptAcceptKeyCode = acceptKeyCode;
-                _dispatchOfferPromptRejectKeyCode = rejectKeyCode;
-                _dispatchOfferPromptAcceptKey = controls == null
-                    ? "Y" : acceptKeyCode.ToString().ToUpperInvariant();
-                _dispatchOfferPromptRejectKey = controls == null
-                    ? "N" : rejectKeyCode.ToString().ToUpperInvariant();
-                _dispatchOfferPromptKeysInitialized = true;
+                _dispatchResponsePromptIncidentId = incident.Id ?? string.Empty;
+                _dispatchResponsePromptTitle = title;
+                _dispatchResponsePromptBriefing = briefing;
+                _dispatchResponsePromptAction = action;
+                _dispatchResponsePromptAcceptKey = acceptKey;
+                _dispatchResponsePromptRejectKey = rejectKey;
+                _dispatchResponsePromptIsOffer = hasOffer;
+
+                _dispatchResponsePromptText = (hasOffer
+                    ? "~b~911 DISPATCH~s~\n"
+                    : "~b~POLICE DISPATCH~s~\n")
+                    + "~y~CALL:~s~ " + title + "\n"
+                    + "~c~REPORT:~s~ " + briefing + "\n"
+                    + action;
             }
 
-            string offerId = offer.Id ?? string.Empty;
-            string title = string.IsNullOrWhiteSpace(offer.Title)
-                ? "Emergency call" : offer.Title;
-            string briefing = string.IsNullOrWhiteSpace(offer.Briefing)
-                ? "Details unavailable." : offer.Briefing;
-            bool promptChanged = !string.Equals(offerId, _dispatchOfferPromptOfferId,
-                    StringComparison.Ordinal)
-                || !string.Equals(title, _dispatchOfferPromptTitle,
-                    StringComparison.Ordinal)
-                || !string.Equals(briefing, _dispatchOfferPromptBriefing,
-                    StringComparison.Ordinal);
-            if (promptChanged || promptKeysChanged
-                || string.IsNullOrWhiteSpace(_dispatchOfferPromptText))
+            GTA.UI.Screen.ShowHelpTextThisFrame(_dispatchResponsePromptText, false);
+        }
+
+        private void ClearDispatchResponsePrompt()
+        {
+            _dispatchResponsePromptText = string.Empty;
+            _dispatchResponsePromptIncidentId = string.Empty;
+            _dispatchResponsePromptTitle = string.Empty;
+            _dispatchResponsePromptBriefing = string.Empty;
+            _dispatchResponsePromptAction = string.Empty;
+            _dispatchResponsePromptAcceptKey = string.Empty;
+            _dispatchResponsePromptRejectKey = string.Empty;
+            _dispatchResponsePromptIsOffer = false;
+        }
+
+        private static string DispatchResponseStateLabel(LSPDDispatchState state)
+        {
+            switch (state)
             {
-                _dispatchOfferPromptOfferId = offerId;
-                _dispatchOfferPromptTitle = title;
-                _dispatchOfferPromptBriefing = briefing;
-                string promptTitle = CompactDispatchOfferPromptField(
-                    title, DispatchOfferPromptMaximumTitleCharacters);
-                string promptBriefing = CompactDispatchOfferPromptField(
-                    briefing, DispatchOfferPromptMaximumBriefingCharacters);
-                _dispatchOfferPromptText = "~b~911 DISPATCH~s~  "
-                    + "~g~" + _dispatchOfferPromptAcceptKey + " / Circle ACCEPT~s~  "
-                    + "~r~" + _dispatchOfferPromptRejectKey + " / X DECLINE~s~\n"
-                    + "~y~CALL:~s~ " + promptTitle + "\n"
-                    + "~c~REPORT:~s~ " + promptBriefing;
+                case LSPDDispatchState.Accepted:
+                    return "ASSIGNMENT ACCEPTED";
+                case LSPDDispatchState.EnRoute:
+                    return "CALL ACTIVE";
+                case LSPDDispatchState.OnScene:
+                    return "AT SCENE";
+                case LSPDDispatchState.Investigating:
+                    return "INVESTIGATING";
+                case LSPDDispatchState.SuspectFleeing:
+                    return "SUSPECT FLEEING";
+                case LSPDDispatchState.SuspectCompliant:
+                    return "SUSPECT COMPLYING";
+                case LSPDDispatchState.SuspectResisting:
+                    return "SUSPECT RESISTING";
+                case LSPDDispatchState.Arrested:
+                    return "SUSPECT SECURED";
+                case LSPDDispatchState.AwaitingTransport:
+                    return "TRANSPORT REQUIRED";
+                case LSPDDispatchState.HoldingAtStation:
+                    return "STATION HANDOFF";
+                case LSPDDispatchState.PrisonTransfer:
+                    return "PRISON TRANSFER";
+                default:
+                    return "ASSIGNMENT ACTIVE";
             }
-
-            // GTA's help text is frame-scoped. Refresh the existing prompt each
-            // frame, but only rebuild its content when the offer or keys change.
-            GTA.UI.Screen.ShowHelpTextThisFrame(_dispatchOfferPromptText, false);
-        }
-
-        private void ClearDispatchOfferPrompt()
-        {
-            _dispatchOfferPromptOfferId = string.Empty;
-            _dispatchOfferPromptTitle = string.Empty;
-            _dispatchOfferPromptBriefing = string.Empty;
-            _dispatchOfferPromptAcceptKey = "Y";
-            _dispatchOfferPromptRejectKey = "N";
-            _dispatchOfferPromptText = string.Empty;
-            _dispatchOfferPromptAcceptKeyCode = Keys.None;
-            _dispatchOfferPromptRejectKeyCode = Keys.None;
-            _dispatchOfferPromptKeysInitialized = false;
-        }
-
-        private static string CompactDispatchOfferPromptField(
-            string value,
-            int maximumCharacters)
-        {
-            string normalized = string.Join(" ",
-                (value ?? string.Empty).Split(
-                    (char[])null, StringSplitOptions.RemoveEmptyEntries));
-            if (normalized.Length <= maximumCharacters)
-                return normalized;
-
-            int visibleCharacters = Math.Max(1, maximumCharacters - 3);
-            int wordBoundary = normalized.LastIndexOf(' ', visibleCharacters);
-            if (wordBoundary >= maximumCharacters / 2)
-                visibleCharacters = wordBoundary;
-            return normalized.Substring(0, visibleCharacters).TrimEnd() + "...";
         }
 
         private void ProcessResponseFrameworkHotkeys(
@@ -2389,6 +2496,367 @@ namespace LSImmersiveLife
                 LSPDStation.StationPreviewMode.Wardrobe,
                 _core.Profile.SelectedPedModelName,
                 _core.Profile.SelectedVehicleModelName);
+        }
+
+        /// <summary>
+        /// Draws live Dispatch suspect locations beside the minimap. Dispatch
+        /// supplies the current positions; this panel only formats and draws them.
+        /// </summary>
+        private sealed class DispatchSuspectLocatorPanel
+        {
+            private const float ReferenceAspect = 16f / 9f;
+            private const float ReferenceScreenHeight = 1080f;
+            // GTA exposes safe-zone and screen geometry, but not the minimap's
+            // rendered right edge. Anchor from the standard bottom-left radar
+            // footprint and keep a fixed HUD-space gap beside it.
+            private const float RadarLeftInset = 0.013f;
+            private const float RadarWidthAtReferenceAspect = 0.146f;
+            private const float RadarPanelGap = 0.014f;
+            private const float ReferenceWidth = 0.233f;
+            private const float ReferenceBottomInset = 0.027f;
+            private int _layoutCount = -1;
+            private bool _compactRows;
+            private float[] _rowHeights = new float[0];
+            private float _left = RadarLeftInset + RadarWidthAtReferenceAspect + RadarPanelGap;
+            private float _width = ReferenceWidth;
+            private float _bottom = 1f - ReferenceBottomInset;
+            private float _layoutLeft = float.NaN;
+            private float _layoutWidth = float.NaN;
+            private float _layoutBottom = float.NaN;
+            private int _layoutTextSignature;
+            private float _safeZoneSize = 1f;
+            private float _aspectRatio = ReferenceAspect;
+            private DateTime _geometryRefreshAtUtc = DateTime.MinValue;
+            private ScaledRectangle _background;
+            private ScaledRectangle _accent;
+            private ScaledRectangle _headerDivider;
+            private ScaledRectangle[] _rowDividers = new ScaledRectangle[0];
+            private ScaledText _title;
+            private ScaledText _subtitle;
+            private ScaledText[] _rows = new ScaledText[0];
+            private ScaledText _footer;
+
+            internal void Draw(
+                LSImmersivePoliceCore core,
+                List<LSPDDispatchSuspectLocation> locations,
+                bool hidden)
+            {
+                if (hidden || core == null || !core.IsDispatchSuspectLocatorVisible)
+                    return;
+
+                RefreshGeometry();
+                int count = locations == null ? 0 : locations.Count;
+                int layoutCount = Math.Max(1, Math.Min(15, count));
+                bool compact = count > 5;
+                EnsureLayout(layoutCount, compact, locations,
+                    GetTextSignature(locations, layoutCount, compact));
+
+                LSPDDispatchEvent incident = core.Dispatch.Current;
+                _subtitle.Text = CompactTitle(
+                    incident == null ? string.Empty : incident.Title,
+                    Math.Max(24, (int)(38f * _width / ReferenceWidth)));
+                LSPDControlBindings controls = core.PoliceControls;
+                _footer.Text = (controls == null ? "I" : controls.InvestigateKey.ToString())
+                    + "  HIDE";
+
+                _background.Draw();
+                _accent.Draw();
+                _headerDivider.Draw();
+                _title.Draw();
+                _subtitle.Draw();
+                for (int i = 0; i < _layoutCount; i++)
+                {
+                    _rows[i].Draw();
+                    _rowDividers[i].Draw();
+                }
+                _footer.Draw();
+            }
+
+            private void RefreshGeometry()
+            {
+                DateTime now = DateTime.UtcNow;
+                if (now < _geometryRefreshAtUtc)
+                    return;
+
+                _geometryRefreshAtUtc = now.AddMilliseconds(500);
+                try
+                {
+                    float safeZone = Function.Call<float>((Hash)0xBAF107B6BB2C97F0);
+                    if (!float.IsNaN(safeZone) && !float.IsInfinity(safeZone))
+                        _safeZoneSize = Math.Max(0.8f, Math.Min(1f, safeZone));
+                }
+                catch { _safeZoneSize = 1f; }
+
+                try
+                {
+                    Size resolution = GTA.UI.Screen.Resolution;
+                    float aspect = resolution.Height > 0
+                        ? resolution.Width / (float)resolution.Height
+                        : GTA.UI.Screen.AspectRatio;
+                    if (!float.IsNaN(aspect) && !float.IsInfinity(aspect) && aspect > 0.5f)
+                        _aspectRatio = aspect;
+                }
+                catch
+                {
+                    try { _aspectRatio = GTA.UI.Screen.AspectRatio; }
+                    catch { _aspectRatio = ReferenceAspect; }
+                }
+
+                float aspectScale = Math.Max(0.68f,
+                    Math.Min(1.22f, ReferenceAspect / _aspectRatio));
+                float safeInset = (1f - _safeZoneSize) * 0.5f;
+                _left = (safeInset + RadarLeftInset + RadarWidthAtReferenceAspect
+                    + RadarPanelGap) * aspectScale;
+                _width = ReferenceWidth * aspectScale;
+                _bottom = 1f - safeInset - ReferenceBottomInset;
+
+                float rightLimit = 1f - safeInset - 0.012f;
+                _width = Math.Max(0.16f, Math.Min(_width, rightLimit - _left));
+            }
+
+            private void EnsureLayout(
+                int count,
+                bool compact,
+                List<LSPDDispatchSuspectLocation> locations,
+                int textSignature)
+            {
+                bool geometryChanged =
+                    Math.Abs(_layoutLeft - _left) > 0.001f
+                    || Math.Abs(_layoutWidth - _width) > 0.001f
+                    || Math.Abs(_layoutBottom - _bottom) > 0.001f;
+                if (_layoutCount == count && _compactRows == compact
+                    && _layoutTextSignature == textSignature && !geometryChanged)
+                    return;
+
+                _layoutCount = count;
+                _compactRows = compact;
+                _layoutLeft = _left;
+                _layoutWidth = _width;
+                _layoutBottom = _bottom;
+                _layoutTextSignature = textSignature;
+                if (_rowHeights.Length < count)
+                    Array.Resize(ref _rowHeights, count);
+
+                EnsureRowCapacity(count, compact);
+                float rowTextScale = compact ? 0.195f : 0.22f;
+                float textLeft = _left + 0.014f;
+                float rowWrap = ScaledWidth(_width - 0.028f);
+                for (int i = 0; i < count; i++)
+                {
+                    LSPDDispatchSuspectLocation location =
+                        locations != null && i < locations.Count ? locations[i] : null;
+                    ScaledText row = _rows[i];
+                    row.Text = location == null
+                        ? "No suspect position available."
+                        : FormatLocation(location, compact);
+                    row.Scale = rowTextScale;
+                    row.WordWrap = rowWrap;
+                    // LineCount and LineHeight are calculated by LemonUI from
+                    // this exact font, scale, text, position and wrap width.
+                    row.Position = new PointF(textLeft, 0f).ToScaled();
+                    _rowHeights[i] = GetRowHeight(row, compact);
+                }
+
+                float rowsHeight = 0f;
+                for (int i = 0; i < count; i++)
+                    rowsHeight += _rowHeights[i];
+
+                float panelHeight = 0.085f + rowsHeight + 0.029f;
+                float top = _bottom - panelHeight;
+
+                SetRectangle(ref _background, _left, top, _width, panelHeight,
+                    Color.FromArgb(224, 10, 19, 29));
+                SetRectangle(ref _accent, _left, top, _width, 0.004f,
+                    Color.FromArgb(255, 52, 160, 202));
+                SetRectangle(ref _headerDivider, _left + 0.012f, top + 0.071f,
+                    _width - 0.024f, 0.0015f,
+                    Color.FromArgb(155, 80, 126, 150));
+                SetText(ref _title, _left + 0.014f, top + 0.009f,
+                    "DISPATCH  |  SUSPECT LOCATOR", 0.28f, Color.White);
+                SetText(ref _subtitle, _left + 0.014f, top + 0.043f,
+                    _subtitle == null ? string.Empty : _subtitle.Text,
+                    0.20f, Color.FromArgb(255, 83, 193, 230));
+                _subtitle.WordWrap = ScaledWidth(_width - 0.028f);
+                float rowOffset = 0f;
+                for (int i = 0; i < count; i++)
+                {
+                    float rowTop = top + 0.079f + rowOffset;
+                    _rows[i].Position = new PointF(_left + 0.014f, rowTop).ToScaled();
+                    _rowDividers[i].Position = new PointF(
+                        _left + 0.012f,
+                        rowTop + _rowHeights[i] - 0.003f).ToScaled();
+                    _rowDividers[i].Size = new SizeF(
+                        _width - 0.024f, 0.0012f).ToScaled();
+                    rowOffset += _rowHeights[i];
+                }
+                SetText(ref _footer, _left + 0.014f, _bottom - 0.025f,
+                    _footer == null ? "I  HIDE" : _footer.Text, 0.19f,
+                    Color.FromArgb(255, 174, 202, 216));
+            }
+
+            private void EnsureRowCapacity(int count, bool compact)
+            {
+                if (_rows.Length < count)
+                    Array.Resize(ref _rows, count);
+                if (_rowDividers.Length < count)
+                    Array.Resize(ref _rowDividers, count);
+
+                float rowScale = compact ? 0.195f : 0.22f;
+                for (int i = 0; i < count; i++)
+                {
+                    if (_rows[i] == null)
+                        _rows[i] = Text(_left + 0.014f, 0f,
+                            string.Empty, rowScale,
+                            Color.FromArgb(255, 242, 246, 249));
+                    if (_rowDividers[i] == null)
+                        _rowDividers[i] = Rectangle(
+                            _left + 0.012f,
+                            0f,
+                            _width - 0.024f,
+                            0.0012f,
+                            Color.FromArgb(75, 126, 159, 178));
+                }
+            }
+
+            private static float GetRowHeight(ScaledText text, bool compact)
+            {
+                int lines = text == null ? 1 : Math.Max(1, text.LineCount);
+                // LemonUI reports line height in its 1080p coordinate space;
+                // convert to the panel's relative 0-1 layout units.
+                float measuredLineHeight = text == null
+                    ? 0f : text.LineHeight / ReferenceScreenHeight;
+                float measuredHeight = lines * measuredLineHeight;
+                float padding = compact ? 0.008f : 0.017f;
+                float minimum = compact ? 0.032f : 0.061f;
+                return Math.Max(minimum, measuredHeight + padding);
+            }
+
+            private static int GetTextSignature(
+                List<LSPDDispatchSuspectLocation> locations,
+                int count,
+                bool compact)
+            {
+                unchecked
+                {
+                    int signature = 17;
+                    signature = (signature * 31) + count;
+                    signature = (signature * 31) + (compact ? 1 : 0);
+                    for (int i = 0; i < count; i++)
+                    {
+                        LSPDDispatchSuspectLocation location =
+                            locations != null && i < locations.Count ? locations[i] : null;
+                        if (location == null)
+                        {
+                            signature *= 31;
+                            continue;
+                        }
+
+                        signature = (signature * 31) + location.SuspectNumber;
+                        string identity = location.IdentityName ?? string.Empty;
+                        for (int character = 0; character < identity.Length; character++)
+                            signature = (signature * 31) + identity[character];
+
+                        long distance = (long)Math.Round(
+                            location.DistanceMeters, MidpointRounding.AwayFromZero);
+                        float vertical = location.VerticalMeters;
+                        long verticalBand = Math.Abs(vertical) < 2f
+                            ? 0L
+                            : (long)Math.Round(Math.Abs(vertical), MidpointRounding.AwayFromZero)
+                                * (vertical > 0f ? 1L : -1L);
+                        signature = (signature * 31) + distance.GetHashCode();
+                        signature = (signature * 31) + verticalBand.GetHashCode();
+                    }
+                    return signature;
+                }
+            }
+
+            private static string FormatLocation(
+                LSPDDispatchSuspectLocation location,
+                bool compact)
+            {
+                if (location == null)
+                    return "No suspect position available.";
+
+                string suspect = location.DisplayLabel
+                    .Replace('\r', ' ').Replace('\n', ' ').Trim();
+                string distance = Math.Round(
+                    location.DistanceMeters, MidpointRounding.AwayFromZero)
+                    .ToString("0", CultureInfo.InvariantCulture) + " m away";
+                float vertical = location.VerticalMeters;
+                string height = Math.Abs(vertical) < 2f
+                    ? "same level"
+                    : Math.Round(Math.Abs(vertical), MidpointRounding.AwayFromZero)
+                        .ToString("0", CultureInfo.InvariantCulture) + " m "
+                        + (vertical > 0f ? "above you" : "below you");
+                return compact
+                    ? suspect + " — " + distance + " | " + height
+                    : suspect + "\n" + distance + " | " + height;
+            }
+
+            private static float ScaledWidth(float width)
+            {
+                return width.ToXScaled();
+            }
+
+            private static string CompactTitle(string value, int maximumLength)
+            {
+                string title = string.IsNullOrWhiteSpace(value)
+                    ? "ACTIVE DISPATCH"
+                    : value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+                return title.Length <= maximumLength
+                    ? title : title.Substring(0, maximumLength - 1) + "…";
+            }
+
+            private static ScaledRectangle Rectangle(
+                float x, float y, float width, float height, Color color)
+            {
+                ScaledRectangle rectangle = new ScaledRectangle(
+                    new PointF(x, y).ToScaled(), new SizeF(width, height).ToScaled());
+                rectangle.Color = color;
+                return rectangle;
+            }
+
+            private static void SetRectangle(
+                ref ScaledRectangle rectangle,
+                float x, float y, float width, float height, Color color)
+            {
+                if (rectangle == null)
+                {
+                    rectangle = Rectangle(x, y, width, height, color);
+                    return;
+                }
+
+                rectangle.Position = new PointF(x, y).ToScaled();
+                rectangle.Size = new SizeF(width, height).ToScaled();
+                rectangle.Color = color;
+            }
+
+            private static ScaledText Text(
+                float x, float y, string value, float scale, Color color)
+            {
+                ScaledText text = new ScaledText(
+                    new PointF(x, y).ToScaled(), value, scale,
+                    GTA.UI.Font.ChaletLondon);
+                text.Color = color;
+                text.Shadow = true;
+                return text;
+            }
+
+            private static void SetText(
+                ref ScaledText text,
+                float x, float y, string value, float scale, Color color)
+            {
+                if (text == null)
+                {
+                    text = Text(x, y, value, scale, color);
+                    return;
+                }
+
+                text.Position = new PointF(x, y).ToScaled();
+                text.Text = value;
+                text.Scale = scale;
+                text.Color = color;
+            }
         }
 
         /// <summary>

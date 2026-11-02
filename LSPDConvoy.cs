@@ -54,6 +54,7 @@ namespace LSImmersiveLife
         private const int DispatchPrisonerHandleRetryMilliseconds = 500;
         private const int TransportOfficerReleaseTimeoutSeconds = 12;
         private const int TransportOfficerTaskRefreshMilliseconds = 2500;
+        private const int DispatchCommandDriverReturnRefreshMilliseconds = 1500;
         private const int GroundedPrisonerFollowRefreshMilliseconds = 6000;
         private const int DispatchMovementClipsetRequestRefreshMilliseconds = 1000;
         private const int PrisonerEscortSettleMilliseconds = 1600;
@@ -78,6 +79,7 @@ namespace LSImmersiveLife
         private const float PlayerCustodyInteractionRadius = 4.0f;
         private const float PlayerCustodyVehicleRadius = 3.2f;
         private const float PlayerCustodyLoadInteractionRadius = 8.0f;
+        private const float MaximumDispatchCommandArrestApproachDistance = 90.0f;
         private const float TransportOfficerContactRadius = 1.35f;
         private const float PhysicalEscortContactRadius = 1.9f;
         // Give an officer who is already at the custody scene a short first
@@ -98,6 +100,10 @@ namespace LSImmersiveLife
         // centre around that node made GTA circle kerbs and alley obstacles
         // even though the unit had already reached usable roadside ground.
         private const float DispatchSceneVehicleArrivalRadius = 10.0f;
+        private const float DispatchSceneDrivingStopRange = 3.0f;
+        private const float DispatchScenePickupWalkInRadius = 15.0f;
+        private const int DispatchScenePickupStopSettleMilliseconds = 1500;
+        private const float DispatchScenePickupStopMovementTolerance = 0.35f;
         // A roadside pickup often starts from a sidewalk, store frontage, or
         // alley mouth. GTA's direct closest-node query can reject its one
         // closest result even when a normal road is nearby. Four fixed,
@@ -201,6 +207,10 @@ namespace LSImmersiveLife
             internal IList<Ped> RelatedPeds;
             internal DateTime Earliest;
             internal DateTime Expires;
+            internal bool RequireOriginalSceneExit;
+            internal Vector3 OriginalSceneOrigin;
+            internal bool HasOriginalSceneOrigin;
+            internal bool MissingOriginalSceneOriginLogged;
         }
 
         private sealed class DispatchPickupStop
@@ -218,6 +228,16 @@ namespace LSImmersiveLife
         private readonly LSPoliceConvoySettings _settings;
         private readonly LSPoliceCleanupSettings _cleanupSettings;
         private readonly LSUniversalUiSettings _uiSettings;
+        private LSPDBackUp _backup;
+        private LSPDDispatch _dispatch;
+        private readonly Dictionary<int, Ped> _dispatchCommandArrestOfficers =
+            new Dictionary<int, Ped>();
+        private readonly Dictionary<int, DateTime> _dispatchCommandArrestTaskAt =
+            new Dictionary<int, DateTime>();
+        private readonly HashSet<int> _dispatchCommandDriverReturnHandles =
+            new HashSet<int>();
+        private readonly Dictionary<int, DateTime> _dispatchCommandDriverReturnTaskAt =
+            new Dictionary<int, DateTime>();
         private readonly List<Ped> _prisoners = new List<Ped>();
         private readonly List<DispatchPickupStop> _dispatchPickupStops =
             new List<DispatchPickupStop>();
@@ -270,6 +290,7 @@ namespace LSImmersiveLife
         private readonly Dictionary<int, DateTime> _playerEscortLostAt = new Dictionary<int, DateTime>();
         private readonly HashSet<int> _prisonerVehicleDoorsOpened = new HashSet<int>();
         private readonly HashSet<int> _prisonerDoorCloseTasksIssued = new HashSet<int>();
+        private readonly HashSet<int> _prisonerDoorContentionWaiters = new HashSet<int>();
         private readonly Dictionary<int, DateTime> _prisonerDoorOpenTaskIssuedAt =
             new Dictionary<int, DateTime>();
         private readonly Dictionary<int, DateTime> _dispatchPrisonerMissingSince =
@@ -288,6 +309,11 @@ namespace LSImmersiveLife
         private readonly HashSet<int> _playerEscortFallbacks = new HashSet<int>();
         private readonly HashSet<int> _playerDoorInteractions = new HashSet<int>();
         private readonly HashSet<int> _playerEntryInteractions = new HashSet<int>();
+        private readonly HashSet<int> _playerBatchLoadRequestedHandles =
+            new HashSet<int>();
+        private readonly HashSet<int> _officerLoadRequestedHandles = new HashSet<int>();
+        private readonly HashSet<int> _dispatchSceneUnloadRequestedHandles = new HashSet<int>();
+        private readonly HashSet<int> _sceneUnloadedAwaitingReloadHandles = new HashSet<int>();
         // Unloading has a separate choreography from scene loading. Keeping
         // its timestamps/door ownership separate prevents the station or
         // prison handoff from inheriting a stale scene-entry task.
@@ -338,6 +364,12 @@ namespace LSImmersiveLife
         private DateTime _lastDriverTaskAt = DateTime.MinValue;
         private DateTime _lastTransportProgressAt = DateTime.MinValue;
         private Vector3 _lastTransportProgressPosition = Vector3.Zero;
+        private DateTime _dispatchPickupStoppedSince = DateTime.MinValue;
+        private DateTime _nextDispatchPickupStopCheckAt = DateTime.MinValue;
+        private DateTime _nextDispatchPickupStopLogAt = DateTime.MinValue;
+        private Vector3 _dispatchPickupStoppedPosition = Vector3.Zero;
+        private bool _dispatchPickupStopAccessConfirmed;
+        private Vector3 _dispatchPickupStopAccessTarget = Vector3.Zero;
         private Vector3 _lastTransportRoadTaskTarget = Vector3.Zero;
         private DateTime _nextTransportDriveReadinessLogAt = DateTime.MinValue;
         private DateTime _nextTransportDriverSeatTaskAt = DateTime.MinValue;
@@ -426,6 +458,10 @@ namespace LSImmersiveLife
         private bool _failedAfterStationHandoff;
         private bool _isRequestedConvoyActivity;
         private bool _dispatchCustodyOperation;
+        private Vector3 _dispatchCleanupSceneOrigin;
+        private bool _hasDispatchCleanupSceneOrigin;
+        private readonly HashSet<int> _playerCompletedDispatchCustodyHandles =
+            new HashSet<int>();
         private RouteThreatState _routeThreatState = RouteThreatState.None;
         private DateTime _routeThreatPreparationDeadline = DateTime.MinValue;
         private DateTime _lastRouteThreatCombatTaskAt = DateTime.MinValue;
@@ -473,6 +509,167 @@ namespace LSImmersiveLife
         }
 
         internal LSPDDispatchState State { get { return _state; } }
+
+        internal void AttachBackup(LSPDBackUp backup)
+        {
+            _backup = backup;
+        }
+
+        internal void AttachDispatch(LSPDDispatch dispatch)
+        {
+            _dispatch = dispatch;
+        }
+
+        internal bool CanAskOfficerToArrestDispatchSuspect(
+            Ped suspect,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (!IsDispatchCommandArrestPhase())
+            {
+                reason = "an active Dispatch custody stage is not available for an officer arrest";
+                LogDispatchOfficerCommandAvailability(
+                    "ARREST", false, suspect, null, null, reason);
+                return false;
+            }
+            if (_dispatch == null || !_dispatch.HasIncident
+                || suspect == null || !suspect.Exists() || suspect.IsDead
+                || !_dispatch.IsEligibleBackupArrestTarget(suspect))
+            {
+                reason = "the selected suspect is no longer eligible for a physical Dispatch arrest";
+                LogDispatchOfficerCommandAvailability(
+                    "ARREST", false, suspect, null, null, reason);
+                return false;
+            }
+            Ped existingOfficer;
+            if (_dispatchCommandArrestOfficers.TryGetValue(
+                suspect.Handle, out existingOfficer))
+            {
+                LogDispatchOfficerCommandAvailability(
+                    "ARREST", true, suspect, existingOfficer, null,
+                    "same suspect already has an assigned officer");
+                return true;
+            }
+
+            string candidateEvidence;
+            Ped officer = FindAvailableDispatchCommandArrestOfficer(
+                suspect, out candidateEvidence);
+            if (officer != null)
+            {
+                LogDispatchOfficerCommandAvailability(
+                    "ARREST", true, suspect, officer, null,
+                    "eligible existing Dispatch or Backup officer available; "
+                    + candidateEvidence);
+                return true;
+            }
+            reason = "all eligible Backup, Transport, Driver and non-receiving Standby officers are busy, too far away, or cannot safely leave the stopped vehicle";
+            LogDispatchOfficerCommandAvailability(
+                "ARREST", false, suspect, null, null,
+                reason + "; " + candidateEvidence);
+            return false;
+        }
+
+        internal string AskOfficerToArrestDispatchSuspect(Ped suspect)
+        {
+            string reason;
+            if (!CanAskOfficerToArrestDispatchSuspect(suspect, out reason))
+                return "The officer cannot arrest this suspect now: " + reason + ".";
+            Ped assigned;
+            if (_dispatchCommandArrestOfficers.TryGetValue(suspect.Handle, out assigned)
+                && assigned != null && assigned.Exists() && !assigned.IsDead)
+                return "The assigned officer is already approaching this same suspect.";
+
+            string candidateEvidence;
+            Ped officer = FindAvailableDispatchCommandArrestOfficer(
+                suspect, out candidateEvidence);
+            if (officer == null)
+                return "The officer assignment changed. No busy officer was reassigned.";
+            _dispatchCommandArrestOfficers[suspect.Handle] = officer;
+            bool isTransportDriver = _transportDriver != null
+                && _transportDriver.Exists()
+                && _transportDriver.Handle == officer.Handle;
+            if (isTransportDriver)
+                _dispatchCommandDriverReturnHandles.Add(officer.Handle);
+            _dispatchCommandArrestTaskAt.Remove(officer.Handle);
+            LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_ARREST_ASSIGNED",
+                "Operation=" + _operationId + "; Suspect=" + suspect.Handle
+                + "; Officer=" + officer.Handle
+                + "; Role=" + DispatchCommandOfficerRole(officer)
+                + "; DispatchOwnsPhysicalArrest=true; ConfirmedCuffsRequired=true");
+            MaintainDispatchCommandArrests(DateTime.UtcNow);
+            return officer.IsInVehicle()
+                ? "The transport is stopped. Its driver is leaving the vehicle to approach the compliant suspect."
+                : "The available officer is approaching the compliant suspect for a physical arrest.";
+        }
+
+        private bool IsDispatchCommandArrestPhase()
+        {
+            if (!Active || !IsDispatchCustodyOperation || _isRequestedConvoyActivity
+                || _dispatch == null || !_dispatch.HasIncident)
+                return false;
+
+            switch (_phase)
+            {
+                case CustodyPhase.SceneTransportEnRoute:
+                case CustodyPhase.SceneLoading:
+                case CustodyPhase.DispatchPickupDriverBoarding:
+                case CustodyPhase.DispatchCrewDriveToPickup:
+                case CustodyPhase.DispatchGroupPickupWaiting:
+                case CustodyPhase.DispatchStationTransportDecision:
+                case CustodyPhase.DispatchCrewDriverBoarding:
+                case CustodyPhase.DispatchCrewDriveToStation:
+                case CustodyPhase.DriveToStation:
+                case CustodyPhase.StationUnloading:
+                case CustodyPhase.HoldingAtStation:
+                case CustodyPhase.PreparingPrisonTransport:
+                case CustodyPhase.PrisonTransportEnRoute:
+                case CustodyPhase.PrisonLoading:
+                case CustodyPhase.DriveToPrison:
+                case CustodyPhase.PrisonHandoff:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private string DispatchCommandOfficerRole(Ped officer)
+        {
+            if (officer == null || !officer.Exists())
+                return "Unavailable";
+            if (_transportDriver != null && _transportDriver.Exists()
+                && _transportDriver.Handle == officer.Handle)
+                return "TransportDriver";
+            if (_sceneEscortOfficers.Any(value => value != null && value.Exists()
+                && value.Handle == officer.Handle))
+                return "TransportOfficer";
+            if (_dispatchGroupBackupEscorts.Values.Any(value => value != null
+                && value.Exists() && value.Handle == officer.Handle))
+                return "DispatchBackupOfficer";
+            if (_stationHandoffOfficers.Any(value => value != null && value.Exists()
+                && value.Handle == officer.Handle))
+                return "StationStandbyOfficer";
+            if (_prisonHandoffOfficers.Any(value => value != null && value.Exists()
+                && value.Handle == officer.Handle))
+                return "PrisonStandbyOfficer";
+            return "BackupOfficer";
+        }
+
+        internal bool AssignDispatchBackupCustodyEscort(Ped suspect, Ped officer)
+        {
+            if (!Active || !IsDispatchCustodyOperation
+                || suspect == null || !suspect.Exists() || suspect.IsDead
+                || officer == null || !officer.Exists() || officer.IsDead
+                || !_prisoners.Any(value => value != null && value.Exists()
+                    && value.Handle == suspect.Handle))
+                return false;
+
+            _dispatchGroupBackupEscorts[suspect.Handle] = officer;
+            LogRuntime("POLICE_CONVOY_DISPATCH_BACKUP_ESCORT_CONNECTED",
+                "Operation=" + _operationId + "; Suspect=" + suspect.Handle
+                + "; Officer=" + officer.Handle
+                + "; UtilityOrVan=true; BackupAssignmentRetained=true");
+            return true;
+        }
         internal bool IsPreparingTransport
         {
             get
@@ -603,13 +800,503 @@ namespace LSImmersiveLife
         {
             get
             {
-                return Active && (_phase == CustodyPhase.DriveToPrison
+                return Active && (IsDispatchCustodyOperation
+                    || _phase == CustodyPhase.DriveToPrison
                     || _phase == CustodyPhase.PrisonHandoff);
             }
         }
         internal string LastFailureReason { get { return _lastFailureReason; } }
         internal int PrisonerCount { get { return ValidPrisoners().Count(); } }
         internal bool IsRequestedConvoyActivity { get { return _isRequestedConvoyActivity; } }
+        internal bool IsDispatchCustodyOperation
+        {
+            get { return _dispatchCustodyOperation && !_isRequestedConvoyActivity; }
+        }
+
+        internal bool CanAskOfficerToLoadSuspect
+        {
+            get
+            {
+                Ped target;
+                Ped officer;
+                string reason;
+                return TryResolveOfficerLoadCommand(
+                    Game.Player.Character, out target, out officer, out reason);
+            }
+        }
+
+        internal string OfficerLoadUnavailableReason
+        {
+            get
+            {
+                Ped target;
+                Ped officer;
+                string reason;
+                return TryResolveOfficerLoadCommand(
+                    Game.Player.Character, out target, out officer, out reason)
+                    ? (officer == null
+                        ? "Available: the assigned officer will continue or queue this secured suspect without replacing another assignment."
+                        : "Available: assigns one available officer to the selected secured suspect.")
+                    : "Unavailable: " + reason;
+            }
+        }
+
+        internal bool CanAskOfficerToUnloadSuspect
+        {
+            get
+            {
+                Ped target;
+                Ped officer;
+                IList<Ped> officers;
+                string reason;
+                return TryResolveOfficerUnloadCommand(Game.Player.Character,
+                    out target, out officer, out officers, out reason);
+            }
+        }
+
+        internal string OfficerUnloadUnavailableReason
+        {
+            get
+            {
+                Ped target;
+                Ped officer;
+                IList<Ped> officers;
+                string reason;
+                return TryResolveOfficerUnloadCommand(Game.Player.Character,
+                    out target, out officer, out officers, out reason)
+                    ? (officer == null
+                        ? "Available: receiving officers are occupied; this secured suspect can remain queued without replacing their assignments."
+                        : "Available: assigns one receiving officer to physically unload the secured suspect.")
+                    : "Unavailable: " + reason;
+            }
+        }
+
+        internal string AskOfficerToLoadSuspect()
+        {
+            Ped player = Game.Player.Character;
+            Ped target;
+            Ped officer;
+            string reason;
+            if (!TryResolveOfficerLoadCommand(player, out target, out officer, out reason))
+                return "The officer cannot load a suspect now: " + reason;
+
+            int handle = target.Handle;
+            if (officer != null && !_sceneEscortOfficers.Any(candidate =>
+                candidate != null && candidate.Exists()
+                && candidate.Handle == officer.Handle)
+                && !IsDispatchStandbyOfficer(officer))
+            {
+                Ped reservedBackup = ResolveBackupCustodyEscort(target, true);
+                if (reservedBackup == null || reservedBackup.Handle != officer.Handle)
+                    return "The assigned Dispatch Backup officer is no longer available. The existing suspect assignment remains unchanged.";
+                officer = reservedBackup;
+            }
+            Ped existing;
+            if (_prisonerEscortOfficers.TryGetValue(handle, out existing)
+                && existing != null && existing.Exists() && !existing.IsDead
+                && !IsPlayerEscort(existing))
+            {
+                _officerLoadRequestedHandles.Add(handle);
+                LogRuntime("POLICE_CONVOY_OFFICER_LOAD_REQUEST_RETAINED",
+                    "Operation=" + _operationId + "; Prisoner=" + handle
+                    + "; Officer=" + existing.Handle
+                    + "; ExistingAssignmentPreserved=true"
+                    + "; Busy=" + IsLoadingEscortBusy(existing, handle));
+                return IsLoadingEscortBusy(existing, handle)
+                    ? "The assigned officer is finishing another suspect. This suspect stays queued with the same officer."
+                    : "The assigned officer is continuing the same suspect's physical escort and load.";
+            }
+
+            if (_playerEntryInteractions.Contains(handle)
+                || (_playerHandcuffAnimationUntil.ContainsKey(handle)
+                    && DateTime.UtcNow < _playerHandcuffAnimationUntil[handle]))
+                return "The same suspect is in a physical Player interaction. Let that movement finish before transferring this suspect.";
+
+            if (officer == null)
+            {
+                _officerLoadRequestedHandles.Add(handle);
+                LogRuntime("POLICE_CONVOY_OFFICER_LOAD_QUEUED",
+                    "Operation=" + _operationId + "; Prisoner=" + handle
+                    + "; Reason=AllTransportOfficersAssigned"
+                    + "; ExistingAssignmentsPreserved=true"
+                    + "; PhysicalEntryAndSeatConfirmationRequired=true");
+                return "All Transport Officers are assigned. The secured suspect will wait in the Convoy queue.";
+            }
+
+            if (existing != null && existing.Exists())
+            {
+                DetachPrisonerFromEscort(target, existing,
+                    "OfficerCommandTookOverSameSuspect");
+                if (!IsPlayerEscort(existing))
+                {
+                    try { existing.Task.ClearAll(); } catch { }
+                    _lastEscortOfficerTaskAt.Remove(existing.Handle);
+                }
+            }
+            _playerEscortPrisoners.Remove(handle);
+            _playerDoorInteractions.Remove(handle);
+            _playerEntryInteractions.Remove(handle);
+            _playerLoadingContactStartedAt.Remove(handle);
+            _playerEscortLostAt.Remove(handle);
+            _sceneUnloadedAwaitingReloadHandles.Remove(handle);
+            _prisonerEscortOfficers[handle] = officer;
+            _officerLoadRequestedHandles.Add(handle);
+            _prisonerEscortStartedAt[handle] = DateTime.UtcNow;
+            _prisonerLoadingTimeoutStartedAt.Remove(handle);
+            _lastPrisonerVehicleEntryAt.Remove(handle);
+            _lastPrisonerTaskAt.Remove(handle);
+            SetPrisonerLoadingStage(target, officer,
+                PrisonerLoadingStage.EscortApproach, DateTime.UtcNow,
+                "FrameworkOfficerLoadCommand");
+            MaintainPrisonerCustodyState(target);
+            LogRuntime("POLICE_CONVOY_OFFICER_LOAD_REQUESTED",
+                "Operation=" + _operationId + "; Prisoner=" + handle
+                + "; Officer=" + officer.Handle
+                + "; PreviousOwner=" + (existing == null ? "none"
+                    : IsPlayerEscort(existing) ? "Player" : existing.Handle.ToString())
+                + "; PhysicalEntryAndSeatConfirmationRequired=true");
+            return "The officer has the same secured suspect and is walking them to the transport.";
+        }
+
+        internal string AskOfficerToUnloadSuspect()
+        {
+            Ped player = Game.Player.Character;
+            Ped target;
+            Ped officer;
+            IList<Ped> officers;
+            string reason;
+            if (!TryResolveOfficerUnloadCommand(player, out target,
+                    out officer, out officers, out reason))
+                return "The officer cannot unload a suspect now: " + reason;
+
+            int handle = target.Handle;
+            Ped assigned;
+            if (_prisonerUnloadingOfficers.TryGetValue(handle, out assigned)
+                && assigned != null && assigned.Exists() && !assigned.IsDead)
+            {
+                if (_phase == CustodyPhase.SceneLoading)
+                    _dispatchSceneUnloadRequestedHandles.Add(handle);
+                LogRuntime("POLICE_CONVOY_OFFICER_UNLOAD_REQUEST_RETAINED",
+                    "Operation=" + _operationId + "; Prisoner=" + handle
+                    + "; Officer=" + assigned.Handle
+                    + "; ExistingAssignmentPreserved=true"
+                    + "; Busy=" + IsUnloadingOfficerBusy(assigned, handle));
+                return IsUnloadingOfficerBusy(assigned, handle)
+                    ? "The assigned officer is finishing another suspect. This unload stays queued with the same officer."
+                    : "The assigned officer is continuing the same suspect's physical unload.";
+            }
+            if (officer != null && _phase == CustodyPhase.SceneLoading
+                && !_sceneEscortOfficers.Any(candidate => candidate != null
+                    && candidate.Exists() && candidate.Handle == officer.Handle)
+                && !IsDispatchStandbyOfficer(officer))
+            {
+                Ped reservedBackup = ResolveBackupCustodyEscort(target, true);
+                if (reservedBackup == null || reservedBackup.Handle != officer.Handle)
+                    return "The assigned Dispatch Backup officer is no longer available. The suspect remains secured in the transport.";
+                officer = reservedBackup;
+            }
+            if (officer == null)
+            {
+                if (_phase == CustodyPhase.SceneLoading)
+                    _dispatchSceneUnloadRequestedHandles.Add(handle);
+                LogRuntime("POLICE_CONVOY_OFFICER_UNLOAD_QUEUED",
+                    "Operation=" + _operationId + "; Prisoner=" + handle
+                    + "; Phase=" + _phase
+                    + "; Reason=AllEligibleOfficersAssigned"
+                    + "; ExistingAssignmentsPreserved=true"
+                    + "; PhysicalExitRequired=true");
+                return "All eligible officers are assigned. The secured suspect will wait in the physical unload queue.";
+            }
+
+            _prisonerUnloadingOfficers[handle] = officer;
+            _prisonerUnloadingEscortStartedAt.Remove(handle);
+            _prisonerUnloadingDoorsOpened.Remove(handle);
+            _prisonerDoorOpenTaskIssuedAt.Remove(handle);
+            if (_phase == CustodyPhase.SceneLoading)
+                _dispatchSceneUnloadRequestedHandles.Add(handle);
+            LogRuntime("POLICE_CONVOY_OFFICER_UNLOAD_REQUESTED",
+                "Operation=" + _operationId + "; Prisoner=" + handle
+                + "; Officer=" + officer.Handle + "; Phase=" + _phase
+                + "; SceneUnloadRetainsDispatchCustody="
+                + (_phase == CustodyPhase.SceneLoading)
+                + "; PhysicalExitRequired=true; CuffsPreserved=true");
+            return _phase == CustodyPhase.SceneLoading
+                ? "The officer is approaching the stopped transport to unload the suspect. The suspect remains in Dispatch custody."
+                : "The receiving officer is assigned to complete the physical unload and handoff.";
+        }
+
+        private bool TryResolveOfficerLoadCommand(
+            Ped player,
+            out Ped target,
+            out Ped officer,
+            out string reason)
+        {
+            bool available = TryResolveOfficerLoadCommandCore(
+                player, out target, out officer, out reason);
+            LogDispatchOfficerCommandAvailability(
+                "LOAD", available, target, officer, null, reason);
+            return available;
+        }
+
+        private bool TryResolveOfficerLoadCommandCore(
+            Ped player,
+            out Ped target,
+            out Ped officer,
+            out string reason)
+        {
+            target = null;
+            officer = null;
+            reason = string.Empty;
+            if (!Active || !IsDispatchCustodyOperation
+                || _phase != CustodyPhase.SceneLoading)
+            {
+                reason = "an active Dispatch-linked transport must reach its scene-loading stage";
+                return false;
+            }
+            if (!HasTransportVehicle())
+            {
+                reason = "the assigned custody vehicle is unavailable";
+                return false;
+            }
+            if (Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+            {
+                reason = "the custody vehicle must be safely stopped";
+                return false;
+            }
+            if (player == null || !player.Exists() || player.IsDead || player.IsInVehicle())
+            {
+                reason = "exit the vehicle and stand near the secured suspect or custody van";
+                return false;
+            }
+            if (IsRemoteDispatchGroupPickup())
+            {
+                reason = "the assigned Backup officer owns this remote pickup stop";
+                return false;
+            }
+
+            List<Ped> prisoners = ValidPrisoners().ToList();
+            IEnumerable<Ped> candidates = prisoners.Where(prisoner =>
+            {
+                if (prisoner == null || !prisoner.Exists() || prisoner.IsDead
+                    || IsInTransport(prisoner))
+                    return false;
+                bool cuffed;
+                if (!TryGetPhysicalCuffState(prisoner, out cuffed) || !cuffed)
+                    return false;
+                VehicleSeat seat = PrisonerSeat(prisoner, prisoners);
+                if (seat == VehicleSeat.None || seat == VehicleSeat.Any)
+                    return false;
+                float playerDistance = player.Position.DistanceTo(prisoner.Position);
+                float doorDistance = prisoner.Position.DistanceTo(
+                    TransportDoorPosition(seat));
+                return playerDistance <= PlayerCustodyLoadInteractionRadius
+                    || (player.Position.DistanceTo(_transport.Position)
+                            <= PlayerCustodyLoadInteractionRadius
+                        && doorDistance <= PlayerCustodyVehicleRadius + 1.0f);
+            });
+            target = candidates
+                .OrderBy(prisoner => _prisonerEscortOfficers.ContainsKey(prisoner.Handle)
+                    ? 0 : 1)
+                .ThenBy(prisoner => player.Position.DistanceTo(prisoner.Position))
+                .FirstOrDefault();
+            if (target == null)
+            {
+                reason = "no physically secured suspect is within the loading interaction area";
+                return false;
+            }
+
+            Ped assigned;
+            if (_prisonerEscortOfficers.TryGetValue(target.Handle, out assigned)
+                && assigned != null && assigned.Exists() && !assigned.IsDead
+                && !IsPlayerEscort(assigned))
+            {
+                officer = IsLoadingEscortBusy(assigned, target.Handle) ? null : assigned;
+                return true;
+            }
+
+            Ped selectedTarget = target;
+            officer = _sceneEscortOfficers
+                .Where(candidate => candidate != null && candidate.Exists()
+                    && !candidate.IsDead && !IsOfficerInTransport(candidate)
+                    && !IsLoadingEscortBusy(candidate, selectedTarget.Handle))
+                .OrderBy(candidate => candidate.Position.DistanceTo(selectedTarget.Position))
+                .FirstOrDefault();
+            if (officer == null && _transportDriver != null
+                && _transportDriver.Exists() && !_transportDriver.IsDead
+                && IsOfficerInTransport(_transportDriver)
+                && _transport != null && _transport.Exists()
+                && Math.Abs(_transport.Speed) <= DispatchReleaseStoppedSpeed
+                && !IsLoadingEscortBusy(_transportDriver, selectedTarget.Handle)
+                && !IsUnloadingOfficerBusy(_transportDriver, selectedTarget.Handle))
+                officer = _transportDriver;
+            if (officer == null)
+                officer = ResolveBackupCustodyEscort(selectedTarget, false);
+            if (officer == null)
+                officer = FindAvailableDispatchStandbyOfficer(selectedTarget);
+            if (officer == null)
+            {
+                bool hasManagedOfficer = _sceneEscortOfficers.Any(candidate =>
+                    candidate != null && candidate.Exists() && !candidate.IsDead)
+                    || _dispatchGroupBackupEscorts.Values.Any(candidate =>
+                        candidate != null && candidate.Exists() && !candidate.IsDead)
+                    || GetDispatchStandbyOfficers().Any(candidate =>
+                        candidate.Position.DistanceTo(selectedTarget.Position)
+                            <= MaximumDispatchCommandArrestApproachDistance);
+                if (!hasManagedOfficer)
+                {
+                    reason = "no arrived Transport or assigned Dispatch Backup officer is available";
+                    return false;
+                }
+                reason = "all eligible officers are assigned; the secured suspect can be queued";
+            }
+            return true;
+        }
+
+        private bool TryResolveOfficerUnloadCommand(
+            Ped player,
+            out Ped target,
+            out Ped officer,
+            out IList<Ped> officers,
+            out string reason)
+        {
+            bool available = TryResolveOfficerUnloadCommandCore(
+                player, out target, out officer, out officers, out reason);
+            LogDispatchOfficerCommandAvailability(
+                "UNLOAD", available, target, officer, officers, reason);
+            return available;
+        }
+
+        private bool TryResolveOfficerUnloadCommandCore(
+            Ped player,
+            out Ped target,
+            out Ped officer,
+            out IList<Ped> officers,
+            out string reason)
+        {
+            target = null;
+            officer = null;
+            officers = new List<Ped>();
+            reason = string.Empty;
+            if (!Active || !IsDispatchCustodyOperation
+                || (_phase != CustodyPhase.SceneLoading
+                    && _phase != CustodyPhase.StationUnloading
+                    && _phase != CustodyPhase.PrisonHandoff))
+            {
+                reason = "a stopped Dispatch transport or receiving handoff is not active";
+                return false;
+            }
+            if (!HasTransportVehicle())
+            {
+                reason = "the assigned custody vehicle is unavailable";
+                return false;
+            }
+            if (Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+            {
+                reason = "the transport must be safely stopped before unloading";
+                return false;
+            }
+            if (player == null || !player.Exists() || player.IsDead || player.IsInVehicle())
+            {
+                reason = "exit the vehicle before requesting a physical unload";
+                return false;
+            }
+
+            if (_phase == CustodyPhase.SceneLoading)
+                officers = _sceneEscortOfficers
+                    .Concat(_dispatchGroupBackupEscorts.Values)
+                    .Concat(GetDispatchStandbyOfficers().Where(candidate =>
+                        candidate.Position.DistanceTo(_transport.Position)
+                            <= MaximumDispatchCommandArrestApproachDistance))
+                    .Where(candidate => candidate != null && candidate.Exists()
+                        && !candidate.IsDead)
+                    .GroupBy(candidate => candidate.Handle)
+                    .Select(group => group.First()).ToList();
+            else if (_phase == CustodyPhase.StationUnloading)
+                officers = _stationHandoffOfficers;
+            else
+                officers = _prisonHandoffOfficers;
+
+            List<Ped> prisoners = ValidPrisoners().ToList();
+            target = prisoners.Where(prisoner => prisoner != null
+                    && prisoner.Exists() && !prisoner.IsDead
+                    && IsPrisonerInAssignedTransportSeat(prisoner,
+                        PrisonerSeat(prisoner, prisoners)))
+                .OrderBy(prisoner => player.Position.DistanceTo(
+                    TransportDoorPosition(PrisonerSeat(prisoner, prisoners))))
+                .FirstOrDefault();
+            if (target == null)
+            {
+                reason = "no secured suspect is physically seated in the assigned custody vehicle";
+                return false;
+            }
+            if (_phase == CustodyPhase.SceneLoading && _backup != null)
+            {
+                Ped availableBackup = _backup.FindAvailableDispatchCustodyEscortForConvoy(
+                    _dispatch, target);
+                if (availableBackup != null
+                    && !officers.Any(candidate => candidate != null
+                        && candidate.Exists() && candidate.Handle == availableBackup.Handle))
+                    officers = officers.Concat(new[] { availableBackup }).ToList();
+            }
+            if (player.Position.DistanceTo(_transport.Position)
+                > PlayerCustodyLoadInteractionRadius * 2f)
+            {
+                reason = "move near the stopped custody vehicle before assigning a receiving officer";
+                return false;
+            }
+
+            Ped assigned;
+            if (_prisonerUnloadingOfficers.TryGetValue(target.Handle, out assigned)
+                && assigned != null && assigned.Exists() && !assigned.IsDead)
+            {
+                officer = IsUnloadingOfficerBusy(assigned, target.Handle)
+                    ? null : assigned;
+                return true;
+            }
+            Ped selectedTarget = target;
+            officer = officers.Where(candidate => candidate != null
+                    && candidate.Exists() && !candidate.IsDead
+                    && !IsUnloadingOfficerBusy(candidate, selectedTarget.Handle))
+                .OrderBy(candidate => candidate.Position.DistanceTo(_transport.Position))
+                .FirstOrDefault();
+            if (officer == null)
+            {
+                if (officers.Any(candidate => candidate != null
+                    && candidate.Exists() && !candidate.IsDead))
+                {
+                    reason = "eligible receiving officers are assigned; the secured suspect can wait in their queue";
+                    return true;
+                }
+                reason = _phase == CustodyPhase.StationUnloading
+                    || _phase == CustodyPhase.PrisonHandoff
+                    ? "no live receiving officer is assigned to this handoff"
+                    : "no live Transport Officer is assigned to approach the vehicle";
+                return false;
+            }
+            return true;
+        }
+
+        internal void CaptureDispatchCleanupSceneOrigin(Vector3 sceneOrigin)
+        {
+            if (!Active || !IsDispatchCustodyOperation
+                || _hasDispatchCleanupSceneOrigin
+                || sceneOrigin == Vector3.Zero
+                || float.IsNaN(sceneOrigin.X) || float.IsInfinity(sceneOrigin.X)
+                || float.IsNaN(sceneOrigin.Y) || float.IsInfinity(sceneOrigin.Y)
+                || float.IsNaN(sceneOrigin.Z) || float.IsInfinity(sceneOrigin.Z))
+                return;
+
+            _dispatchCleanupSceneOrigin = sceneOrigin;
+            _hasDispatchCleanupSceneOrigin = true;
+            LogRuntime("POLICE_CONVOY_DISPATCH_CLEANUP_ANCHOR_CAPTURED",
+                "Operation=" + _operationId + "; SceneOrigin=" + sceneOrigin
+                + "; Source=RetainedDispatchOccurrence; MovingActorPositionUsed=false");
+        }
+
+        internal void SynchronizeTransportCompleteKeyState()
+        {
+            _terminalKeyDown = Game.IsKeyPressed(_controls.TransportCompleteKey);
+        }
 
         internal bool CanReleaseDispatchSuspect(Ped suspect)
         {
@@ -1863,6 +2550,7 @@ namespace LSImmersiveLife
             _dispatchCrewDepartureOrigin = _transport.Position;
             _dispatchCrewDepartureStartedAt = DateTime.MinValue;
             _transportRouteRecoveryCount = 0;
+            ResetDispatchPickupStopConfirmation();
             _dispatchCrewDriverSeatConflictLogged = false;
             _dispatchCrewPlayerRecoveryPending = false;
             _dispatchCrewPlayerRecoveryReason = string.Empty;
@@ -2525,14 +3213,30 @@ namespace LSImmersiveLife
                 return "No active prisoner transport is available.";
             if (!CanUseTerminalCompletion)
                 return "Terminal completion is available only after prisoners are loaded for the prison transfer.";
-            ReportTerminal("lsimmersivelife.police.transport.completed", "terminal-recovery");
-            Complete("Transport marked complete by the officer recovery control.", true);
-            return "Prisoner transport marked complete.";
+            bool playerRequestedDispatchCompletion = IsDispatchCustodyOperation;
+            string completionStage = playerRequestedDispatchCompletion
+                ? "player-requested-dispatch-completion" : "terminal-recovery";
+            if (playerRequestedDispatchCompletion)
+                CloseActiveAudio();
+            else
+                ReportTerminal("lsimmersivelife.police.transport.completed", completionStage);
+            Complete(playerRequestedDispatchCompletion
+                    ? "Player requested completion of the active Dispatch transport."
+                    : "Transport marked complete by the officer recovery control.",
+                true, playerRequestedDispatchCompletion);
+            return playerRequestedDispatchCompletion
+                ? "Dispatch transport completion requested."
+                : "Prisoner transport marked complete.";
         }
 
         internal string Process(DateTime now)
         {
             return Process(now, true);
+        }
+
+        internal void ProcessRetainedCleanup(DateTime now)
+        {
+            ProcessDeferredCleanup(now);
         }
 
         internal string Process(DateTime now, bool allowGameplayInput)
@@ -2543,7 +3247,8 @@ namespace LSImmersiveLife
                 bool keyDown = Game.IsKeyPressed(_controls.TransportCompleteKey);
                 bool pressed = keyDown && !_terminalKeyDown;
                 _terminalKeyDown = keyDown;
-                if (pressed && CanUseTerminalCompletion)
+                if (pressed && CanUseTerminalCompletion
+                    && !IsDispatchCustodyOperation)
                     return CompleteNow();
             }
             else
@@ -2551,6 +3256,8 @@ namespace LSImmersiveLife
 
             if (!Active)
                 return string.Empty;
+            MaintainDispatchCommandArrests(now);
+            MaintainDispatchCommandDriverReturns(now);
             string dispatchReleaseMessage;
             if (ProcessPendingDispatchSuspectRelease(now, out dispatchReleaseMessage))
                 return dispatchReleaseMessage;
@@ -2779,6 +3486,7 @@ namespace LSImmersiveLife
             _lastPrisonerEscortPosition.Remove(handle);
             _lastPrisonerEscortProgressAt.Remove(handle);
             _lastPrisonerEscortRecoveryAt.Remove(handle);
+            _playerBatchLoadRequestedHandles.Remove(handle);
             _prisonerLoadingStages.Remove(handle);
             _prisonerLoadingStageStartedAt.Remove(handle);
             _prisonerLoadingTimeoutStartedAt.Remove(handle);
@@ -2790,6 +3498,7 @@ namespace LSImmersiveLife
             _playerEscortLostAt.Remove(handle);
             _prisonerVehicleDoorsOpened.Remove(handle);
             _prisonerDoorCloseTasksIssued.Remove(handle);
+            _prisonerDoorContentionWaiters.Remove(handle);
             _prisonerDoorOpenTaskIssuedAt.Remove(handle);
             _dispatchPrisonerMissingSince.Remove(handle);
             _dispatchPrisonerLastHandleRetryAt.Remove(handle);
@@ -2800,6 +3509,9 @@ namespace LSImmersiveLife
             _playerEscortFallbacks.Remove(handle);
             _playerDoorInteractions.Remove(handle);
             _playerEntryInteractions.Remove(handle);
+            _officerLoadRequestedHandles.Remove(handle);
+            _dispatchSceneUnloadRequestedHandles.Remove(handle);
+            _sceneUnloadedAwaitingReloadHandles.Remove(handle);
             _prisonerUnloadingEscortStartedAt.Remove(handle);
             _prisonerUnloadingDoorsOpened.Remove(handle);
             _playerUnloadingStartedAt.Remove(handle);
@@ -2872,24 +3584,51 @@ namespace LSImmersiveLife
             if (player == null || !player.Exists())
                 return "Player character unavailable for the physical custody interaction.";
 
+            string readyLoadRequest = RequestOfficerLoadsForReadyPrisoners(player, now);
+            bool playerAlreadyOwnsLiveEscort = _playerEscortPrisoners.Any(handle =>
+            {
+                Ped assignedPrisoner = _prisoners.FirstOrDefault(value =>
+                    value != null && value.Exists() && !value.IsDead
+                    && value.Handle == handle);
+                return assignedPrisoner != null && !IsInTransport(assignedPrisoner);
+            });
+
             List<Ped> available = ValidPrisoners()
                 .Where(prisoner => !IsInTransport(prisoner))
                 .OrderBy(prisoner => prisoner.Position.DistanceTo(player.Position))
                 .ToList();
+            bool playerOwnsSelectableEscort = available.Any(prisoner =>
+                _playerEscortPrisoners.Contains(prisoner.Handle)
+                && prisoner.Position.DistanceTo(player.Position)
+                    <= PlayerCustodyInteractionRadius + PlayerCustodyVehicleRadius);
+            if (!string.IsNullOrWhiteSpace(readyLoadRequest)
+                && (!playerAlreadyOwnsLiveEscort || !playerOwnsSelectableEscort))
+                return readyLoadRequest;
+
             Ped target = available.FirstOrDefault(prisoner =>
                 _playerEscortPrisoners.Contains(prisoner.Handle)
-                && (prisoner.Position.DistanceTo(player.Position)
-                        <= PlayerCustodyInteractionRadius + PlayerCustodyVehicleRadius
-                    || (_playerDoorInteractions.Contains(prisoner.Handle)
-                        && _transport != null && _transport.Exists()
-                        && player.Position.DistanceTo(_transport.Position)
-                            <= PlayerCustodyLoadInteractionRadius
-                        && prisoner.Position.DistanceTo(_transport.Position)
-                            <= PlayerCustodyLoadInteractionRadius)))
+                && _playerDoorInteractions.Contains(prisoner.Handle)
+                && _transport != null && _transport.Exists()
+                && player.Position.DistanceTo(_transport.Position)
+                    <= PlayerCustodyLoadInteractionRadius
+                && prisoner.Position.DistanceTo(_transport.Position)
+                    <= PlayerCustodyLoadInteractionRadius)
                 ?? available.FirstOrDefault(prisoner =>
-                    prisoner.Position.DistanceTo(player.Position) <= PlayerCustodyInteractionRadius);
+                    _playerEscortPrisoners.Contains(prisoner.Handle)
+                    && prisoner.Position.DistanceTo(player.Position)
+                        <= PlayerCustodyInteractionRadius + PlayerCustodyVehicleRadius)
+                ?? available.FirstOrDefault(prisoner =>
+                    !_playerEscortPrisoners.Contains(prisoner.Handle)
+                    && prisoner.Position.DistanceTo(player.Position)
+                        <= PlayerCustodyInteractionRadius);
             if (target == null)
             {
+                if (!string.IsNullOrWhiteSpace(readyLoadRequest))
+                    return readyLoadRequest;
+                if (_transport != null && _transport.Exists()
+                    && player.Position.DistanceTo(_transport.Position)
+                        <= PlayerCustodyLoadInteractionRadius)
+                    return "No secured suspect is physically waiting at a rear door yet. The current escort assignments are continuing.";
                 LogRuntime("POLICE_CONVOY_PLAYER_CUSTODY_INPUT_REJECTED",
                     "Phase=" + _phase + "; Reason=NoPrisonerInInteractionRange; Player="
                     + player.Handle + "; Position=" + player.Position);
@@ -2897,15 +3636,30 @@ namespace LSImmersiveLife
                     + " metres of a secured prisoner before pressing E.";
             }
 
-            bool anotherPlayerEscortActive = _playerEscortPrisoners.Any(handle =>
+            foreach (int previousHandle in _playerEscortPrisoners
+                .Where(handle => handle != target.Handle).ToArray())
             {
-                Ped assignedPrisoner = _prisoners.FirstOrDefault(value =>
-                    value != null && value.Exists() && value.Handle == handle);
-                return assignedPrisoner != null && !IsInTransport(assignedPrisoner)
-                    && assignedPrisoner.Handle != target.Handle;
-            });
-            if (anotherPlayerEscortActive)
-                return "Finish escorting the current prisoner into the transport before taking another prisoner.";
+                Ped previousPrisoner = _prisoners.FirstOrDefault(value =>
+                    value != null && value.Exists() && !value.IsDead
+                    && value.Handle == previousHandle && !IsInTransport(value));
+                if (previousPrisoner != null
+                    && !TransferPlayerEscortToConvoyOfficer(
+                        previousPrisoner, player, now))
+                    return "Finish the current door or loading animation before taking another prisoner.";
+            }
+
+            if (_sceneUnloadedAwaitingReloadHandles.Remove(target.Handle))
+            {
+                _dispatchSceneUnloadRequestedHandles.Remove(target.Handle);
+                _prisonerUnloadingOfficers.Remove(target.Handle);
+                _prisonerUnloadingEscortStartedAt.Remove(target.Handle);
+                _prisonerUnloadingDoorsOpened.Remove(target.Handle);
+                _prisonerDoorOpenTaskIssuedAt.Remove(target.Handle);
+                LogRuntime("POLICE_CONVOY_DISPATCH_SCENE_RELOAD_REQUESTED",
+                    "Operation=" + _operationId + "; Prisoner=" + target.Handle
+                    + "; PreviousPhysicalUnloadRetained=true"
+                    + "; NewPlayerEscortRequested=true");
+            }
 
             if (player.IsInVehicle())
                 return "Exit the Police vehicle and stand beside the secured prisoner before pressing E.";
@@ -2922,6 +3676,8 @@ namespace LSImmersiveLife
                 bool alreadyPhysicallyCuffed;
                 if (!TryGetPhysicalCuffState(target, out alreadyPhysicallyCuffed))
                     return "The suspect's physical handcuff state could not be verified. Try again when the suspect is stable.";
+
+                _officerLoadRequestedHandles.Remove(prisonerHandle);
 
                 Ped previousEscort;
                 if (_prisonerEscortOfficers.TryGetValue(prisonerHandle, out previousEscort)
@@ -3042,7 +3798,9 @@ namespace LSImmersiveLife
                     + "; AngleRatioAtLeast=0.75");
             }
             if (playerDoorTaskStarted && !doorAlreadyOpenedByPlayer)
-                return "The rear door is still opening. Wait until it is fully open, then press E again to load the prisoner.";
+                return _playerBatchLoadRequestedHandles.Contains(prisonerHandle)
+                    ? "The rear door is still opening. The requested load will continue automatically when it is ready."
+                    : "The rear door is still opening. Wait until it is fully open, then press E again to load the prisoner.";
 
             float playerDoorDistance = player.Position.DistanceTo(entry);
             float prisonerDoorDistance = target.Position.DistanceTo(entry);
@@ -3082,6 +3840,22 @@ namespace LSImmersiveLife
                 }
                 return "Continue escorting the prisoner until both of you are beside the marked rear door.";
             }
+
+            if (IsLoadingDoorBusyForOtherPrisoner(doorIndex, prisonerHandle))
+            {
+                if (_prisonerDoorContentionWaiters.Add(prisonerHandle))
+                    LogRuntime("POLICE_CONVOY_SHARED_LOADING_DOOR_WAIT",
+                        "Prisoner=" + prisonerHandle + "; Door=" + doorIndex
+                        + "; Owner=Player; PhysicalDoorConflict=true"
+                        + "; CustodyAssignmentRetained=true");
+                return _playerBatchLoadRequestedHandles.Contains(prisonerHandle)
+                    ? "The rear door is handling another prisoner. Your load request is queued and will continue when the door is free."
+                    : "The rear door is handling another prisoner. Wait for that load to finish, then press E again.";
+            }
+            if (_prisonerDoorContentionWaiters.Remove(prisonerHandle))
+                LogRuntime("POLICE_CONVOY_SHARED_LOADING_DOOR_RESUMED",
+                    "Prisoner=" + prisonerHandle + "; Door=" + doorIndex
+                    + "; Owner=Player; CustodyAssignmentRetained=true");
 
             // A transport officer can have opened the physical door before
             // the player claims custody. The player still needs a registered
@@ -3123,12 +3897,17 @@ namespace LSImmersiveLife
                 }
                 catch (Exception ex)
                 {
+                    _playerDoorInteractions.Remove(prisonerHandle);
                     LogException("POLICE_CONVOY_PLAYER_PRISONER_DOOR_OPEN_FAILED", ex);
                     return "The transport rear door could not be opened safely.";
                 }
                 string doorMessage = alreadyPhysicallyOpen
-                    ? "The rear door is already open. Press E again to load the prisoner."
-                    : "The officer is opening the rear door. Wait until it is fully open, then press E again to load the prisoner.";
+                    ? (_playerBatchLoadRequestedHandles.Contains(prisonerHandle)
+                        ? "The rear door is already open. The requested physical load will continue automatically."
+                        : "The rear door is already open. Press E again to load the prisoner.")
+                    : (_playerBatchLoadRequestedHandles.Contains(prisonerHandle)
+                        ? "The officer is opening the rear door. The requested physical load will continue when it is ready."
+                        : "The officer is opening the rear door. Wait until it is fully open, then press E again to load the prisoner.");
                 Notify("~b~POLICE CUSTODY~s~\n" + doorMessage);
                 return doorMessage;
             }
@@ -3179,6 +3958,68 @@ namespace LSImmersiveLife
                 + "; Vehicle=" + _transport.Handle + "; Seat=" + seat);
             Notify("~b~POLICE CUSTODY~s~\nYou are physically loading the handcuffed prisoner. The officer will secure the rear door afterward.");
             return "Physical loading started. The handcuffed prisoner is being guided into the transport.";
+        }
+
+        private bool TransferPlayerEscortToConvoyOfficer(
+            Ped prisoner,
+            Ped player,
+            DateTime now)
+        {
+            if (prisoner == null || !prisoner.Exists() || prisoner.IsDead
+                || player == null || !player.Exists()
+                || _playerEntryInteractions.Contains(prisoner.Handle)
+                || _playerLoadingContactStartedAt.ContainsKey(prisoner.Handle)
+                || _playerHandcuffAnimationUntil.ContainsKey(prisoner.Handle))
+                return false;
+
+            Ped officer = _sceneEscortOfficers
+                .Where(candidate => candidate != null && candidate.Exists()
+                    && !candidate.IsDead && !IsOfficerInTransport(candidate)
+                    && !IsLoadingEscortBusy(candidate, prisoner.Handle))
+                .OrderBy(candidate => candidate.Position.DistanceTo(prisoner.Position))
+                .FirstOrDefault();
+            if (officer == null)
+                officer = ResolveBackupCustodyEscort(prisoner, true);
+
+            int handle = prisoner.Handle;
+            DetachPrisonerFromEscort(prisoner, player,
+                "PlayerSelectedDifferentDispatchSuspect");
+            _playerEscortPrisoners.Remove(handle);
+            _playerDoorInteractions.Remove(handle);
+            _playerEntryInteractions.Remove(handle);
+            _playerLoadingContactStartedAt.Remove(handle);
+            _playerEscortLostAt.Remove(handle);
+            _playerBatchLoadRequestedHandles.Remove(handle);
+            _lastPrisonerEscortPosition.Remove(handle);
+            _lastPrisonerEscortProgressAt.Remove(handle);
+            _lastPrisonerEscortRecoveryAt.Remove(handle);
+            _lastGroundedEscortFollowAt.Remove(handle);
+            _prisonerEscortAlignmentStarted.Remove(handle);
+            _prisonerEscortStartedAt[handle] = now;
+            _prisonerLoadingTimeoutStartedAt.Remove(handle);
+            if (officer != null)
+            {
+                _prisonerEscortOfficers[handle] = officer;
+                SetPrisonerLoadingStage(prisoner, officer,
+                    PrisonerLoadingStage.EscortApproach, now,
+                    "PlayerTransferredDifferentSuspectToOfficer");
+            }
+            else
+            {
+                _prisonerEscortOfficers.Remove(handle);
+                _officerLoadRequestedHandles.Add(handle);
+                SetPrisonerLoadingStage(prisoner, null,
+                    PrisonerLoadingStage.EscortApproach, now,
+                    "PlayerTransferredDifferentSuspectToConvoyQueue");
+            }
+            MaintainPrisonerCustodyState(prisoner);
+            LogRuntime("POLICE_CONVOY_PLAYER_ESCORT_TRANSFERRED_TO_OFFICER",
+                "Operation=" + _operationId + "; Prisoner=" + handle
+                + "; NextPlayerTargetSelected=true"
+                + "; Officer=" + (officer == null ? "queued" : officer.Handle.ToString())
+                + "; DifferentSuspectAssignmentInterrupted=false"
+                + "; PhysicalEscortRetained=true");
+            return true;
         }
 
         private string ProcessPlayerPrisonerUnloadInput(DateTime now)
@@ -3433,7 +4274,22 @@ namespace LSImmersiveLife
         internal void ConsumeCompletedState()
         {
             if (Completed)
-                ClearTerminalState();
+            {
+                HashSet<int> preservedCustody =
+                    _playerCompletedDispatchCustodyHandles.Count == 0
+                        ? null
+                        : new HashSet<int>(_playerCompletedDispatchCustodyHandles);
+                ClearTerminalState(preservedCustody);
+                if (preservedCustody != null)
+                {
+                    foreach (int handle in preservedCustody)
+                    {
+                        _custodyInvincibilityStates.Remove(handle);
+                        _dispatchCustodyMovementStyleApplied.Remove(handle);
+                        _dispatchCustodyMovementStyleRequestedAt.Remove(handle);
+                    }
+                }
+            }
         }
 
         internal void PrepareForPatrolEnd()
@@ -3968,6 +4824,7 @@ namespace LSImmersiveLife
             _transportRouteRecoveryCount = 0;
             _dispatchTransportRouteRoadTarget = dispatchCustodyTransport
                 ? routeRoadTarget : Vector3.Zero;
+            ResetDispatchPickupStopConfirmation();
             _dispatchTransportRouteDestination = dispatchCustodyTransport
                 ? target : Vector3.Zero;
             _lastDispatchTransportRouteTargetFailure = string.Empty;
@@ -4036,6 +4893,26 @@ namespace LSImmersiveLife
             Vector3 target = TransportTarget(prisonTrip);
             float arrivalRadius = IsDispatchSceneRoadPickup(prisonTrip)
                 ? DispatchSceneVehicleArrivalRadius : ArrivalRadius;
+            if (IsDispatchSceneRoadPickup(prisonTrip)
+                && TryConfirmDispatchPickupStop(
+                    now, target, DispatchScenePickupWalkInRadius))
+            {
+                if (!_transportNearCustodyFallback)
+                {
+                    _transportNearCustodyFallback = true;
+                    LogRuntime("POLICE_CONVOY_TRANSPORT_NEAR_CUSTODY_REUSED",
+                        "Vehicle=" + _transport.Handle
+                        + "; Driver=" + (_transportDriver == null
+                            ? 0 : _transportDriver.Handle)
+                        + "; Distance=" + _transport.Position.DistanceTo(target)
+                            .ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Target=" + target
+                        + "; Mode=PhysicalOfficerWalkIn"
+                        + "; SupportedStopAndDoorAccess=true"
+                        + "; RecoveriesExhausted=false");
+                }
+                return BeginTransportLoading(now, prisonTrip);
+            }
             if (_transport.Position.DistanceTo(target) > arrivalRadius)
             {
                 if (TryRecoverStalledTransport(target, now))
@@ -4077,6 +4954,166 @@ namespace LSImmersiveLife
             }
 
             return BeginTransportLoading(now, prisonTrip);
+        }
+
+        private void ResetDispatchPickupStopConfirmation()
+        {
+            _dispatchPickupStoppedSince = DateTime.MinValue;
+            _nextDispatchPickupStopCheckAt = DateTime.MinValue;
+            _nextDispatchPickupStopLogAt = DateTime.MinValue;
+            _dispatchPickupStoppedPosition = Vector3.Zero;
+            _dispatchPickupStopAccessConfirmed = false;
+            _dispatchPickupStopAccessTarget = Vector3.Zero;
+        }
+
+        private bool TryConfirmDispatchPickupStop(
+            DateTime now, Vector3 target, float maximumDistance)
+        {
+            if (!IsDispatchSceneRoadPickup(false)
+                || _transport == null || !_transport.Exists()
+                || target == Vector3.Zero)
+            {
+                ResetDispatchPickupStopConfirmation();
+                return false;
+            }
+
+            float distance = _transport.Position.DistanceTo(target);
+            if (distance > maximumDistance
+                || Math.Abs(_transport.Position.Z - target.Z) > 3f
+                || Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+            {
+                ResetDispatchPickupStopConfirmation();
+                return false;
+            }
+
+            if (_dispatchPickupStopAccessConfirmed
+                && _dispatchPickupStopAccessTarget.DistanceTo(target) <= 1f
+                && _transport.Position.DistanceTo(_dispatchPickupStoppedPosition)
+                    <= DispatchScenePickupStopMovementTolerance)
+                return true;
+
+            if (_dispatchPickupStoppedSince == DateTime.MinValue
+                || _transport.Position.DistanceTo(_dispatchPickupStoppedPosition)
+                    > DispatchScenePickupStopMovementTolerance)
+            {
+                _dispatchPickupStoppedSince = now;
+                _dispatchPickupStoppedPosition = _transport.Position;
+                _nextDispatchPickupStopCheckAt = DateTime.MinValue;
+                return false;
+            }
+            if (now < _dispatchPickupStoppedSince.AddMilliseconds(
+                    DispatchScenePickupStopSettleMilliseconds)
+                || now < _nextDispatchPickupStopCheckAt)
+                return false;
+
+            _nextDispatchPickupStopCheckAt = now.AddMilliseconds(500);
+            string failure;
+            if (!TryValidateDispatchPickupStopAccess(target, out failure))
+            {
+                if (now >= _nextDispatchPickupStopLogAt)
+                {
+                    _nextDispatchPickupStopLogAt = now.AddSeconds(5);
+                    LogRuntime("POLICE_CONVOY_DISPATCH_PICKUP_STOP_NOT_READY",
+                        "Vehicle=" + _transport.Handle
+                        + "; Target=" + target
+                        + "; Distance=" + distance.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Reason=" + failure
+                        + "; CustodyRetained=true");
+                }
+                return false;
+            }
+
+            _dispatchPickupStopAccessConfirmed = true;
+            _dispatchPickupStopAccessTarget = target;
+            LogRuntime("POLICE_CONVOY_DISPATCH_PICKUP_STOP_CONFIRMED",
+                "Vehicle=" + _transport.Handle
+                + "; Driver=" + (_transportDriver == null ? 0 : _transportDriver.Handle)
+                + "; Target=" + target
+                + "; Position=" + _transport.Position
+                + "; Distance=" + distance.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; Speed=" + Math.Abs(_transport.Speed).ToString("0.00", CultureInfo.InvariantCulture)
+                + "; StopStableMs=" + (now - _dispatchPickupStoppedSince).TotalMilliseconds
+                    .ToString("0", CultureInfo.InvariantCulture)
+                + "; AllWheels=true; DoorAccessAndGroundConfirmed=true"
+                + "; CustodyRetained=true");
+            return true;
+        }
+
+        private bool TryValidateDispatchPickupStopAccess(Vector3 target, out string failure)
+        {
+            failure = "PickupAccessUnconfirmed";
+            try
+            {
+                if (!HasUsableTransport()
+                    || !Function.Call<bool>(Hash.IS_VEHICLE_ON_ALL_WHEELS, _transport))
+                {
+                    failure = "TransportOrAllWheelSupportUnconfirmed";
+                    return false;
+                }
+
+                List<Ped> allPrisoners = ValidPrisoners().ToList();
+                List<Ped> pickupPrisoners = CurrentDispatchPickupPrisoners(allPrisoners);
+                if (pickupPrisoners.Count == 0)
+                {
+                    failure = "NoCurrentPickupSuspects";
+                    return false;
+                }
+
+                List<Vector3> accessPoints = pickupPrisoners.Select(prisoner =>
+                    TransportDoorPosition(PrisonerSeat(prisoner, allPrisoners))).ToList();
+                accessPoints.Add(TransportDoorPosition(VehicleSeat.LeftRear));
+                accessPoints.Add(TransportDoorPosition(VehicleSeat.RightRear));
+                if (accessPoints.Any(point => point == Vector3.Zero))
+                {
+                    failure = "PassengerDoorAccessUnavailable";
+                    return false;
+                }
+
+                List<Vehicle> nearbyVehicles = World.GetNearbyVehicles(_transport.Position, 10f)
+                    .Where(vehicle => vehicle != null && vehicle.Exists()).ToList();
+                List<Ped> nearbyPeds = World.GetNearbyPeds(_transport.Position, 10f)
+                    .Where(ped => ped != null && ped.Exists()).ToList();
+                foreach (Vector3 access in accessPoints)
+                {
+                    float groundZ;
+                    Vector3 normal;
+                    if (!World.GetGroundHeightAndNormal(
+                            access + new Vector3(0f, 0f, 3f), out groundZ, out normal)
+                        || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                        || float.IsNaN(normal.Z) || normal.Z < 0.80f
+                        || Math.Abs(access.Z - groundZ) > 2f)
+                    {
+                        failure = "PassengerDoorGroundSupportUnconfirmed";
+                        return false;
+                    }
+
+                    Vector3 groundedAccess = new Vector3(access.X, access.Y, groundZ);
+                    if (IsStationAccessOccupied(groundedAccess, nearbyVehicles, nearbyPeds))
+                    {
+                        failure = "PassengerDoorApproachOccupied";
+                        return false;
+                    }
+                    if (!TryConfirmStationDoorSwing(
+                            _transport.Position, groundedAccess, groundZ))
+                    {
+                        failure = "PassengerDoorSwingOrExitPathBlocked";
+                        return false;
+                    }
+                }
+
+                if (_transport.Position.DistanceTo(target) > DispatchScenePickupWalkInRadius)
+                {
+                    failure = "VanOutsideBoundedSceneWalkInRadius";
+                    return false;
+                }
+                failure = string.Empty;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failure = "PickupAccessCheckFailed:" + ex.GetType().Name;
+                return false;
+            }
         }
 
         private string BeginTransportLoading(DateTime now, bool prisonTrip)
@@ -4212,6 +5249,7 @@ namespace LSImmersiveLife
             _dispatchSceneVehicleAccessTarget = next.RoadTarget;
             _dispatchSceneWalkInDistanceMeters = 0f;
             _transportRouteRecoveryCount = 0;
+            ResetDispatchPickupStopConfirmation();
             _lastTransportProgressPosition = _transport.Position;
             _lastTransportProgressAt = now;
             _lastDispatchPickupArrivalCheckAt = DateTime.MinValue;
@@ -4525,6 +5563,234 @@ namespace LSImmersiveLife
             _dispatchPickupDriverConflictLogged = false;
         }
 
+        private string RequestOfficerLoadsForReadyPrisoners(Ped player, DateTime now)
+        {
+            if (!_dispatchCustodyOperation || !IsDispatchCustodyOperation
+                || _phase != CustodyPhase.SceneLoading
+                || player == null || !player.Exists() || player.IsDead
+                || player.IsInVehicle() || !HasTransportVehicle()
+                || Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed
+                || player.Position.DistanceTo(_transport.Position)
+                    > PlayerCustodyLoadInteractionRadius
+                || IsRemoteDispatchGroupPickup())
+                return string.Empty;
+
+            List<Ped> prisoners = ValidPrisoners().ToList();
+            List<Ped> ready = prisoners.Where(prisoner =>
+            {
+                if (prisoner == null || !prisoner.Exists() || prisoner.IsDead
+                    || IsInTransport(prisoner))
+                    return false;
+                VehicleSeat seat = PrisonerSeat(prisoner, prisoners);
+                if (seat == VehicleSeat.None || seat == VehicleSeat.Any
+                    || prisoner.Position.DistanceTo(TransportDoorPosition(seat))
+                        > PlayerCustodyVehicleRadius + 0.75f)
+                    return false;
+                bool cuffed;
+                return TryGetPhysicalCuffState(prisoner, out cuffed) && cuffed;
+            }).ToList();
+            if (ready.Count == 0)
+                return string.Empty;
+
+            // A Player using their own Utility must be able to take the same
+            // E interaction that starts the grounded escort. Do not consume
+            // that input as an officer batch request when a physically cuffed
+            // suspect is already within the Player's direct custody radius.
+            // An assigned officer remains the fallback when the Player is not
+            // close enough to take the suspect in person.
+            if (_playerOwnedTransport
+                && ready.Any(prisoner => prisoner.Position.DistanceTo(player.Position)
+                    <= PlayerCustodyInteractionRadius))
+                return string.Empty;
+
+            int assignmentsStarted = 0;
+            int assignmentsRetained = 0;
+            foreach (Ped prisoner in ready)
+            {
+                Ped assigned;
+                bool playerOwnsSuspect = _playerEscortPrisoners.Contains(prisoner.Handle)
+                    || (_prisonerEscortOfficers.TryGetValue(prisoner.Handle, out assigned)
+                        && IsPlayerEscort(assigned));
+                if (playerOwnsSuspect)
+                {
+                    // E persists this ready Player-owned load with the rest of
+                    // the batch; physical door and contact steps still apply.
+                    _playerBatchLoadRequestedHandles.Add(prisoner.Handle);
+                    assignmentsRetained++;
+                    continue;
+                }
+                if (_prisonerEscortOfficers.TryGetValue(prisoner.Handle, out assigned)
+                    && assigned != null && assigned.Exists() && !assigned.IsDead
+                    && !IsPlayerEscort(assigned))
+                {
+                    // The E request observes the current officer assignment and
+                    // lets it continue. It does not clear the officer task or
+                    // transfer ownership to the Player.
+                    _officerLoadRequestedHandles.Add(prisoner.Handle);
+                    assignmentsRetained++;
+                    continue;
+                }
+
+                Ped officer = _sceneEscortOfficers
+                    .Where(candidate => candidate != null && candidate.Exists()
+                        && !candidate.IsDead && !IsOfficerInTransport(candidate)
+                        && !IsLoadingEscortBusy(candidate, prisoner.Handle))
+                    .OrderBy(candidate => candidate.Position.DistanceTo(prisoner.Position))
+                    .FirstOrDefault();
+                if (officer == null)
+                    officer = ResolveBackupCustodyEscort(prisoner, true);
+                if (officer == null)
+                    officer = FindAvailableDispatchStandbyOfficer(prisoner);
+                if (officer == null)
+                {
+                    // Keep the batch intent with this suspect even when every
+                    // eligible officer is occupied; ProcessLoading will retain
+                    // custody and resume the queue when an assignment clears.
+                    _officerLoadRequestedHandles.Add(prisoner.Handle);
+                    assignmentsRetained++;
+                    continue;
+                }
+
+                if (assigned != null && assigned.Exists())
+                {
+                    DetachPrisonerFromEscort(prisoner, assigned,
+                        "PlayerRequestedBatchLoadOfficerTakeoverSameSuspect");
+                    if (!IsPlayerEscort(assigned))
+                    {
+                        try { assigned.Task.ClearAll(); } catch { }
+                        _lastEscortOfficerTaskAt.Remove(assigned.Handle);
+                    }
+                    _playerDoorInteractions.Remove(prisoner.Handle);
+                    _playerEntryInteractions.Remove(prisoner.Handle);
+                }
+
+                _prisonerEscortOfficers[prisoner.Handle] = officer;
+                _prisonerEscortStartedAt[prisoner.Handle] = now;
+                _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
+                _officerLoadRequestedHandles.Add(prisoner.Handle);
+                SetPrisonerLoadingStage(prisoner, officer,
+                    PrisonerLoadingStage.EscortApproach, now,
+                    "PlayerRequestedAllReadyLoads");
+                MaintainPrisonerCustodyState(prisoner);
+                assignmentsStarted++;
+            }
+
+            if (assignmentsStarted == 0 && assignmentsRetained == 0)
+                return string.Empty;
+
+            LogRuntime("POLICE_CONVOY_PLAYER_REQUESTED_READY_LOADS",
+                "Operation=" + _operationId + "; ReadySuspects="
+                + string.Join(",", ready.Select(prisoner => prisoner.Handle.ToString()).ToArray())
+                + "; NewOfficerAssignments=" + assignmentsStarted
+                + "; ExistingAssignmentsPreserved=" + assignmentsRetained
+                + "; PlayerBatchLoadRequests="
+                + string.Join(",", _playerBatchLoadRequestedHandles
+                    .Where(handle => ready.Any(prisoner => prisoner.Handle == handle))
+                    .Select(handle => handle.ToString()).ToArray())
+                + "; PlayerTookOwnership=false; PhysicalDoorAndSeatProofRequired=true");
+            return assignmentsRetained > 0
+                ? "Loading was requested for the secured suspects at the van. Officers already working keep their assignments and continue."
+                : "The available officer is taking the secured suspect at the rear door. Other custody work remains assigned and continues.";
+        }
+
+        private void MaintainDispatchSceneUnloads(DateTime now, IList<Ped> pickupPrisoners)
+        {
+            if (_phase != CustodyPhase.SceneLoading || pickupPrisoners == null
+                || _transport == null || !_transport.Exists())
+                return;
+
+            foreach (int handle in _dispatchSceneUnloadRequestedHandles.ToArray())
+            {
+                Ped prisoner = pickupPrisoners.FirstOrDefault(value => value != null
+                    && value.Exists() && !value.IsDead && value.Handle == handle);
+                if (prisoner == null)
+                {
+                    _dispatchSceneUnloadRequestedHandles.Remove(handle);
+                    continue;
+                }
+
+                List<Ped> prisoners = ValidPrisoners().ToList();
+                VehicleSeat seat = PrisonerSeat(prisoner, prisoners);
+                if (seat == VehicleSeat.None || seat == VehicleSeat.Any)
+                    continue;
+                int doorIndex = PrisonerDoorIndex(seat);
+                Vector3 holdingPosition = TransportDoorPosition(seat);
+                IList<Ped> sceneUnloadOfficers = _sceneEscortOfficers
+                    .Concat(_dispatchGroupBackupEscorts.Values)
+                    .Concat(GetDispatchStandbyOfficers().Where(candidate =>
+                        candidate.Position.DistanceTo(_transport.Position)
+                            <= MaximumDispatchCommandArrestApproachDistance))
+                    .Where(candidate => candidate != null && candidate.Exists()
+                        && !candidate.IsDead)
+                    .GroupBy(candidate => candidate.Handle)
+                    .Select(group => group.First()).ToList();
+                Ped existingUnloadOfficer;
+                bool hasUnloadOfficer = _prisonerUnloadingOfficers.TryGetValue(
+                    handle, out existingUnloadOfficer)
+                    && existingUnloadOfficer != null && existingUnloadOfficer.Exists()
+                    && !existingUnloadOfficer.IsDead;
+                if (!hasUnloadOfficer && !sceneUnloadOfficers.Any(candidate =>
+                    !IsUnloadingOfficerBusy(candidate, handle)))
+                {
+                    Ped backupOfficer = ResolveBackupCustodyEscort(prisoner, true);
+                    if (backupOfficer != null)
+                    {
+                        _prisonerUnloadingOfficers[handle] = backupOfficer;
+                        LogRuntime("POLICE_CONVOY_DISPATCH_SCENE_UNLOAD_BACKUP_ASSIGNED",
+                            "Operation=" + _operationId
+                            + "; Prisoner=" + handle
+                            + "; Officer=" + backupOfficer.Handle
+                            + "; PhysicalExitAndHandoffRequired=true");
+                    }
+                }
+
+                if (IsInTransport(prisoner))
+                {
+                    if (Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed
+                        || IsLoadingDoorBusyForOtherPrisoner(doorIndex, handle))
+                        continue;
+                    MaintainPrisonerUnloadingEscort(
+                        prisoner, sceneUnloadOfficers, holdingPosition,
+                        now, "DISPATCH_SCENE");
+                }
+
+                if (IsInTransport(prisoner)
+                    || !_prisonerUnloadingEscortStartedAt.ContainsKey(handle))
+                    continue;
+
+                Ped assignedOfficer;
+                bool hasAssignedOfficer = _prisonerUnloadingOfficers.TryGetValue(
+                    handle, out assignedOfficer);
+                bool officerAtHandoff = hasAssignedOfficer
+                    && assignedOfficer != null
+                    && assignedOfficer.Exists() && !assignedOfficer.IsDead
+                    && assignedOfficer.Position.DistanceTo(prisoner.Position) <= 3.2f;
+                if (!officerAtHandoff
+                    || prisoner.Position.DistanceTo(holdingPosition) > 3.5f)
+                {
+                    MaintainPrisonerUnloadingEscort(
+                        prisoner, sceneUnloadOfficers, holdingPosition,
+                        now, "DISPATCH_SCENE");
+                    continue;
+                }
+
+                _dispatchSceneUnloadRequestedHandles.Remove(handle);
+                _sceneUnloadedAwaitingReloadHandles.Add(handle);
+                QueueDispatchCommandDriverReturn(assignedOfficer, handle,
+                    "DispatchSceneUnloadPhysicallyConfirmed");
+                _prisonerUnloadingOfficers.Remove(handle);
+                _prisonerUnloadingEscortStartedAt.Remove(handle);
+                _prisonerUnloadingDoorsOpened.Remove(handle);
+                _prisonerDoorOpenTaskIssuedAt.Remove(handle);
+                MaintainPrisonerCustodyState(prisoner);
+                LogRuntime("POLICE_CONVOY_DISPATCH_SCENE_UNLOAD_CONFIRMED",
+                    "Operation=" + _operationId + "; Prisoner=" + handle
+                    + "; OfficerAtScene=true; VehicleExitConfirmed=true"
+                    + "; CuffsPreserved=true; DispatchCustodyRetained=true"
+                    + "; ReloadRequiresNewPlayerOrOfficerRequest=true");
+            }
+        }
+
         private string ProcessLoading(DateTime now, bool prisonTrip)
         {
             if (!HasTransportVehicle())
@@ -4556,6 +5822,8 @@ namespace LSImmersiveLife
                 }
                 return string.Empty;
             }
+            if (!remoteScatteredPickup)
+                MaintainDispatchSceneUnloads(now, pickupPrisoners);
             HashSet<int> activePrisonerHandles = new HashSet<int>(
                 prisoners.Select(prisoner => prisoner.Handle));
             foreach (int staleHandle in _prisonerLoadingTimeoutStartedAt.Keys
@@ -4568,8 +5836,15 @@ namespace LSImmersiveLife
                 _lastAssignedSeatCheckResult.Remove(staleHandle);
                 _lastPrisonerVehicleExitAt.Remove(staleHandle);
             }
+            foreach (int staleHandle in _playerBatchLoadRequestedHandles
+                .Where(handle => !activePrisonerHandles.Contains(handle)).ToArray())
+                _playerBatchLoadRequestedHandles.Remove(staleHandle);
             foreach (Ped prisoner in pickupPrisoners)
             {
+                if (_dispatchSceneUnloadRequestedHandles.Contains(prisoner.Handle)
+                    || _sceneUnloadedAwaitingReloadHandles.Contains(prisoner.Handle))
+                    continue;
+
                 if (_prisonerLoadedLogIssued.Contains(prisoner.Handle)
                     && IsInTransport(prisoner))
                 {
@@ -4593,6 +5868,8 @@ namespace LSImmersiveLife
                         prisoner.Handle, out completedEscort);
                     DetachPrisonerFromEscort(prisoner, completedEscort,
                         "PhysicalVehicleEntryConfirmed");
+                    QueueDispatchCommandDriverReturn(completedEscort,
+                        prisoner.Handle, "PhysicalPrisonerLoadConfirmed");
                     SetPrisonerLoadingStage(prisoner, completedEscort,
                         PrisonerLoadingStage.Loaded, now,
                         "PrisonerConfirmedInsideTransport");
@@ -4607,9 +5884,27 @@ namespace LSImmersiveLife
                             + "; Phase=" + _phase + "; PhysicalEntry=true"
                             + "; SeatOccupantConfirmed=true");
                     }
+                    if (_dispatchCustodyOperation && _playerOwnedTransport
+                        && _backup != null
+                        && _dispatchGroupBackupEscorts.ContainsKey(prisoner.Handle))
+                    {
+                        // The preferred Utility transfers Dispatch custody to
+                        // Convoy before the physical load. Once GTA confirms
+                        // the assigned rear seat, Backup can resume its normal
+                        // stand-down path without leaving its unit at the scene.
+                        _backup.CompleteDispatchCustodyEscortHandoff(prisoner);
+                        _dispatchGroupBackupEscorts.Remove(prisoner.Handle);
+                        LogRuntime("POLICE_CONVOY_UTILITY_BACKUP_ESCORT_RELEASED",
+                            "Operation=" + _operationId
+                            + "; Prisoner=" + prisoner.Handle
+                            + "; PhysicalSeatConfirmed=true"
+                            + "; BackupUnitMayStandDown=true");
+                    }
                     ClosePrisonerDoor(prisoner);
                     _playerEscortPrisoners.Remove(prisoner.Handle);
                     _playerEscortFallbacks.Remove(prisoner.Handle);
+                    _playerBatchLoadRequestedHandles.Remove(prisoner.Handle);
+                    _officerLoadRequestedHandles.Remove(prisoner.Handle);
                     _playerHandcuffAnimationUntil.Remove(prisoner.Handle);
                     _playerLoadingContactStartedAt.Remove(prisoner.Handle);
                     _playerEscortLostAt.Remove(prisoner.Handle);
@@ -4662,16 +5957,6 @@ namespace LSImmersiveLife
                     continue;
                 }
 
-                // The transport has one usable rear-door loading point. Let
-                // one officer finish the grounded escort and entry at a time;
-                // queue the next prisoner without spending that prisoner's
-                // physical-loading timeout while the escort is occupied.
-                if (HasOtherPrisonerLoadingEscort(prisoner.Handle))
-                {
-                    _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
-                    continue;
-                }
-
                 // Convoy normally has a released transport officer to own this
                 // physical handoff. Never fall through to a normal autonomous
                 // EnterVehicle task: the escort must own the custody handoff.
@@ -4681,7 +5966,8 @@ namespace LSImmersiveLife
                     if (!_dispatchGroupBackupEscorts.TryGetValue(
                             prisoner.Handle, out loadingEscort)
                         || loadingEscort == null || !loadingEscort.Exists()
-                        || loadingEscort.IsDead || IsOfficerInTransport(loadingEscort))
+                        || loadingEscort.IsDead || IsOfficerInTransport(loadingEscort)
+                        || IsLoadingEscortBusy(loadingEscort, prisoner.Handle))
                     {
                         _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
                         if (_dispatchGroupBackupLoaderWaitLogged.Add(prisoner.Handle))
@@ -4703,7 +5989,9 @@ namespace LSImmersiveLife
                 }
                 else
                     loadingEscort = FindLoadingEscort(prisoner);
-                if (loadingEscort == null || IsOfficerInTransport(loadingEscort))
+                if (loadingEscort == null
+                    || (IsOfficerInTransport(loadingEscort)
+                        && !IsDispatchTransportDriver(loadingEscort)))
                 {
                     if (remoteScatteredPickup)
                     {
@@ -4735,13 +6023,41 @@ namespace LSImmersiveLife
                 bool escortIsWorking = MaintainPrisonerLoadingEscort(prisoner, seat, now);
                 if (IsPrisonerInAssignedTransportSeat(prisoner, seat))
                 {
+                    _prisonerDoorContentionWaiters.Remove(prisoner.Handle);
                     _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
                     continue;
                 }
                 if (IsInTransport(prisoner))
                 {
+                    _prisonerDoorContentionWaiters.Remove(prisoner.Handle);
                     _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
                     CommandLeaveTransport(prisoner, "WrongAssignedSeat:" + seat);
+                    continue;
+                }
+                if (_prisonerDoorContentionWaiters.Contains(prisoner.Handle))
+                {
+                    // A shared physical doorway can briefly serialize entry,
+                    // but it does not suspend the other escort pairs. Do not
+                    // charge a suspect's loading timeout while its assigned
+                    // pair is waiting for that one doorway to clear.
+                    _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
+                    continue;
+                }
+                Ped retainedEscort;
+                bool retainedEscortStillAssigned =
+                    _prisonerEscortOfficers.TryGetValue(
+                        prisoner.Handle, out retainedEscort)
+                    && retainedEscort != null && retainedEscort.Exists()
+                    && !retainedEscort.IsDead
+                    && !IsOfficerInTransport(retainedEscort);
+                if (!retainedEscortStillAssigned
+                    && HasOtherPrisonerLoadingEscort(prisoner.Handle))
+                {
+                    // The Player may release an abandoned prisoner while all
+                    // transport officers remain committed to other suspects.
+                    // Keep this suspect in Convoy ownership until an officer
+                    // becomes free instead of failing the whole group timeout.
+                    _prisonerLoadingTimeoutStartedAt.Remove(prisoner.Handle);
                     continue;
                 }
                 if (HasPrisonerLoadingTimedOut(prisoner, now))
@@ -4831,6 +6147,7 @@ namespace LSImmersiveLife
                 || IsInTransport(prisoner)
                 || _playerEscortPrisoners.Contains(prisoner.Handle)
                 || _playerEscortFallbacks.Contains(prisoner.Handle)
+                || _officerLoadRequestedHandles.Contains(prisoner.Handle)
                 || now >= _phaseStartedAt.AddSeconds(PlayerCustodyOfferSeconds))
                 return false;
 
@@ -5027,6 +6344,16 @@ namespace LSImmersiveLife
                 .Where(ped => ped != null && ped.Exists() && !ped.IsDead))
             {
                 if (!IsOfficerInTransport(officer))
+                    continue;
+
+                // Dispatch's driver remains in the stopped van unless an
+                // explicit arrest, escort, load, or unload assignment needs
+                // them on foot. In particular, do not undo a completed
+                // temporary escort by sending the returned driver back out
+                // while another suspect's independent loading continues.
+                if (_dispatchCustodyOperation
+                    && IsDispatchTransportDriver(officer)
+                    && !IsDispatchCommandOfficerOnActiveWork(officer.Handle))
                     continue;
 
                 officersStillInside = true;
@@ -6857,6 +8184,49 @@ namespace LSImmersiveLife
             return false;
         }
 
+        private bool IsLoadingDoorBusyForOtherPrisoner(
+            int doorIndex,
+            int currentPrisonerHandle)
+        {
+            foreach (Ped other in _prisoners)
+            {
+                if (other == null || !other.Exists() || other.IsDead
+                    || other.Handle == currentPrisonerHandle)
+                    continue;
+
+                VehicleSeat otherSeat = PrisonerSeat(other, _prisoners);
+                if (otherSeat == VehicleSeat.None || otherSeat == VehicleSeat.Any
+                    || PrisonerDoorIndex(otherSeat) != doorIndex)
+                    continue;
+
+                if (_prisonerUnloadingDoorsOpened.Contains(other.Handle)
+                    && !IsPrisonerDoorPhysicallyClosed(doorIndex))
+                    return true;
+
+                if (IsPrisonerInAssignedTransportSeat(other, otherSeat))
+                {
+                    if (_prisonerDoorCloseTasksIssued.Contains(other.Handle)
+                        && !IsPrisonerDoorPhysicallyClosed(doorIndex))
+                        return true;
+                    continue;
+                }
+
+                PrisonerLoadingStage otherStage;
+                bool atOrUsingDoor = _prisonerLoadingStages.TryGetValue(
+                        other.Handle, out otherStage)
+                    && (otherStage == PrisonerLoadingStage.DoorOpened
+                        || otherStage == PrisonerLoadingStage.Loading);
+                if (atOrUsingDoor
+                    || _prisonerDoorOpenTaskIssuedAt.ContainsKey(other.Handle)
+                    || _prisonerEntryTasksIssued.Contains(other.Handle)
+                    || _playerDoorInteractions.Contains(other.Handle)
+                    || _playerEntryInteractions.Contains(other.Handle))
+                    return true;
+            }
+
+            return false;
+        }
+
         private bool PlayerDrivesTransport()
         {
             Ped player = Game.Player.Character;
@@ -6933,6 +8303,14 @@ namespace LSImmersiveLife
             return officer != null && officer.Exists() && _transport != null && _transport.Exists()
                 && officer.CurrentVehicle != null && officer.CurrentVehicle.Exists()
                 && officer.CurrentVehicle.Handle == _transport.Handle;
+        }
+
+        private bool IsDispatchTransportDriver(Ped officer)
+        {
+            return _dispatchCustodyOperation && !_isRequestedConvoyActivity
+                && officer != null && officer.Exists()
+                && _transportDriver != null && _transportDriver.Exists()
+                && officer.Handle == _transportDriver.Handle;
         }
 
         private void MaintainPrisonerCustodyState(Ped prisoner)
@@ -7346,6 +8724,7 @@ namespace LSImmersiveLife
             _playerEscortLostAt.Remove(prisonerHandle);
             _playerDoorInteractions.Remove(prisonerHandle);
             _playerEntryInteractions.Remove(prisonerHandle);
+            _playerBatchLoadRequestedHandles.Remove(prisonerHandle);
             _lastPrisonerEscortPosition.Remove(prisonerHandle);
             _lastPrisonerEscortProgressAt.Remove(prisonerHandle);
             _lastPrisonerEscortRecoveryAt.Remove(prisonerHandle);
@@ -7678,8 +9057,40 @@ namespace LSImmersiveLife
                 return false;
 
             Ped escort = FindLoadingEscort(prisoner);
-            if (escort == null || IsOfficerInTransport(escort))
+            if (escort == null)
                 return false;
+            if (IsOfficerInTransport(escort))
+            {
+                if (!IsDispatchTransportDriver(escort)
+                    || Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+                    return true;
+
+                DateTime lastDriverExitRequestAt;
+                if (!_lastEscortOfficerTaskAt.TryGetValue(
+                        escort.Handle, out lastDriverExitRequestAt)
+                    || now >= lastDriverExitRequestAt.AddMilliseconds(
+                        TransportOfficerTaskRefreshMilliseconds))
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_LEAVE_VEHICLE,
+                            escort, _transport, 0);
+                        _lastEscortOfficerTaskAt[escort.Handle] = now;
+                        LogRuntime("POLICE_CONVOY_DISPATCH_LOADING_DRIVER_EXIT_REQUESTED",
+                            "Operation=" + _operationId
+                            + "; Prisoner=" + prisoner.Handle
+                            + "; Driver=" + escort.Handle
+                            + "; Vehicle=" + _transport.Handle
+                            + "; TransportStopped=true; PhysicalExitRequired=true");
+                    }
+                    catch (Exception ex)
+                    {
+                        _lastEscortOfficerTaskAt[escort.Handle] = now;
+                        LogException("POLICE_CONVOY_DISPATCH_LOADING_DRIVER_EXIT_FAILED", ex);
+                    }
+                }
+                return true;
+            }
 
             int prisonerHandle = prisoner.Handle;
             bool playerEscort = IsPlayerEscort(escort);
@@ -7688,10 +9099,14 @@ namespace LSImmersiveLife
             if (playerEscort && ReleaseAbandonedPlayerEscort(prisoner, escort, now))
             {
                 escort = FindLoadingEscort(prisoner);
-                if (escort == null || IsOfficerInTransport(escort))
+                if (escort == null || (IsOfficerInTransport(escort)
+                    && !IsDispatchTransportDriver(escort)))
                     return false;
                 playerEscort = IsPlayerEscort(escort);
             }
+            if (!playerEscort && IsOfficerInTransport(escort))
+                return IsDispatchTransportDriver(escort)
+                    && Math.Abs(_transport.Speed) <= DispatchReleaseStoppedSpeed;
             if (playerEscort && MaintainPlayerHandcuffInteraction(prisoner, escort, now))
                 return true;
             if (playerEscort && MaintainPlayerLoadingContact(prisoner, escort, now))
@@ -7877,21 +9292,128 @@ namespace LSImmersiveLife
                 return true;
             }
 
+            bool currentOwnsDoorOperation = _prisonerVehicleDoorsOpened.Contains(
+                    prisonerHandle)
+                || _prisonerEntryTasksIssued.Contains(prisonerHandle)
+                || _prisonerDoorOpenTaskIssuedAt.ContainsKey(prisonerHandle)
+                || _playerDoorInteractions.Contains(prisonerHandle)
+                || stage == PrisonerLoadingStage.DoorOpened
+                || stage == PrisonerLoadingStage.Loading;
+            int prisonerDoorIndex = PrisonerDoorIndex(seat);
+
+            // GTA can close a rear door after its first physical-open
+            // confirmation, including between the Player's open-door and
+            // load inputs. The cached opened flag must not treat a closed
+            // doorway as ready. Reset the stale confirmation and let the
+            // existing owner reopen it; a Player's pending load request is
+            // retained when entry has already been requested.
+            if (_prisonerVehicleDoorsOpened.Contains(prisonerHandle)
+                && !IsPrisonerDoorPhysicallyOpen(prisonerDoorIndex))
+            {
+                _prisonerVehicleDoorsOpened.Remove(prisonerHandle);
+                _prisonerDoorOpenTaskIssuedAt.Remove(prisonerHandle);
+                _dispatchSceneDoorAnimationFallbackIssued.Remove(prisonerHandle);
+                if (playerEscort)
+                {
+                    _playerDoorInteractions.Remove(prisonerHandle);
+                    if (_playerEntryInteractions.Contains(prisonerHandle)
+                        || _playerBatchLoadRequestedHandles.Contains(prisonerHandle))
+                    {
+                        // The Player's second E already requested physical
+                        // entry. Reuse it to reopen, with no new input or seat
+                        // shortcut.
+                        _playerBatchLoadRequestedHandles.Add(prisonerHandle);
+                    }
+                }
+                LogRuntime("POLICE_CONVOY_PRISONER_DOOR_REOPEN_REQUIRED",
+                    "Prisoner=" + prisonerHandle
+                    + "; Vehicle=" + _transport.Handle
+                    + "; Door=" + prisonerDoorIndex
+                    + "; Stage=" + stage
+                    + "; Owner=" + LoadingEscortOwner(prisoner, escort)
+                    + "; DoorPreviouslyConfirmedOpen=true"
+                    + "; PhysicalDoorOpenNow=false"
+                    + "; PlayerEntryRequested="
+                    + _playerEntryInteractions.Contains(prisonerHandle)
+                    + "; EntryTaskRetained="
+                    + _prisonerEntryTasksIssued.Contains(prisonerHandle)
+                    + "; PhysicalReopenAndAngleReconfirmationRequired=true");
+            }
+
+            if (!currentOwnsDoorOperation
+                && IsLoadingDoorBusyForOtherPrisoner(
+                    prisonerDoorIndex, prisonerHandle))
+            {
+                if (_prisonerDoorContentionWaiters.Add(prisonerHandle))
+                    LogRuntime("POLICE_CONVOY_SHARED_LOADING_DOOR_WAIT",
+                        "Prisoner=" + prisonerHandle + "; Door=" + prisonerDoorIndex
+                        + "; Owner=" + LoadingEscortOwner(prisoner, escort)
+                        + "; PhysicalDoorConflict=true"
+                        + "; EscortMovementRetained=true; CustodyAssignmentRetained=true");
+                return true;
+            }
+            if (_prisonerDoorContentionWaiters.Remove(prisonerHandle))
+                LogRuntime("POLICE_CONVOY_SHARED_LOADING_DOOR_RESUMED",
+                    "Prisoner=" + prisonerHandle + "; Door=" + prisonerDoorIndex
+                    + "; Owner=" + LoadingEscortOwner(prisoner, escort)
+                    + "; CustodyAssignmentRetained=true");
+
             if (!_prisonerVehicleDoorsOpened.Contains(prisonerHandle))
             {
                 // A player-owned escort must explicitly open the rear door.
                 // The transport officer opens it automatically after the
                 // officer and prisoner reach the correct side.
+                if (playerEscort
+                    && _playerBatchLoadRequestedHandles.Contains(prisonerHandle)
+                    && !_playerDoorInteractions.Contains(prisonerHandle))
+                {
+                    if (escort.IsInVehicle()
+                        || escort.Position.DistanceTo(entry) > PlayerCustodyVehicleRadius
+                        || prisoner.Position.DistanceTo(entry) > PlayerCustodyVehicleRadius)
+                        return true;
+
+                    bool batchPrisonerCuffed;
+                    if (!TryGetPhysicalCuffState(prisoner, out batchPrisonerCuffed)
+                        || !batchPrisonerCuffed)
+                        return true;
+
+                    _playerDoorInteractions.Add(prisonerHandle);
+                    if (!IsPrisonerDoorPhysicallyOpen(prisonerDoorIndex))
+                    {
+                        try
+                        {
+                            Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                                escort, prisoner, 800);
+                            Function.Call(Hash.TASK_OPEN_VEHICLE_DOOR,
+                                escort, _transport, 4000, prisonerDoorIndex, 1.0f);
+                            _prisonerDoorOpenTaskIssuedAt[prisonerHandle] = now;
+                            LogRuntime("POLICE_CONVOY_PLAYER_BATCH_DOOR_TASK_ISSUED",
+                                "Operation=" + _operationId
+                                + "; Prisoner=" + prisonerHandle
+                                + "; Player=" + escort.Handle
+                                + "; Vehicle=" + _transport.Handle
+                                + "; Door=" + prisonerDoorIndex
+                                + "; RequestRetained=true"
+                                + "; PhysicalOpenConfirmationRequired=true");
+                        }
+                        catch (Exception ex)
+                        {
+                            _playerDoorInteractions.Remove(prisonerHandle);
+                            LogException("POLICE_CONVOY_PLAYER_BATCH_DOOR_TASK_FAILED", ex);
+                            return false;
+                        }
+                    }
+                }
                 if (playerEscort && !_playerDoorInteractions.Contains(prisonerHandle))
                     return true;
-                int doorIndex = PrisonerDoorIndex(seat);
+                int doorIndex = prisonerDoorIndex;
 
                 DateTime doorTaskIssuedAt;
                 bool doorTaskWasIssued = _prisonerDoorOpenTaskIssuedAt.TryGetValue(
                     prisonerHandle, out doorTaskIssuedAt);
                 bool doorOpenConfirmed = IsPrisonerDoorPhysicallyOpen(doorIndex)
                     && (playerEscort ? _playerDoorInteractions.Contains(prisonerHandle)
-                        : doorTaskWasIssued);
+                        : doorTaskWasIssued || dispatchCustody);
                 if (doorOpenConfirmed)
                 {
                     _prisonerVehicleDoorsOpened.Add(prisonerHandle);
@@ -7988,6 +9510,50 @@ namespace LSImmersiveLife
                 return true;
             }
 
+            if (playerEscort
+                && _playerBatchLoadRequestedHandles.Contains(prisonerHandle)
+                && !_playerEntryInteractions.Contains(prisonerHandle)
+                && !_playerLoadingContactStartedAt.ContainsKey(prisonerHandle))
+            {
+                Ped player = Game.Player.Character;
+                if (player == null || !player.Exists() || player.IsDead
+                    || player.IsInVehicle()
+                    || player.Position.DistanceTo(entry) > PlayerCustodyVehicleRadius
+                    || prisoner.Position.DistanceTo(entry) > PlayerCustodyVehicleRadius)
+                    return true;
+
+                bool batchPrisonerCuffed;
+                if (!TryGetPhysicalCuffState(prisoner, out batchPrisonerCuffed)
+                    || !batchPrisonerCuffed)
+                    return true;
+
+                _playerEntryInteractions.Add(prisonerHandle);
+                _playerLoadingContactStartedAt[prisonerHandle] = now;
+                try
+                {
+                    Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                        player, prisoner, 800);
+                    Function.Call(Hash.TASK_TURN_PED_TO_FACE_ENTITY,
+                        prisoner, player, 800);
+                    MaintainPrisonerCustodyState(prisoner);
+                    LogRuntime("POLICE_CONVOY_PLAYER_BATCH_LOAD_CONTACT_STARTED",
+                        "Operation=" + _operationId
+                        + "; Prisoner=" + prisonerHandle
+                        + "; Player=" + player.Handle
+                        + "; Vehicle=" + _transport.Handle
+                        + "; DoorPhysicalOpenConfirmed=true"
+                        + "; PhysicalEntryAndSeatConfirmationRequired=true");
+                }
+                catch (Exception ex)
+                {
+                    _playerEntryInteractions.Remove(prisonerHandle);
+                    _playerLoadingContactStartedAt.Remove(prisonerHandle);
+                    LogException("POLICE_CONVOY_PLAYER_BATCH_LOAD_CONTACT_FAILED", ex);
+                    return false;
+                }
+                return true;
+            }
+
             DateTime entryTaskStartedAt;
             bool entryTaskInProgress = _prisonerEntryTasksIssued.Contains(prisonerHandle)
                 && _lastPrisonerVehicleEntryAt.TryGetValue(
@@ -8072,6 +9638,37 @@ namespace LSImmersiveLife
                 return false;
 
             int prisonerHandle = prisoner.Handle;
+            if (IsOfficerInTransport(officer))
+            {
+                if (Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+                    return true;
+                DateTime lastExitRequestAt;
+                if (!_lastEscortOfficerTaskAt.TryGetValue(
+                        officer.Handle, out lastExitRequestAt)
+                    || now >= lastExitRequestAt.AddMilliseconds(
+                        DispatchCommandDriverReturnRefreshMilliseconds))
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_LEAVE_VEHICLE,
+                            officer, _transport, 0);
+                        _lastEscortOfficerTaskAt[officer.Handle] = now;
+                        LogRuntime("POLICE_CONVOY_OFFICER_UNLOAD_EXIT_VEHICLE_REQUESTED",
+                            "Operation=" + _operationId
+                            + "; Prisoner=" + prisonerHandle
+                            + "; Officer=" + officer.Handle
+                            + "; Vehicle=" + _transport.Handle
+                            + "; TransportStopped=true; PhysicalExitRequired=true");
+                    }
+                    catch (Exception ex)
+                    {
+                        _lastEscortOfficerTaskAt[officer.Handle] = now;
+                        LogException("POLICE_CONVOY_OFFICER_UNLOAD_EXIT_VEHICLE_FAILED", ex);
+                    }
+                }
+                return true;
+            }
+
             DateTime escortStartedAt;
             if (!_prisonerUnloadingEscortStartedAt.TryGetValue(prisonerHandle, out escortStartedAt))
             {
@@ -8145,12 +9742,17 @@ namespace LSImmersiveLife
 
                 _lastPrisonerVehicleExitAt.Remove(prisonerHandle);
 
-                if (_prisonerUnloadingDoorsOpened.Remove(prisonerHandle))
+                if (_prisonerUnloadingDoorsOpened.Contains(prisonerHandle))
                 {
+                    int doorIndex = PrisonerDoorIndex(PrisonerSeat(
+                        prisoner, ValidPrisoners().ToList()));
+                    if (IsLoadingDoorBusyForOtherPrisoner(
+                        doorIndex, prisonerHandle))
+                        return true;
+
+                    _prisonerUnloadingDoorsOpened.Remove(prisonerHandle);
                     try
                     {
-                        int doorIndex = PrisonerDoorIndex(PrisonerSeat(
-                            prisoner, ValidPrisoners().ToList()));
                         Function.Call(Hash.SET_VEHICLE_DOOR_SHUT,
                             _transport, doorIndex, false);
                         LogRuntime("POLICE_CONVOY_PRISONER_HANDOFF_DOOR_CLOSED",
@@ -8231,8 +9833,14 @@ namespace LSImmersiveLife
                 }
             }
             MaintainPrisonerCustodyState(prisoner);
-            if (prisoner.Position.DistanceTo(officer.Position) <= 3.0f)
+            if (prisoner.Position.DistanceTo(officer.Position) <= 3.0f
+                && !string.Equals(handoffStage, "DISPATCH_SCENE",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                QueueDispatchCommandDriverReturn(officer, prisonerHandle,
+                    "PhysicalReceivingHandoffConfirmed");
                 _prisonerUnloadingOfficers.Remove(prisonerHandle);
+            }
             return true;
         }
 
@@ -8244,8 +9852,10 @@ namespace LSImmersiveLife
             Ped assigned;
             if (_prisonerEscortOfficers.TryGetValue(prisoner.Handle, out assigned)
                 && assigned != null && assigned.Exists() && !assigned.IsDead
-                && !IsOfficerInTransport(assigned))
-                return assigned;
+                && (!IsOfficerInTransport(assigned)
+                    || IsDispatchTransportDriver(assigned)))
+                return IsLoadingEscortBusy(assigned, prisoner.Handle)
+                    ? null : assigned;
 
             assigned = _sceneEscortOfficers
                 .Where(officer => officer != null && officer.Exists() && !officer.IsDead
@@ -8257,9 +9867,454 @@ namespace LSImmersiveLife
                     && !IsLoadingEscortBusy(officer, prisoner.Handle))
                 .OrderBy(officer => officer.Position.DistanceTo(prisoner.Position))
                 .FirstOrDefault();
+            if (assigned == null)
+                assigned = ResolveBackupCustodyEscort(prisoner, true);
+            if (assigned == null)
+                assigned = FindAvailableDispatchStandbyOfficer(prisoner);
             if (assigned != null)
                 _prisonerEscortOfficers[prisoner.Handle] = assigned;
             return assigned;
+        }
+
+        private Ped ResolveBackupCustodyEscort(Ped prisoner, bool reserve)
+        {
+            if (!_dispatchCustodyOperation || !IsDispatchCustodyOperation
+                || prisoner == null || !prisoner.Exists() || prisoner.IsDead)
+                return null;
+
+            Ped officer;
+            if (_dispatchGroupBackupEscorts.TryGetValue(prisoner.Handle, out officer)
+                && officer != null && officer.Exists() && !officer.IsDead
+                && !IsOfficerInTransport(officer)
+                && !IsLoadingEscortBusy(officer, prisoner.Handle))
+                return officer;
+
+            if (_backup == null)
+                return null;
+            officer = reserve
+                ? _backup.DelegateDispatchCustodyEscortToConvoy(
+                    _dispatch, prisoner)
+                : _backup.FindAvailableDispatchCustodyEscortForConvoy(
+                    _dispatch, prisoner)
+                    ?? _backup.FindAssignedDispatchCustodyEscortForConvoy(prisoner);
+            if (officer == null || !officer.Exists() || officer.IsDead
+                || IsOfficerInTransport(officer)
+                || IsLoadingEscortBusy(officer, prisoner.Handle))
+                return null;
+
+            _dispatchGroupBackupEscorts[prisoner.Handle] = officer;
+            return officer;
+        }
+
+        private Ped FindAvailableDispatchCommandArrestOfficer(
+            Ped suspect,
+            out string candidateEvidence)
+        {
+            candidateEvidence = "CandidatePool=empty";
+            if (suspect == null || !suspect.Exists() || suspect.IsDead)
+                return null;
+
+            IEnumerable<Ped> candidates = _sceneEscortOfficers
+                .Concat(_dispatchGroupBackupEscorts.Values)
+                .Concat(new[] { _transportDriver })
+                .Concat(_stationHandoffOfficers)
+                .Concat(_prisonHandoffOfficers)
+                .Where(officer => officer != null && officer.Exists() && !officer.IsDead)
+                .GroupBy(officer => officer.Handle)
+                .Select(group => group.First());
+
+            List<Ped> eligible = new List<Ped>();
+            List<string> evidence = new List<string>();
+            foreach (Ped officer in candidates)
+            {
+                string rejection = null;
+                float distance = officer.Position.DistanceTo(suspect.Position);
+                if (_dispatchCommandArrestOfficers.Any(pair =>
+                    pair.Key != suspect.Handle && pair.Value != null
+                    && pair.Value.Exists() && pair.Value.Handle == officer.Handle))
+                    rejection = "ReservedForAnotherDispatchSuspect";
+                else if (_dispatchCommandDriverReturnHandles.Contains(officer.Handle))
+                    rejection = "DriverReturningToTransport";
+                else if (distance > MaximumDispatchCommandArrestApproachDistance)
+                    rejection = "TooFarFromSuspect";
+                else if (IsDispatchReceivingStandbyUnavailable(officer))
+                    rejection = "ReceivingStandbyOwnsActiveHandoff";
+                else if (IsLoadingEscortBusy(officer, suspect.Handle))
+                    rejection = "LoadingEscortAssignmentBusy";
+                else if (IsUnloadingOfficerBusy(officer, suspect.Handle))
+                    rejection = "UnloadingAssignmentBusy";
+                else if (officer.IsInVehicle())
+                {
+                    bool isStoppedTransportDriver = _transportDriver != null
+                        && _transportDriver.Exists()
+                        && _transportDriver.Handle == officer.Handle
+                        && _transport != null && _transport.Exists()
+                        && officer.CurrentVehicle != null
+                        && officer.CurrentVehicle.Exists()
+                        && officer.CurrentVehicle.Handle == _transport.Handle
+                        && Math.Abs(_transport.Speed) <= DispatchReleaseStoppedSpeed;
+                    if (!isStoppedTransportDriver)
+                        rejection = "InVehicleOutsideStoppedTransportDriverRole";
+                }
+
+                AddDispatchCommandCandidateEvidence(evidence,
+                    "Officer=" + officer.Handle
+                    + ";Role=" + DispatchCommandOfficerRole(officer)
+                    + (rejection == null ? ";Eligible=true" : ";Excluded=" + rejection));
+                if (rejection == null)
+                    eligible.Add(officer);
+            }
+
+            candidateEvidence = evidence.Count == 0
+                ? "CandidatePool=empty"
+                : string.Join("|", evidence);
+            return eligible
+                .OrderBy(officer => officer.Position.DistanceTo(suspect.Position))
+                .FirstOrDefault();
+        }
+
+        private static void AddDispatchCommandCandidateEvidence(
+            IList<string> evidence,
+            string value)
+        {
+            if (evidence != null && evidence.Count < 12)
+                evidence.Add(value);
+        }
+
+        private bool IsDispatchReceivingStandbyUnavailable(Ped officer)
+        {
+            if (officer == null || !officer.Exists())
+                return true;
+
+            bool stationStandby = _stationHandoffOfficers.Any(value => value != null
+                && value.Exists() && value.Handle == officer.Handle);
+            bool prisonStandby = _prisonHandoffOfficers.Any(value => value != null
+                && value.Exists() && value.Handle == officer.Handle);
+            if (!stationStandby && !prisonStandby)
+                return false;
+
+            // Standby officers are eligible only outside an active receiving
+            // handoff. Their station/prison intake duty is never borrowed while
+            // seated custody is waiting to be received.
+            bool receivingPhase = stationStandby
+                && (_phase == CustodyPhase.StationUnloading
+                    || _phase == CustodyPhase.HoldingAtStation)
+                || prisonStandby && _phase == CustodyPhase.PrisonHandoff;
+            return receivingPhase && ValidPrisoners().Any(IsInTransport);
+        }
+
+        private IEnumerable<Ped> GetDispatchStandbyOfficers()
+        {
+            return _stationHandoffOfficers.Concat(_prisonHandoffOfficers)
+                .Where(officer => officer != null && officer.Exists() && !officer.IsDead)
+                .GroupBy(officer => officer.Handle)
+                .Select(group => group.First());
+        }
+
+        private bool IsDispatchStandbyOfficer(Ped officer)
+        {
+            return officer != null && officer.Exists()
+                && GetDispatchStandbyOfficers().Any(value =>
+                    value.Handle == officer.Handle);
+        }
+
+        private Ped FindAvailableDispatchStandbyOfficer(Ped suspect)
+        {
+            if (suspect == null || !suspect.Exists() || suspect.IsDead)
+                return null;
+
+            return GetDispatchStandbyOfficers()
+                .Where(officer => !IsDispatchReceivingStandbyUnavailable(officer)
+                    && !IsOfficerInTransport(officer)
+                    && officer.Position.DistanceTo(suspect.Position)
+                        <= MaximumDispatchCommandArrestApproachDistance
+                    && !IsLoadingEscortBusy(officer, suspect.Handle)
+                    && !IsUnloadingOfficerBusy(officer, suspect.Handle))
+                .OrderBy(officer => officer.Position.DistanceTo(suspect.Position))
+                .FirstOrDefault();
+        }
+
+        private void MaintainDispatchCommandArrests(DateTime now)
+        {
+            if (_dispatchCommandArrestOfficers.Count == 0)
+                return;
+
+            foreach (KeyValuePair<int, Ped> assignment
+                in _dispatchCommandArrestOfficers.ToArray())
+            {
+                int suspectHandle = assignment.Key;
+                Ped officer = assignment.Value;
+                Ped suspect = _dispatch == null ? null : _dispatch.CurrentSuspects
+                    .FirstOrDefault(value => value != null && value.Exists()
+                        && value.Handle == suspectHandle);
+                if (!IsDispatchCommandArrestPhase()
+                    || _dispatch == null || !_dispatch.HasIncident
+                    || officer == null || !officer.Exists() || officer.IsDead
+                    || suspect == null || suspect.IsDead || suspect.Health <= 0)
+                {
+                    ReleaseDispatchCommandArrestAssignment(
+                        suspectHandle, suspect, officer, "OperationOrActorUnavailable");
+                    continue;
+                }
+
+                if (_dispatch.IsBackupArrestOperationActive(suspectHandle))
+                    continue;
+                if (_dispatch.CurrentArrestedSuspects.Any(value => value != null
+                    && value.Exists() && value.Handle == suspectHandle))
+                {
+                    ReleaseDispatchCommandArrestAssignment(
+                        suspectHandle, suspect, officer, "PhysicalCuffsConfirmed");
+                    continue;
+                }
+                if (!_dispatch.IsEligibleBackupArrestTarget(suspect))
+                {
+                    ReleaseDispatchCommandArrestAssignment(
+                        suspectHandle, suspect, officer, "SuspectNoLongerEligible");
+                    continue;
+                }
+
+                DateTime nextTaskAt;
+                if (_dispatchCommandArrestTaskAt.TryGetValue(
+                        officer.Handle, out nextTaskAt) && now < nextTaskAt)
+                    continue;
+
+                if (officer.IsInVehicle())
+                {
+                    if (_transport == null || !_transport.Exists()
+                        || officer.CurrentVehicle == null || !officer.CurrentVehicle.Exists()
+                        || officer.CurrentVehicle.Handle != _transport.Handle
+                        || Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed)
+                    {
+                        _dispatchCommandArrestTaskAt[officer.Handle] = now.AddSeconds(2);
+                        continue;
+                    }
+                    try
+                    {
+                        Function.Call(Hash.TASK_LEAVE_VEHICLE, officer, _transport, 0);
+                        _dispatchCommandArrestTaskAt[officer.Handle] = now.AddSeconds(1.5);
+                        LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_EXIT_REQUESTED",
+                            "Operation=" + _operationId + "; Suspect=" + suspectHandle
+                            + "; Officer=" + officer.Handle + "; Vehicle=" + _transport.Handle
+                            + "; Speed=" + _transport.Speed.ToString("0.00", CultureInfo.InvariantCulture)
+                            + "; StoppedDriverOnly=true");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_EXIT_FAILED", ex);
+                        _dispatchCommandArrestTaskAt[officer.Handle] = now.AddSeconds(2);
+                    }
+                    continue;
+                }
+
+                if (officer.Position.DistanceTo(suspect.Position) > 2.75f)
+                {
+                    try
+                    {
+                        Function.Call(Hash.TASK_GO_TO_ENTITY,
+                            officer, suspect, -1, 1.5f, 1.15f, 1073741824, 0);
+                        _dispatchCommandArrestTaskAt[officer.Handle] = now.AddMilliseconds(900);
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_CONVOY_DISPATCH_COMMAND_ARREST_APPROACH_FAILED", ex);
+                        _dispatchCommandArrestTaskAt[officer.Handle] = now.AddSeconds(2);
+                    }
+                    continue;
+                }
+
+                if (_dispatch.RequestBackupSuspectArrest(officer, suspect))
+                {
+                    _dispatchCommandArrestTaskAt.Remove(officer.Handle);
+                    LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_ARREST_STARTED",
+                        "Operation=" + _operationId + "; Suspect=" + suspectHandle
+                        + "; Officer=" + officer.Handle
+                        + "; DispatchPhysicalArrestOwner=true"
+                        + "; ConfirmedCuffsRequired=true");
+                }
+                else
+                    _dispatchCommandArrestTaskAt[officer.Handle] = now.AddMilliseconds(700);
+            }
+        }
+
+        private void ReleaseDispatchCommandArrestAssignment(
+            int suspectHandle,
+            Ped suspect,
+            Ped officer,
+            string reason)
+        {
+            _dispatchCommandArrestOfficers.Remove(suspectHandle);
+            if (officer != null && officer.Exists())
+                _dispatchCommandArrestTaskAt.Remove(officer.Handle);
+            if (officer != null && officer.Exists()
+                && _dispatchCommandDriverReturnHandles.Contains(officer.Handle)
+                && Active && IsDispatchCustodyOperation
+                && _transport != null && _transport.Exists())
+            {
+                _dispatchCommandDriverReturnTaskAt.Remove(officer.Handle);
+                LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_RETURN_QUEUED",
+                    "Operation=" + _operationId + "; Officer=" + officer.Handle
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; ReturnToDriverSeat=true; PhysicalSeatConfirmationRequired=true");
+            }
+            if (_dispatch != null && suspect != null && suspect.Exists())
+                _dispatch.CancelBackupSuspectArrestOperation(
+                    suspect, officer, reason);
+            LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_ARREST_RELEASED",
+                "Operation=" + _operationId + "; Suspect=" + suspectHandle
+                + "; Officer=" + (officer == null ? "none" : officer.Handle.ToString())
+                + "; Reason=" + (reason ?? string.Empty));
+        }
+
+        private void ReleaseDispatchCommandArrestAssignments(string reason)
+        {
+            foreach (KeyValuePair<int, Ped> assignment
+                in _dispatchCommandArrestOfficers.ToArray())
+            {
+                Ped suspect = _dispatch == null ? null : _dispatch.CurrentSuspects
+                    .FirstOrDefault(value => value != null && value.Exists()
+                        && value.Handle == assignment.Key);
+                ReleaseDispatchCommandArrestAssignment(
+                    assignment.Key, suspect, assignment.Value, reason);
+            }
+            _dispatchCommandArrestOfficers.Clear();
+            _dispatchCommandArrestTaskAt.Clear();
+        }
+
+        private void QueueDispatchCommandDriverReturn(
+            Ped officer,
+            int suspectHandle,
+            string reason)
+        {
+            if (!Active || !IsDispatchCustodyOperation
+                || officer == null || !officer.Exists() || officer.IsDead
+                || _transportDriver == null || !_transportDriver.Exists()
+                || officer.Handle != _transportDriver.Handle
+                || _transport == null || !_transport.Exists())
+                return;
+
+            _dispatchCommandDriverReturnHandles.Add(officer.Handle);
+            _dispatchCommandDriverReturnTaskAt.Remove(officer.Handle);
+            LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_RETURN_QUEUED",
+                "Operation=" + _operationId + "; Suspect=" + suspectHandle
+                + "; Officer=" + officer.Handle
+                + "; Reason=" + (reason ?? string.Empty)
+                + "; ReturnToDriverSeat=true; PhysicalSeatConfirmationRequired=true");
+        }
+
+        private bool IsDispatchCommandOfficerOnActiveWork(int officerHandle)
+        {
+            if (_dispatchCommandArrestOfficers.Values.Any(officer =>
+                officer != null && officer.Exists() && officer.Handle == officerHandle))
+                return true;
+
+            foreach (KeyValuePair<int, Ped> assignment in _prisonerEscortOfficers)
+            {
+                if (assignment.Value == null || !assignment.Value.Exists()
+                    || assignment.Value.Handle != officerHandle)
+                    continue;
+                Ped prisoner = _prisoners.FirstOrDefault(value => value != null
+                    && value.Exists() && value.Handle == assignment.Key);
+                if (prisoner != null && !prisoner.IsDead && !IsInTransport(prisoner))
+                    return true;
+            }
+
+            foreach (KeyValuePair<int, Ped> assignment in _prisonerUnloadingOfficers)
+            {
+                if (assignment.Value == null || !assignment.Value.Exists()
+                    || assignment.Value.Handle != officerHandle)
+                    continue;
+                Ped prisoner = _prisoners.FirstOrDefault(value => value != null
+                    && value.Exists() && value.Handle == assignment.Key);
+                if (prisoner != null && !prisoner.IsDead
+                    && (_dispatchSceneUnloadRequestedHandles.Contains(prisoner.Handle)
+                        || _prisonerUnloadingEscortStartedAt.ContainsKey(prisoner.Handle)
+                        || IsInTransport(prisoner)))
+                    return true;
+            }
+            return false;
+        }
+
+        private void MaintainDispatchCommandDriverReturns(DateTime now)
+        {
+            if (_dispatchCommandDriverReturnHandles.Count == 0)
+                return;
+
+            foreach (int officerHandle in _dispatchCommandDriverReturnHandles.ToArray())
+            {
+                if (!Active || !IsDispatchCustodyOperation
+                    || _transport == null || !_transport.Exists())
+                {
+                    _dispatchCommandDriverReturnHandles.Remove(officerHandle);
+                    _dispatchCommandDriverReturnTaskAt.Remove(officerHandle);
+                    continue;
+                }
+
+                Ped officer = _transportDriver != null && _transportDriver.Exists()
+                    && _transportDriver.Handle == officerHandle
+                    ? _transportDriver : null;
+                if (officer == null || !officer.Exists() || officer.IsDead)
+                {
+                    _dispatchCommandDriverReturnHandles.Remove(officerHandle);
+                    _dispatchCommandDriverReturnTaskAt.Remove(officerHandle);
+                    continue;
+                }
+
+                if (IsDispatchCommandOfficerOnActiveWork(officerHandle))
+                    continue;
+
+                Ped driverSeatOccupant;
+                try
+                {
+                    driverSeatOccupant = Function.Call<Ped>(Hash.GET_PED_IN_VEHICLE_SEAT,
+                        _transport, (int)VehicleSeat.Driver, false);
+                }
+                catch (Exception ex)
+                {
+                    _dispatchCommandDriverReturnTaskAt[officerHandle] = now.AddMilliseconds(
+                        DispatchCommandDriverReturnRefreshMilliseconds);
+                    LogException("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_RETURN_SEAT_CHECK_FAILED", ex);
+                    continue;
+                }
+                if (driverSeatOccupant != null && driverSeatOccupant.Exists())
+                {
+                    if (driverSeatOccupant.Handle == officerHandle)
+                    {
+                        LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_RETURN_CONFIRMED",
+                            "Operation=" + _operationId + "; Officer=" + officerHandle
+                            + "; Vehicle=" + _transport.Handle
+                            + "; DriverSeatOccupantConfirmed=true");
+                        _dispatchCommandDriverReturnHandles.Remove(officerHandle);
+                        _dispatchCommandDriverReturnTaskAt.Remove(officerHandle);
+                    }
+                    continue;
+                }
+                if (Math.Abs(_transport.Speed) > DispatchReleaseStoppedSpeed
+                    || officer.IsInVehicle())
+                    continue;
+
+                DateTime nextTaskAt;
+                if (_dispatchCommandDriverReturnTaskAt.TryGetValue(
+                        officerHandle, out nextTaskAt) && now < nextTaskAt)
+                    continue;
+
+                try
+                {
+                    officer.Task.EnterVehicle(_transport, VehicleSeat.Driver,
+                        12000, 1.0f);
+                    _dispatchCommandDriverReturnTaskAt[officerHandle] = now.AddMilliseconds(
+                        DispatchCommandDriverReturnRefreshMilliseconds);
+                    LogRuntime("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_RETURN_TASK",
+                        "Operation=" + _operationId + "; Officer=" + officerHandle
+                        + "; Vehicle=" + _transport.Handle
+                        + "; Seat=Driver; PhysicalSeatConfirmationRequired=true");
+                }
+                catch (Exception ex)
+                {
+                    _dispatchCommandDriverReturnTaskAt[officerHandle] = now.AddMilliseconds(
+                        DispatchCommandDriverReturnRefreshMilliseconds);
+                    LogException("POLICE_CONVOY_DISPATCH_COMMAND_DRIVER_RETURN_FAILED", ex);
+                }
+            }
         }
 
         private bool IsPlayerEscort(Ped escort)
@@ -8289,6 +10344,24 @@ namespace LSImmersiveLife
         {
             if (officer == null || !officer.Exists())
                 return true;
+            if (_dispatchCommandDriverReturnHandles.Contains(officer.Handle))
+                return true;
+            if (_dispatchCommandArrestOfficers.Any(assignment =>
+                assignment.Value != null && assignment.Value.Exists()
+                && assignment.Value.Handle == officer.Handle))
+                return true;
+            foreach (KeyValuePair<int, Ped> assignment in _dispatchGroupBackupEscorts)
+            {
+                if (assignment.Key == currentPrisonerHandle
+                    || assignment.Value == null || !assignment.Value.Exists()
+                    || assignment.Value.Handle != officer.Handle)
+                    continue;
+                Ped other = _prisoners.FirstOrDefault(prisoner =>
+                    prisoner != null && prisoner.Exists()
+                    && prisoner.Handle == assignment.Key);
+                if (other != null && !other.IsDead && !IsInTransport(other))
+                    return true;
+            }
             foreach (KeyValuePair<int, Ped> assignment in _prisonerEscortOfficers)
             {
                 if (assignment.Key == currentPrisonerHandle
@@ -8305,6 +10378,21 @@ namespace LSImmersiveLife
                 if (other != null && !other.IsDead && !IsInTransport(other))
                     return true;
             }
+            foreach (KeyValuePair<int, Ped> assignment in _prisonerUnloadingOfficers)
+            {
+                if (assignment.Key == currentPrisonerHandle
+                    || assignment.Value == null || !assignment.Value.Exists()
+                    || assignment.Value.Handle != officer.Handle)
+                    continue;
+                Ped other = _prisoners.FirstOrDefault(prisoner =>
+                    prisoner != null && prisoner.Exists()
+                    && prisoner.Handle == assignment.Key);
+                if (other != null && !other.IsDead
+                    && (_dispatchSceneUnloadRequestedHandles.Contains(other.Handle)
+                        || _prisonerUnloadingEscortStartedAt.ContainsKey(other.Handle)
+                        || IsInTransport(other)))
+                    return true;
+            }
             return false;
         }
 
@@ -8312,15 +10400,20 @@ namespace LSImmersiveLife
         {
             if (prisoner == null || officers == null)
                 return null;
+            Ped assigned;
+            if (_prisonerUnloadingOfficers.TryGetValue(prisoner.Handle, out assigned))
+            {
+                if (assigned != null && assigned.Exists() && !assigned.IsDead)
+                    return IsUnloadingOfficerBusy(assigned, prisoner.Handle)
+                        ? null : assigned;
+                _prisonerUnloadingOfficers.Remove(prisoner.Handle);
+            }
+
             List<Ped> available = officers
                 .Where(ped => ped != null && ped.Exists() && !ped.IsDead)
                 .ToList();
             if (available.Count == 0)
                 return null;
-            Ped assigned;
-            if (_prisonerUnloadingOfficers.TryGetValue(prisoner.Handle, out assigned)
-                && assigned != null && assigned.Exists() && !assigned.IsDead)
-                return assigned;
 
             assigned = available.FirstOrDefault(officer =>
                 !IsUnloadingOfficerBusy(officer, prisoner.Handle));
@@ -8334,6 +10427,24 @@ namespace LSImmersiveLife
         {
             if (officer == null || !officer.Exists())
                 return true;
+            if (_dispatchCommandDriverReturnHandles.Contains(officer.Handle))
+                return true;
+            if (_dispatchCommandArrestOfficers.Any(assignment =>
+                assignment.Value != null && assignment.Value.Exists()
+                && assignment.Value.Handle == officer.Handle))
+                return true;
+            foreach (KeyValuePair<int, Ped> assignment in _dispatchGroupBackupEscorts)
+            {
+                if (assignment.Key == currentPrisonerHandle
+                    || assignment.Value == null || !assignment.Value.Exists()
+                    || assignment.Value.Handle != officer.Handle)
+                    continue;
+                Ped other = _prisoners.FirstOrDefault(prisoner =>
+                    prisoner != null && prisoner.Exists()
+                    && prisoner.Handle == assignment.Key);
+                if (other != null && !other.IsDead && !IsInTransport(other))
+                    return true;
+            }
             foreach (KeyValuePair<int, Ped> assignment in _prisonerUnloadingOfficers)
             {
                 if (assignment.Key == currentPrisonerHandle
@@ -8353,6 +10464,18 @@ namespace LSImmersiveLife
                 if (IsInTransport(other)
                     || !_prisonerUnloadingEscortStartedAt.ContainsKey(other.Handle)
                     || other.Position.DistanceTo(officer.Position) > 3.0f)
+                    return true;
+            }
+            foreach (KeyValuePair<int, Ped> assignment in _prisonerEscortOfficers)
+            {
+                if (assignment.Key == currentPrisonerHandle
+                    || assignment.Value == null || !assignment.Value.Exists()
+                    || assignment.Value.Handle != officer.Handle)
+                    continue;
+                Ped other = _prisoners.FirstOrDefault(prisoner =>
+                    prisoner != null && prisoner.Exists()
+                    && prisoner.Handle == assignment.Key);
+                if (other != null && !other.IsDead && !IsInTransport(other))
                     return true;
             }
             return false;
@@ -8453,6 +10576,9 @@ namespace LSImmersiveLife
                         + "; AngleRatioAtMost=0.05");
                 return;
             }
+
+            if (IsLoadingDoorBusyForOtherPrisoner(doorIndex, prisoner.Handle))
+                return;
 
             if (!_prisonerDoorCloseTasksIssued.Add(prisoner.Handle))
                 return;
@@ -8793,7 +10919,7 @@ namespace LSImmersiveLife
 
                 SetEmergencySignals(_transport, true);
                 float stoppingDistance = IsDispatchSceneRoadPickup(false)
-                    ? DispatchSceneVehicleArrivalRadius : 18f;
+                    ? DispatchSceneDrivingStopRange : 18f;
                 if (dispatchCustodyTransport)
                 {
                     Function.Call(Hash.TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE,
@@ -8921,6 +11047,8 @@ namespace LSImmersiveLife
 
             try
             {
+                string physicalEvidence = now >= _nextTransportDriveReadinessLogAt
+                    ? DescribeTransportPhysicalMovement(driver) : string.Empty;
                 Function.Call(Hash.FREEZE_ENTITY_POSITION, _transport, false);
                 Function.Call(Hash.SET_VEHICLE_ENGINE_ON,
                     _transport, true, true, false);
@@ -8943,7 +11071,9 @@ namespace LSImmersiveLife
                         + "; UnfreezeRequested=true"
                         + "; BrakeReleased=true; HandbrakeReleased=true"
                         + "; Position=" + _transport.Position
-                        + "; Speed=" + _transport.Speed.ToString("0.00", CultureInfo.InvariantCulture));
+                        + "; Speed=" + _transport.Speed.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; ReadinessIsNotMovementConfirmation=true"
+                        + "; BeforeReadiness=" + physicalEvidence);
                 }
                 return true;
             }
@@ -8951,6 +11081,48 @@ namespace LSImmersiveLife
             {
                 LogException("POLICE_CONVOY_TRANSPORT_DRIVE_READINESS_FAILED", ex);
                 return false;
+            }
+        }
+
+        private string DescribeTransportPhysicalMovement(Ped driver)
+        {
+            try
+            {
+                Vector3 front = _transport.GetOffsetPosition(new Vector3(0f, 3.5f, 0.5f));
+                Vector3 ahead = _transport.GetOffsetPosition(new Vector3(0f, 8f, 0.5f));
+                RaycastResult obstruction = World.Raycast(
+                    front, ahead,
+                    IntersectFlags.Map | IntersectFlags.Objects | IntersectFlags.Vehicles,
+                    _transport);
+                Entity blocker = obstruction.HitEntity;
+                int driveTaskStatus = int.MinValue;
+                try
+                {
+                    uint driveTaskHash = StringHash.AtStringHashUtf8(
+                        "SCRIPT_TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE");
+                    driveTaskStatus = Function.Call<int>(
+                        Hash.GET_SCRIPT_TASK_STATUS, driver, unchecked((int)driveTaskHash));
+                }
+                catch { }
+
+                return "Frozen=" + _transport.IsPositionFrozen
+                    + ",BrakePower=" + _transport.BrakePower.ToString("0.00", CultureInfo.InvariantCulture)
+                    + ",ThrottlePower=" + _transport.ThrottlePower.ToString("0.00", CultureInfo.InvariantCulture)
+                    + ",WheelSpeed=" + _transport.WheelSpeed.ToString("0.00", CultureInfo.InvariantCulture)
+                    + ",Gear=" + _transport.CurrentGear
+                    + ",AllWheels=" + Function.Call<bool>(Hash.IS_VEHICLE_ON_ALL_WHEELS, _transport)
+                    + ",Collision=" + Function.Call<bool>(Hash.HAS_ENTITY_COLLIDED_WITH_ANYTHING, _transport)
+                    + ",DriveTaskStatus=" + driveTaskStatus
+                    + ",FrontObstruction=" + obstruction.DidHit
+                    + ",Blocker=" + (blocker != null && blocker.Exists()
+                        ? blocker.Handle.ToString(CultureInfo.InvariantCulture)
+                        : "none")
+                    + ",RestrictionCause=Unconfirmed";
+            }
+            catch (Exception ex)
+            {
+                return "PhysicalSample=Unavailable:" + ex.GetType().Name
+                    + ",RestrictionCause=Unconfirmed";
             }
         }
 
@@ -9051,7 +11223,8 @@ namespace LSImmersiveLife
                     roadTarget.Z,
                     22.0f,
                     (int)EmergencyDrivingFlags,
-                    10.0f);
+                    dispatchCustodyTransport && IsDispatchSceneRoadPickup(false)
+                        ? DispatchSceneDrivingStopRange : 10.0f);
                 _transportRouteRecoveryCount++;
                 if (dispatchCustodyTransport)
                 {
@@ -10102,13 +12275,33 @@ namespace LSImmersiveLife
             catch { }
         }
 
-        private void Complete(string reason, bool terminalAudioAlreadyReported)
+        private void Complete(
+            string reason,
+            bool terminalAudioAlreadyReported,
+            bool playerRequestedDispatchCompletion = false)
         {
             if (!Active)
                 return;
+            ReleaseDispatchCommandArrestAssignments(
+                playerRequestedDispatchCompletion
+                    ? "PlayerRequestedTransportCompletion"
+                    : "ConvoyOperationCompleted");
+            if (playerRequestedDispatchCompletion && _backup != null)
+            {
+                foreach (Ped prisoner in _prisoners.Where(value => value != null
+                    && value.Exists()).ToArray())
+                    if (_dispatchGroupBackupEscorts.ContainsKey(prisoner.Handle))
+                        _backup.CompleteDispatchCustodyEscortHandoff(prisoner);
+                _dispatchGroupBackupEscorts.Clear();
+            }
             if (!terminalAudioAlreadyReported)
                 ReportTerminal("lsimmersivelife.police.transport.completed", "completed");
-            RestoreAllConvoyInjuryStates("PhysicalCustodyCompleted");
+            if (playerRequestedDispatchCompletion)
+                _playerCompletedDispatchCustodyHandles.UnionWith(
+                    _prisoners.Where(ped => ped != null && ped.Exists())
+                        .Select(ped => ped.Handle));
+            else
+                RestoreAllConvoyInjuryStates("PhysicalCustodyCompleted");
             foreach (Ped prisoner in _prisoners.Where(ped => ped != null && ped.Exists()))
             {
                 if (_dispatchCustodyOperation)
@@ -10126,8 +12319,13 @@ namespace LSImmersiveLife
                     LogException("POLICE_CONVOY_PRISONER_PROTECTION_RELEASE_FAILED", ex);
                 }
             }
-            RestoreAllCustodyInvincibility();
-            QueueOperationCleanup();
+            if (playerRequestedDispatchCompletion)
+                RestoreAllCustodyInvincibility(
+                    _playerCompletedDispatchCustodyHandles);
+            else
+                RestoreAllCustodyInvincibility();
+            StopManualDispatchCustodyTasks(playerRequestedDispatchCompletion);
+            QueueOperationCleanup(playerRequestedDispatchCompletion);
             CleanupCustodyBlips();
             CleanupWaypoint();
             _state = LSPDDispatchState.Completed;
@@ -10140,8 +12338,91 @@ namespace LSImmersiveLife
             _prisonHandoffOfficers.Clear();
             _routeThreatPeds.Clear();
             _routeThreatVehicle = null;
-            LogRuntime("POLICE_CUSTODY_COMPLETED", reason);
-            Notify("~g~POLICE CUSTODY COMPLETE~s~\n" + reason);
+            if (playerRequestedDispatchCompletion)
+            {
+                LogRuntime("POLICE_DISPATCH_TRANSPORT_PLAYER_COMPLETION",
+                    "Operation=" + _operationId
+                    + "; PlayerRequested=true; PhysicalStationReceipt=false"
+                    + "; WholeGroupSeatingClaimed=false"
+                    + "; DeferredCleanup=OriginalSceneExitOnly");
+                Notify("~g~DISPATCH TRANSPORT ENDED~s~\nThe requested transport has been ended.");
+            }
+            else
+            {
+                LogRuntime("POLICE_CUSTODY_COMPLETED", reason);
+                Notify("~g~POLICE CUSTODY COMPLETE~s~\n" + reason);
+            }
+        }
+
+        private void StopManualDispatchCustodyTasks(bool playerRequestedDispatchCompletion)
+        {
+            if (!playerRequestedDispatchCompletion)
+                return;
+
+            Ped player = Game.Player.Character;
+            bool playerOwnedEscort = player != null && player.Exists()
+                && (_playerEscortPrisoners.Count > 0
+                    || _playerLoadingContactStartedAt.Count > 0
+                    || _playerDoorInteractions.Count > 0
+                    || _playerEntryInteractions.Count > 0);
+            if (playerOwnedEscort)
+            {
+                ClearPlayerCustodyTask(player);
+                try
+                {
+                    if (player.IsPositionFrozen)
+                        player.IsPositionFrozen = false;
+                    if (Function.Call<bool>(Hash.IS_ENTITY_ATTACHED, player))
+                        Function.Call(Hash.DETACH_ENTITY, player, true, true);
+                }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_CONVOY_MANUAL_COMPLETION_PLAYER_RELEASE_FAILED", ex);
+                }
+            }
+
+            foreach (Ped prisoner in _prisoners.Where(ped => ped != null && ped.Exists()))
+            {
+                Ped escort;
+                _prisonerEscortOfficers.TryGetValue(prisoner.Handle, out escort);
+                DetachPrisonerFromEscort(prisoner, escort,
+                    "PlayerRequestedDispatchCompletion");
+                if (!prisoner.IsInVehicle())
+                {
+                    try { prisoner.Task.ClearAll(); }
+                    catch (Exception ex)
+                    {
+                        LogException("POLICE_CONVOY_MANUAL_COMPLETION_PRISONER_TASK_RELEASE_FAILED", ex);
+                    }
+                }
+            }
+
+            IEnumerable<Ped> assignedOfficers = _sceneEscortOfficers
+                .Concat(_stationHandoffOfficers)
+                .Concat(_prisonHandoffOfficers)
+                .Concat(_prisonerEscortOfficers.Values)
+                .Concat(_prisonerUnloadingOfficers.Values)
+                .Concat(new[] { _transportDriver })
+                .Where(ped => ped != null && ped.Exists())
+                .GroupBy(ped => ped.Handle)
+                .Select(group => group.First());
+            foreach (Ped officer in assignedOfficers)
+            {
+                if (player != null && player.Exists()
+                    && officer.Handle == player.Handle)
+                    continue;
+                try { officer.Task.ClearAll(); }
+                catch (Exception ex)
+                {
+                    LogException("POLICE_CONVOY_MANUAL_COMPLETION_OFFICER_TASK_RELEASE_FAILED", ex);
+                }
+            }
+
+            LogRuntime("POLICE_CONVOY_MANUAL_COMPLETION_TASKS_RELEASED",
+                "Operation=" + _operationId
+                + "; PlayerEscortReleased=" + playerOwnedEscort
+                + "; PlayerFrozen=false; PhysicalActorsTeleported=false"
+                + "; SeatedPrisonersEjected=false");
         }
 
         private string Fail(string reason, bool recoverable)
@@ -10192,7 +12473,7 @@ namespace LSImmersiveLife
             return _lastFailureReason;
         }
 
-        private void QueueOperationCleanup()
+        private void QueueOperationCleanup(bool requireOriginalSceneExit = false)
         {
             DateTime now = DateTime.UtcNow;
             foreach (Ped prisoner in _prisoners
@@ -10204,7 +12485,7 @@ namespace LSImmersiveLife
                 if (_prisonerEscortOfficers.TryGetValue(prisoner.Handle, out escort))
                     DetachPrisonerFromEscort(prisoner, escort,
                         "OperationCleanupQueued");
-                QueueCleanup(prisoner, null, now);
+                QueueCleanup(prisoner, null, now, requireOriginalSceneExit);
             }
 
             IEnumerable<Ped> officers = _sceneEscortOfficers
@@ -10215,13 +12496,13 @@ namespace LSImmersiveLife
                 .GroupBy(ped => ped.Handle)
                 .Select(group => group.First());
             foreach (Ped officer in officers)
-                QueueCleanup(officer, null, now);
+                QueueCleanup(officer, null, now, requireOriginalSceneExit);
             if (_transport != null && _transport.Exists() && !_playerOwnedTransport)
-                QueueCleanup(null, _transport, now);
+                QueueCleanup(null, _transport, now, requireOriginalSceneExit);
             foreach (Ped threat in _routeThreatPeds.Where(ped => ped != null && ped.Exists()).Distinct())
-                QueueCleanup(threat, null, now);
+                QueueCleanup(threat, null, now, requireOriginalSceneExit);
             if (_routeThreatVehicle != null && _routeThreatVehicle.Exists())
-                QueueCleanup(null, _routeThreatVehicle, now);
+                QueueCleanup(null, _routeThreatVehicle, now, requireOriginalSceneExit);
         }
 
         private void QueueCurrentTransportCleanup(
@@ -10247,6 +12528,7 @@ namespace LSImmersiveLife
             _lastEscortOfficerTaskAt.Clear();
             _prisonerVehicleDoorsOpened.Clear();
             _prisonerDoorCloseTasksIssued.Clear();
+            _prisonerDoorContentionWaiters.Clear();
             _prisonerDoorOpenTaskIssuedAt.Clear();
             _dispatchPrisonerMissingSince.Clear();
             _dispatchPrisonerLastHandleRetryAt.Clear();
@@ -10272,14 +12554,23 @@ namespace LSImmersiveLife
             _routeThreatVehicle = null;
         }
 
-        private void QueueCleanup(Ped ped, Vehicle vehicle, DateTime now)
+        private void QueueCleanup(
+            Ped ped,
+            Vehicle vehicle,
+            DateTime now,
+            bool requireOriginalSceneExit = false)
         {
             _deferredCleanup.Add(new DeferredCleanup
             {
                 Ped = ped,
                 Vehicle = vehicle,
                 Earliest = now.AddSeconds(DeferredCleanupGraceSeconds),
-                Expires = now.AddSeconds(DeferredCleanupMaximumSeconds)
+                Expires = now.AddSeconds(DeferredCleanupMaximumSeconds),
+                RequireOriginalSceneExit = requireOriginalSceneExit,
+                OriginalSceneOrigin = requireOriginalSceneExit
+                    ? _dispatchCleanupSceneOrigin : Vector3.Zero,
+                HasOriginalSceneOrigin = requireOriginalSceneExit
+                    && _hasDispatchCleanupSceneOrigin
             });
         }
 
@@ -10304,6 +12595,34 @@ namespace LSImmersiveLife
                     && player.CurrentVehicle.Exists() && player.CurrentVehicle.Handle == item.Vehicle.Handle;
                 float distance = player == null || !player.Exists()
                     ? float.MaxValue : entity.Position.DistanceTo(player.Position);
+                if (item.RequireOriginalSceneExit)
+                {
+                    if (!item.HasOriginalSceneOrigin
+                        || player == null || !player.Exists())
+                    {
+                        if (!item.MissingOriginalSceneOriginLogged)
+                        {
+                            item.MissingOriginalSceneOriginLogged = true;
+                            LogRuntime("POLICE_CONVOY_DEFERRED_CLEANUP_RETAINED",
+                                "Entity=" + entity.Handle
+                                + "; Reason=" + (!item.HasOriginalSceneOrigin
+                                    ? "OriginalSceneAnchorUnavailable"
+                                    : "PlayerLocationUnavailable")
+                                + "; TimeoutDoesNotAuthorizeDeletion=true");
+                        }
+                        continue;
+                    }
+
+                    float originalSceneDistance = item.OriginalSceneOrigin
+                        .DistanceTo(player.Position);
+                    if (now >= item.Earliest && !playerOccupiesVehicle
+                        && originalSceneDistance >= CleanupDistance)
+                    {
+                        DeleteDeferred(item);
+                        _deferredCleanup.Remove(item);
+                    }
+                    continue;
+                }
                 if (now >= item.Earliest && !playerOccupiesVehicle
                     && distance >= CleanupDistance)
                 {
@@ -12009,6 +14328,10 @@ namespace LSImmersiveLife
 
         private void ResetOperationFields(ISet<int> preserveDispatchCustodyHandles = null)
         {
+            ReleaseDispatchCommandArrestAssignments("ConvoyOperationReset");
+            _dispatchCommandDriverReturnHandles.Clear();
+            _dispatchCommandDriverReturnTaskAt.Clear();
+            ReleaseBackupCustodyAssignments();
             if (preserveDispatchCustodyHandles == null)
                 RestoreDispatchCustodyMovementStyles();
             ClearDispatchPickupPlan();
@@ -12024,6 +14347,8 @@ namespace LSImmersiveLife
             _dispatchGroupPlayerRoutePromptLogged = false;
             _dispatchGroupExpectedPrisonerCount = 0;
             _pickupTarget = Vector3.Zero;
+            _dispatchCleanupSceneOrigin = Vector3.Zero;
+            _hasDispatchCleanupSceneOrigin = false;
             _dispatchSceneVehicleAccessTarget = Vector3.Zero;
             _dispatchSceneWalkInDistanceMeters = 0f;
             _stationDestination = Vector3.Zero;
@@ -12045,6 +14370,7 @@ namespace LSImmersiveLife
             _lastDriverTaskAt = DateTime.MinValue;
             _lastTransportProgressAt = DateTime.MinValue;
             _lastTransportProgressPosition = Vector3.Zero;
+            ResetDispatchPickupStopConfirmation();
             _lastTransportRoadTaskTarget = Vector3.Zero;
             _nextTransportDriveReadinessLogAt = DateTime.MinValue;
             _nextTransportDriverSeatTaskAt = DateTime.MinValue;
@@ -12118,6 +14444,7 @@ namespace LSImmersiveLife
             _failedAfterStationHandoff = false;
             _isRequestedConvoyActivity = false;
             _dispatchCustodyOperation = false;
+            _playerCompletedDispatchCustodyHandles.Clear();
             _routeThreatState = RouteThreatState.None;
             _routeThreatPreparationDeadline = DateTime.MinValue;
             _lastRouteThreatCombatTaskAt = DateTime.MinValue;
@@ -12147,6 +14474,7 @@ namespace LSImmersiveLife
             _prisonerUnloadingOfficers.Clear();
             _prisonerVehicleDoorsOpened.Clear();
             _prisonerDoorCloseTasksIssued.Clear();
+            _prisonerDoorContentionWaiters.Clear();
             _prisonerDoorOpenTaskIssuedAt.Clear();
             _dispatchPrisonerMissingSince.Clear();
             _dispatchPrisonerLastHandleRetryAt.Clear();
@@ -12158,6 +14486,10 @@ namespace LSImmersiveLife
             _playerEscortFallbacks.Clear();
             _playerDoorInteractions.Clear();
             _playerEntryInteractions.Clear();
+            _playerBatchLoadRequestedHandles.Clear();
+            _officerLoadRequestedHandles.Clear();
+            _dispatchSceneUnloadRequestedHandles.Clear();
+            _sceneUnloadedAwaitingReloadHandles.Clear();
             _prisonerUnloadingEscortStartedAt.Clear();
             _prisonerUnloadingDoorsOpened.Clear();
             _playerUnloadingStartedAt.Clear();
@@ -12182,6 +14514,21 @@ namespace LSImmersiveLife
                     .Where(handle => !preserveDispatchCustodyHandles.Contains(handle)).ToArray())
                     _dispatchCustodyMovementStyleRequestedAt.Remove(handle);
             }
+        }
+
+        private void ReleaseBackupCustodyAssignments()
+        {
+            if (_backup != null)
+            {
+                foreach (int suspectHandle in _dispatchGroupBackupEscorts.Keys.ToArray())
+                {
+                    Ped suspect = _prisoners.FirstOrDefault(value => value != null
+                        && value.Exists() && value.Handle == suspectHandle);
+                    if (suspect != null)
+                        _backup.CompleteDispatchCustodyEscortHandoff(suspect);
+                }
+            }
+            _dispatchGroupBackupEscorts.Clear();
         }
 
         private int DeferredCleanupGraceSeconds
@@ -12476,6 +14823,56 @@ namespace LSImmersiveLife
             _lastAudioStage = stage;
             try { _audio.Report(eventId, _activeAudioScope, stage + "-" + _operationId, "transport"); } catch { }
         }
+        private void LogDispatchOfficerCommandAvailability(
+            string command,
+            bool available,
+            Ped suspect,
+            Ped officer,
+            IEnumerable<Ped> officerCandidates,
+            string reason)
+        {
+            if (_log == null)
+                return;
+
+            string occurrence = _dispatch == null || !_dispatch.HasIncident
+                || _dispatch.Current == null ? "none" : _dispatch.Current.Id;
+            string suspectHandle = suspect == null || !suspect.Exists()
+                ? "none" : suspect.Handle.ToString();
+            string officerHandle = officer == null || !officer.Exists()
+                ? "none" : officer.Handle.ToString();
+            string vehicleHandle = _transport == null || !_transport.Exists()
+                ? "none" : _transport.Handle.ToString();
+            string candidateHandles = officerCandidates == null
+                ? "none"
+                : string.Join(",", officerCandidates
+                    .Where(candidate => candidate != null && candidate.Exists())
+                    .GroupBy(candidate => candidate.Handle)
+                    .Select(group => group.Key.ToString())
+                    .Take(12));
+            string result = available ? "Available" : "Unavailable";
+            string state = "Incident=" + occurrence
+                + ";Suspect=" + suspectHandle
+                + ";Result=" + result
+                + ";Officer=" + officerHandle
+                + ";Vehicle=" + vehicleHandle
+                + ";Phase=" + _phase
+                + ";Reason=" + reason
+                + ";OfficerCandidates=" + candidateHandles;
+            _log.RuntimeTransition(
+                "POLICE_CONVOY_DISPATCH_" + command + "_COMMAND_AVAILABILITY",
+                state,
+                "Incident=" + occurrence
+                + "; Suspect=" + suspectHandle
+                + "; Officer=" + officerHandle
+                + "; Vehicle=" + vehicleHandle
+                + "; Phase=" + _phase
+                + "; DispatchCustodyOperation=" + IsDispatchCustodyOperation
+                + "; Result=" + result
+                + "; Reason=" + (string.IsNullOrWhiteSpace(reason)
+                    ? "none" : reason)
+                + "; OfficerCandidates=" + candidateHandles);
+        }
+
         private void CloseActiveAudio() { if (string.IsNullOrWhiteSpace(_activeAudioScope)) return; try { _audio.CancelScope(_activeAudioScope); } catch { } _activeAudioScope = string.Empty; }
         private static void Notify(string message) { try { Notification.PostTicker(message, false, false); } catch { } }
         private void LogRuntime(string category, string message) { if (_log != null) _log.Runtime(category, message); }

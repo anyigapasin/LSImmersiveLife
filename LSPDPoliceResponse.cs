@@ -1212,12 +1212,24 @@ namespace LSImmersiveLife
             IEnumerable<Ped> protectedActors,
             LSPDDispatchEvent dispatchIncident)
         {
+            bool playerPoliceRecognitionEnabled = authoritySettings != null
+                && (authoritySettings.ProtectPlayerFromVanillaPoliceEscalation
+                    || authoritySettings.SuppressAmbientPoliceHostility);
+            bool custodyProtectionEnabled = authoritySettings != null
+                && authoritySettings.EnableWorldBehaviorChanges
+                && authoritySettings.SuppressAmbientPoliceHostility;
+            bool militaryRecognitionEnabled = authoritySettings != null
+                && authoritySettings.EnableWorldBehaviorChanges
+                && authoritySettings.SuppressMilitaryHostility;
+            bool greetingEnabled = authoritySettings != null
+                && authoritySettings.EnableWorldBehaviorChanges
+                && _settings.AuthorityGreetingEnabled;
             if (player == null || !player.Exists() || authoritySettings == null
-                || !authoritySettings.EnableWorldBehaviorChanges
                 || !_settings.AuthoritySupportEnabled
-                || (!_settings.AuthorityGreetingEnabled
-                    && !authoritySettings.SuppressAmbientPoliceHostility
-                    && !authoritySettings.SuppressMilitaryHostility))
+                || (!playerPoliceRecognitionEnabled
+                    && !custodyProtectionEnabled
+                    && !militaryRecognitionEnabled
+                    && !greetingEnabled))
             {
                 RestoreDispatchCustodyProtection("AuthoritySupportDisabled");
                 _authorityDeescalationTargets.Clear();
@@ -1249,7 +1261,7 @@ namespace LSImmersiveLife
                 ReconcileDispatchCustodyProtection(
                     dispatchIncident,
                     player,
-                    authoritySettings.SuppressAmbientPoliceHostility);
+                    custodyProtectionEnabled);
             }
             catch (Exception ex)
             {
@@ -1296,7 +1308,7 @@ namespace LSImmersiveLife
                 if (ped == null || protectedHandles.Contains(ped.Handle))
                     continue;
                 if (!IsAuthorityAlly(ped, player,
-                    authoritySettings.SuppressMilitaryHostility))
+                    militaryRecognitionEnabled))
                     continue;
 
                 allies.Add(ped);
@@ -1324,12 +1336,27 @@ namespace LSImmersiveLife
             var observedTargetingOfficers = new HashSet<int>();
             foreach (Ped ped in allies)
             {
-                Ped custodyTarget = FindDispatchCustodyCombatTarget(ped);
+                Ped custodyTarget = custodyProtectionEnabled
+                    ? FindDispatchCustodyCombatTarget(ped) : null;
                 int targetHandle = custodyTarget != null
                     ? custodyTarget.Handle
                     : IsTargetingPlayer(ped, player) ? player.Handle : 0;
                 if (targetHandle == 0)
                     continue;
+
+                // Police Response never clears a vehicle occupant's active
+                // driving, pursuit, escort, or transport task. Backup, Convoy,
+                // and managed Response officers are filtered above by their
+                // owner-provided protected actor handles.
+                if (ped.IsInVehicle())
+                    continue;
+
+                if (targetHandle == player.Handle
+                    && !playerPoliceRecognitionEnabled
+                    && !militaryRecognitionEnabled
+                    && !greetingEnabled)
+                    continue;
+
                 observedTargetingOfficers.Add(ped.Handle);
                 int previousTargetHandle;
                 string occurrenceId = targetHandle == player.Handle
@@ -1349,12 +1376,13 @@ namespace LSImmersiveLife
 
                 try
                 {
-                    // A relationship change prevents reacquisition; this one
-                    // task clear ends an already-issued combat assignment. The
-                    // officer's actor, model, weapons, and ownership stay intact.
+                    // End only the existing on-foot combat assignment. Wanted
+                    // protection is reconciled separately by Authority; this
+                    // local recognition path never rewrites global Police
+                    // relationships or managed vehicle tasks.
                     ped.Task.ClearAll();
                     if (targetHandle == player.Handle
-                        && _settings.AuthorityGreetingEnabled && !ped.IsInVehicle())
+                        && greetingEnabled)
                         ped.Task.LookAt(player, 900);
                     _authorityDeescalationTargets[ped.Handle] = targetHandle;
                     _authorityDeescalationOccurrences[ped.Handle] = occurrenceId;
@@ -1383,7 +1411,7 @@ namespace LSImmersiveLife
                     _authorityDeescalationOccurrences.Remove(officerHandle);
                 }
 
-            if (!_settings.AuthorityGreetingEnabled)
+            if (!greetingEnabled)
             {
                 _nearbyAuthorityAllyCount = allies.Count;
                 return;

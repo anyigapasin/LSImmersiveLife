@@ -10,6 +10,52 @@ using GTA.Native;
 /// </summary>
 internal static class LSImmersiveDictionaryAnimation
 {
+    // Semantic references shared by the Dispatch scene owner. Availability and
+    // playback are separate checks: callers confirm on a later game tick.
+    internal static bool TryGetDispatchAction(string action, out string dictionary, out string clip)
+    {
+        dictionary = null; clip = null;
+        switch (action)
+        {
+            case "exchange_giver": dictionary = "mp_common"; clip = "givetake1_a"; break;
+            case "exchange_receiver": dictionary = "mp_common"; clip = "givetake1_b"; break;
+            case "conversation": dictionary = "misscarsteal4@actor"; clip = "actor_berating_loop"; break;
+            case "cower": dictionary = "amb@code_human_cower_stand@male@base"; clip = "base"; break;
+            case "camera": dictionary = "amb@world_human_paparazzi@male@base"; clip = "base"; break;
+            case "intoxicated": dictionary = "amb@world_human_bum_standing@drunk@idle_a"; clip = "idle_a"; break;
+            case "lying": dictionary = "amb@world_human_bum_slumped@male@laying_on_left_side@base"; clip = "base"; break;
+            case "threat": dictionary = "misscarsteal4@actor"; clip = "actor_berating_loop"; break;
+            case "surrender": dictionary = "random@arrests"; clip = "idle_2_hands_up"; break;
+            default: return false;
+        }
+        return true;
+    }
+
+    internal static bool RequestDispatchAction(string action)
+    {
+        string dictionary, clip;
+        float duration;
+        return TryGetDispatchAction(action, out dictionary, out clip)
+            && TryGetClipDuration(dictionary, clip, out duration);
+    }
+
+    internal static bool TryPlayDispatchAction(Ped actor, string action, bool loop)
+    {
+        string dictionary, clip;
+        float duration;
+        if (!TryGetDispatchAction(action, out dictionary, out clip)) return false;
+        if (IsPlaying(actor, dictionary, clip)) return true;
+        return TryPlay(actor, dictionary, clip, 4f, -4f, loop ? -1 : 4500,
+            loop ? 1 : 0, 1f, out duration);
+    }
+
+    internal static bool IsDispatchActionPlaying(Ped actor, string action)
+    {
+        string dictionary, clip;
+        return TryGetDispatchAction(action, out dictionary, out clip)
+            && IsPlaying(actor, dictionary, clip);
+    }
+
     internal enum ArrestTargetPosture
     {
         Invalid,
@@ -255,6 +301,7 @@ internal static class LSImmersiveDictionaryAnimation
 
         try
         {
+            if (!Function.Call<bool>(Hash.DOES_ANIM_DICT_EXIST, dictionary)) return false;
             Function.Call(Hash.REQUEST_ANIM_DICT, dictionary);
             if (!Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dictionary))
                 return false;

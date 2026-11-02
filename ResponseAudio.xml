@@ -905,4 +905,20 @@
       <Clip id="LSImmersiveLife_Police_radio_channel_clear_01" file="Police/en-US/radio/LSImmersiveLife_Police_radio_channel_clear_01.wav" language="en-US" voice="Microsoft Zira Desktop" status="ready" weight="1">The radio channel is clear.</Clip>
     </Event>
   </Group>
+  <!-- No new WAVs are fabricated. These semantic aliases reuse existing recordings.
+       Specialized wording remains a recording gap and is logged once when used. -->
+  <IncidentAliases>
+    <Alias type="stalking" recordingType="disturbance" />
+    <Alias type="lying_naked" recordingType="disturbance" />
+    <Alias type="people_theft" recordingType="disturbance" />
+    <Alias type="driver_assault" recordingType="violent_disturbance" />
+    <Alias type="ramming" recordingType="reckless_driver" />
+    <Alias type="slow_driving" recordingType="reckless_driver" />
+    <Alias type="massacre" recordingType="violent_disturbance" />
+    <Alias type="interior_dealing" recordingType="drug_activity" />
+    <Alias type="interior_gathering" recordingType="criminal_gathering" />
+  </IncidentAliases>
+  <Group id="dispatch_activity_expansion">
+    <Event id="lsimmersivelife.police.scene.activity_confirmed" speaker="dispatch" priority="Dispatch" cooldownMs="45000" expiresMs="15000" reuseEvent="lsimmersivelife.police.dispatch.scene_active" />
+  </Group>
 </LSImmersiveLifeAudio>

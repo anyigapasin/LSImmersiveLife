@@ -7,14 +7,17 @@
   <Weapons>
     <Weapon id="service_pistol" name="Service Pistol" weapon="WEAPON_PISTOL" weaponType="Sidearm" collection="LSPD Standard Issue" defaultAmmo="72" />
     <Weapon id="combat_pistol" name="Combat Pistol" weapon="WEAPON_COMBATPISTOL" weaponType="Sidearm" collection="LSPD Standard Issue" defaultAmmo="72" />
+    <Weapon id="service_pistol_mk2" name="Service Pistol Mk II" weapon="WEAPON_PISTOL_MK2" weaponType="Sidearm" collection="LSPD Standard Issue" defaultAmmo="72" />
     <Weapon id="heavy_pistol" name="Heavy Service Pistol" weapon="WEAPON_HEAVYPISTOL" weaponType="Sidearm" collection="Police Specialist" defaultAmmo="72" />
     <Weapon id="ap_pistol" name="Automatic Service Pistol" weapon="WEAPON_APPISTOL" weaponType="Sidearm" collection="Federal Response" defaultAmmo="108" />
     <Weapon id="stun_gun" name="Police Taser" weapon="WEAPON_STUNGUN" weaponType="Less Lethal" collection="LSPD Standard Issue" defaultAmmo="4" />
     <Weapon id="nightstick" name="Police Baton" weapon="WEAPON_NIGHTSTICK" weaponType="Melee" collection="LSPD Standard Issue" defaultAmmo="0" />
     <Weapon id="flashlight" name="Police Flashlight" weapon="WEAPON_FLASHLIGHT" weaponType="Utility" collection="LSPD Standard Issue" defaultAmmo="0" />
     <Weapon id="pump_shotgun" name="Pump Shotgun" weapon="WEAPON_PUMPSHOTGUN" weaponType="Shotgun" collection="Police Vehicle Rack" defaultAmmo="24" />
+    <Weapon id="pump_shotgun_mk2" name="Pump Shotgun Mk II" weapon="WEAPON_PUMPSHOTGUN_MK2" weaponType="Shotgun" collection="Tactical Response" defaultAmmo="24" />
     <Weapon id="bullpup_shotgun" name="Bullpup Response Shotgun" weapon="WEAPON_BULLPUPSHOTGUN" weaponType="Shotgun" collection="Tactical Response" defaultAmmo="32" />
     <Weapon id="carbine_rifle" name="Carbine Rifle" weapon="WEAPON_CARBINERIFLE" weaponType="Rifle" collection="Police Vehicle Rack" defaultAmmo="120" />
+    <Weapon id="carbine_rifle_mk2" name="Carbine Rifle Mk II" weapon="WEAPON_CARBINERIFLE_MK2" weaponType="Rifle" collection="Tactical Response" defaultAmmo="120" />
     <Weapon id="special_carbine" name="Special Carbine" weapon="WEAPON_SPECIALCARBINE" weaponType="Rifle" collection="Tactical Response" defaultAmmo="120" />
     <Weapon id="smg" name="Service SMG" weapon="WEAPON_SMG" weaponType="Submachine Gun" collection="Police Vehicle Rack" defaultAmmo="120" />
     <Weapon id="smg_mk2" name="Tactical SMG Mk II" weapon="WEAPON_SMG_MK2" weaponType="Submachine Gun" collection="Tactical Response" defaultAmmo="120" />

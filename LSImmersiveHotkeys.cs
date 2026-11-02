@@ -53,7 +53,7 @@ namespace LSImmersiveLife
             AddPoliceKey("Investigate Dispatch", LSPDControlAction.Investigate);
             AddPoliceKey("Secure Suspect", LSPDControlAction.Secure);
             AddPoliceKey("Request Prisoner Transport", LSPDControlAction.Transport);
-            AddPoliceKey("Complete Prisoner Transport", LSPDControlAction.TransportComplete);
+            AddPoliceKey("Complete the Transport", LSPDControlAction.TransportComplete);
             AddPoliceKey("Citizen Ped Response", LSPDControlAction.Interaction);
             AddPoliceKey("Back Up Menu", LSPDControlAction.Emergency);
             AddPoliceKey("Dispatch Menu", LSPDControlAction.DispatchMenu);

@@ -19,7 +19,7 @@
 
   <Controls>
     <Universal menuToggle="F4" />
-    <Police patrol="P" accept="Y" reject="N" investigate="I" secure="E" transport="Z" transportComplete="T" interaction="G" emergency="B" reset="F10" dispatchMenu="V" />
+    <Police patrol="P" accept="Y" reject="N" investigate="I" secure="E" transport="Z" transportComplete="T" interaction="G" emergency="B" reset="F12" dispatchMenu="V" />
   </Controls>
 
   <Police>
@@ -27,7 +27,7 @@
 
     <Patrol enabled="true" reuseCurrentPoliceVehicle="true" preventDuplicatePersonalVehicle="true" />
 
-    <Dispatch enabled="true" minimumQuietPatrolSeconds="180" maximumQuietPatrolSeconds="600" repeatProtectionMinutes="20" maximumActiveIncidents="1" maximumSuspects="3" audioMinimumGapSeconds="5" contextClearQuietSeconds="30" playerRadiusFallbackMinimumDistanceMeters="80" playerRadiusFallbackMaximumDistanceMeters="150" />
+    <Dispatch enabled="true" minimumQuietPatrolSeconds="180" maximumQuietPatrolSeconds="600" postIncidentCooldownSeconds="10" repeatProtectionMinutes="20" maximumActiveIncidents="1" maximumSuspects="5" audioMinimumGapSeconds="5" contextClearQuietSeconds="30" playerRadiusFallbackMinimumDistanceMeters="80" playerRadiusFallbackMaximumDistanceMeters="150" />
 
     <!-- Quiet, player-led criminal intelligence. This is intentionally separate
          from Dispatch and uses LSPDCrimeActivityEvent.xml only as scene data. -->

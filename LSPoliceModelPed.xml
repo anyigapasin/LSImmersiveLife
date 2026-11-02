@@ -18,6 +18,9 @@
     <Ped id="noose_security" name="NOOSE Federal Security Officer" model="s_m_m_fibsec_01" modelType="Federal Security Officer" agencyId="noose" source="GTA V" addon="false" />
     <Ped id="fib_field_agent" name="FIB Field Agent" model="s_m_m_fiboffice_01" modelType="Federal Agent" agencyId="fib" source="GTA V" addon="false" />
     <Ped id="fib_senior_agent" name="FIB Senior Agent" model="s_m_m_fiboffice_02" modelType="Federal Agent" agencyId="fib" source="GTA V" addon="false" />
+    <Ped id="lspd_male_patrol_alternate" name="LSPD Male Patrol Officer - Alternate" model="s_m_m_cop_01" modelType="Uniformed Patrol Officer" agencyId="lspd" source="GTA V" addon="false" />
+    <Ped id="lspd_winter_patrol" name="LSPD Winter Patrol Officer" model="s_m_m_snowcop_01" modelType="Winter Patrol Officer" agencyId="lspd" source="GTA V" addon="false" />
+    <Ped id="iaa_security_agent" name="IAA Security Agent" model="s_m_m_ciasec_01" modelType="Federal Security Officer" source="GTA V" addon="false" />
     <Ped id="prison_guard" name="Bolingbroke Prison Guard" model="s_m_m_prisguard_01" modelType="Corrections Officer" agencyId="sahp" source="GTA V" addon="false" />
   </PedModels>
 </LSPoliceModelPed>
