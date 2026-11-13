@@ -25,9 +25,34 @@ namespace LSImmersiveLife
     /// </summary>
     internal sealed class LSImmersiveDeveloper
     {
+        private const int WaypointTeleportFadeOutMilliseconds = 300;
+        private const int WaypointTeleportFadeInMilliseconds = 350;
+        private const int WaypointTeleportSceneRadius = 80;
+        private const int WaypointTeleportTimeoutSeconds = 15;
+        private const int WaypointTeleportPollMilliseconds = 100;
+        private const int WaypointTeleportSurfaceProbeRetryMilliseconds = 350;
+        private const int WaypointTeleportSurfaceProbeMaximumAttempts = 4;
+        private const int WaypointTeleportFootSurfaceProbeMaximumAttempts = 9;
+        private const int WaypointTeleportFootGroundMaximumAttempts = 4;
+        private const int WaypointTeleportFootGroundRetryMilliseconds = 400;
+        private const float WaypointTeleportMaximumOffsetMeters = 250f;
+        private const float WaypointTeleportDestinationStreamThresholdMeters = 50f;
+        private const float WaypointTeleportMinimumFootSurfaceNormalZ = 0.65f;
+        private const float WaypointTeleportMinimumVehicleSurfaceNormalZ = 0.75f;
+        private const int NotificationLineCharacterLimit = 48;
+        private const int NotificationLineLimit = 4;
+
+        private enum WaypointTeleportStage
+        {
+            None,
+            WaitingForScene,
+            VerifyingDestination
+        }
+
         private readonly object _sync = new object();
         private readonly LSIMMERSIVEPATH _paths;
         private readonly LSImmersiveLog _log;
+        private readonly Func<string> _runtimeResetCommand;
         private readonly LSDeveloperSettings _settings;
         private readonly LSDeveloperBranchCatalog _branchCatalog;
         private readonly string _configurationPath;
@@ -37,6 +62,11 @@ namespace LSImmersiveLife
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<int, LSDeveloperTaskObservation> _lastTasks =
             new Dictionary<int, LSDeveloperTaskObservation>();
+        private readonly Queue<LSDeveloperDispatchSceneUpdate> _dispatchSceneUpdates =
+            new Queue<LSDeveloperDispatchSceneUpdate>();
+        private readonly List<Blip> _dispatchInspectionBlips = new List<Blip>();
+        private readonly Dictionary<int, Blip> _dispatchInspectionPedBlips =
+            new Dictionary<int, Blip>();
         private long _nextSequence;
         private DateTime _nextSampleUtc;
         private DateTime _nextRuntimeWatchUtc;
@@ -47,8 +77,47 @@ namespace LSImmersiveLife
         private LSDeveloperTestSession _lastTest;
         private LSDeveloperAnalysisResult _lastAnalysis;
         private bool _shutDown;
+        private WaypointTeleportStage _waypointTeleportStage;
+        private Entity _waypointTeleportEntity;
+        private Ped _waypointTeleportPlayer;
+        private Vector3 _waypointTeleportWaypoint;
+        private float _waypointTeleportHeightHint;
+        private Vector3 _waypointTeleportOrigin;
+        private float _waypointTeleportOriginHeading;
+        private Vector3 _waypointTeleportDestination;
+        private float _waypointTeleportDestinationHeading;
+        private float _waypointTeleportOffsetMeters;
+        private float _waypointTeleportSurfaceNormalZ;
+        private string _waypointTeleportPlacement;
+        private DateTime _waypointTeleportNextPollUtc = DateTime.MinValue;
+        private DateTime _waypointSurfaceProbeNextStartUtc = DateTime.MinValue;
+        private DateTime _waypointTeleportDeadlineUtc = DateTime.MinValue;
+        private DateTime _waypointTeleportLandingDeadlineUtc = DateTime.MinValue;
+        private int _waypointSurfaceProbeHandle;
+        private int _waypointSurfaceProbeAttempts;
+        private Vector3 _waypointSurfaceProbeOrigin;
+        private Vector3 _waypointSurfaceProbeEnd;
+        private int _waypointFootGroundAttempts;
+        private DateTime _waypointFootGroundNextAttemptUtc = DateTime.MinValue;
+        private string _waypointSurfaceProbeFailure = string.Empty;
+        private readonly List<int> _waypointTeleportPassengerHandles = new List<int>();
+        private bool _waypointTeleportIsVehicle;
+        private bool _waypointTeleportSceneLoadRequested;
+        private bool _waypointTeleportDestinationResolved;
+        private bool _waypointTeleportMoved;
+        private bool _waypointSurfaceProbeCompleted;
         private NativeListItem<string> _testEventItem;
         private NativeListItem<string> _branchTestItem;
+        private NativeItem _testEventPreviewItem;
+        private NativeItem _testEventPreviewValueItem;
+        private NativeItem _branchPreviewItem;
+        private NativeItem _branchPreviewValueItem;
+        private NativeItem _checkDispatchScenesItem;
+        private NativeItem _dispatchSceneInspectionStatusItem;
+        private string _dispatchInspectionSearchId = string.Empty;
+        private string _dispatchInspectionOccurrenceId = string.Empty;
+        private string _lastInspectionFailureSignature = string.Empty;
+        private DateTime _lastInspectionFailureNoticeUtc = DateTime.MinValue;
         private NativeItem _liveBranchStatusItem;
         private NativeItem _startBranchTestItem;
         private NativeItem _captureBranchTestItem;
@@ -61,6 +130,16 @@ namespace LSImmersiveLife
         private readonly List<NativeItem> _testResultFields = new List<NativeItem>();
 
         internal NativeMenu Menu { get; private set; }
+
+        internal bool IsDispatchSceneInspectionEnabled
+        {
+            get
+            {
+                return !_shutDown && _settings.Enabled
+                    && _settings.DeveloperMenuEnabled
+                    && _settings.CheckDispatchScenes;
+            }
+        }
 
         internal IEnumerable<NativeMenu> Menus
         {
@@ -81,10 +160,14 @@ namespace LSImmersiveLife
                 || _testUnknownMenu.Visible; }
         }
 
-        internal LSImmersiveDeveloper(LSIMMERSIVEPATH paths, LSImmersiveLog log)
+        internal LSImmersiveDeveloper(
+            LSIMMERSIVEPATH paths,
+            LSImmersiveLog log,
+            Func<string> runtimeResetCommand)
         {
             _paths = paths ?? throw new ArgumentNullException("paths");
             _log = log;
+            _runtimeResetCommand = runtimeResetCommand;
             _configurationPath = _paths.DeveloperXmlPath;
             _settings = LSDeveloperSettings.Load(
                 _configurationPath,
@@ -137,8 +220,15 @@ namespace LSImmersiveLife
         /// </summary>
         internal void Process()
         {
-            if (_shutDown || !_settings.Enabled)
+            if (_shutDown)
                 return;
+
+            ProcessWaypointTeleport();
+
+            if (!_settings.Enabled)
+                return;
+
+            ProcessDispatchSceneInspection();
 
             DateTime now = DateTime.UtcNow;
             if (_activeTest != null
@@ -171,8 +261,12 @@ namespace LSImmersiveLife
 
             try
             {
+                CancelWaypointTeleport("Script shutdown", false);
+
                 if (_activeTest != null)
                     EndTestInternal("Script shutdown", false);
+
+                ClearDispatchSceneInspectionBlips();
 
                 if (_settings.WriteLifecycleMarkers && _log != null)
                     _log.Runtime("DEVELOPER_STOPPED", "Passive Developer Mode stopped.");
@@ -284,6 +378,35 @@ namespace LSImmersiveLife
 
         private void BuildMenu()
         {
+            AddHeader("Developer Tools");
+
+            _checkDispatchScenesItem = new NativeItem(
+                "Check Dispatch Scenes: OFF",
+                "Inspect the live Dispatch preparation. Prepared participants stay hidden until the offer is published.");
+            _checkDispatchScenesItem.Activated += delegate
+            {
+                ToggleDispatchSceneInspection();
+            };
+            Menu.Add(_checkDispatchScenesItem);
+
+            _dispatchSceneInspectionStatusItem = new NativeItem(
+                "Dispatch Scene Check",
+                "Inspection is disabled.");
+            _dispatchSceneInspectionStatusItem.Enabled = false;
+            Menu.Add(_dispatchSceneInspectionStatusItem);
+
+            AddAction(
+                "Teleport to Waypoint",
+                "Teleport to terrain, hills, beaches, remote places, or rooftops at the pin. Vehicle and occupants stay together; safe fallback is within 250 m.",
+                BeginWaypointTeleport);
+
+            AddAction(
+                "Reset Runtime",
+                "Recover Police runtime tracking. Scene actors use their safe cleanup lifecycle; your Player ped and Police profile stay unchanged.",
+                ResetRuntime);
+
+            AddHeader("Branch Tests");
+
             string[] testEvents = _branchCatalog.EventNames();
             string[] eventChoices = testEvents.Length == 0
                 ? new[] { "No documented test events" }
@@ -291,7 +414,7 @@ namespace LSImmersiveLife
 
             _testEventItem = new NativeListItem<string>(
                 "Test Event",
-                "Choose the gameplay event to inspect.",
+                "Select a gameplay event.",
                 eventChoices);
             _testEventItem.SelectedItem = eventChoices[0];
             _testEventItem.Enabled = testEvents.Length > 0;
@@ -301,17 +424,38 @@ namespace LSImmersiveLife
             };
             Menu.Add(_testEventItem);
 
+            _testEventPreviewItem = new NativeItem(
+                "Selected Test Event",
+                "The selected gameplay event.");
+            _testEventPreviewItem.Enabled = false;
+            Menu.Add(_testEventPreviewItem);
+
+            _testEventPreviewValueItem = new NativeItem("No test event selected.");
+            _testEventPreviewValueItem.Enabled = false;
+            Menu.Add(_testEventPreviewValueItem);
+
             _branchTestItem = new NativeListItem<string>(
-                "Branch Test",
-                "Choose a documented branch for the selected event.",
+                "Select Branch",
+                "Choose a branch. Its full name appears below.",
                 new[] { "No documented branches" });
             _branchTestItem.SelectedItem = "No documented branches";
             _branchTestItem.Enabled = false;
             _branchTestItem.ItemChanged += delegate
             {
+                UpdateBranchPreview();
                 RefreshMenuControls();
             };
             Menu.Add(_branchTestItem);
+
+            _branchPreviewItem = new NativeItem(
+                "Selected Branch",
+                "The full selected branch name.");
+            _branchPreviewItem.Enabled = false;
+            Menu.Add(_branchPreviewItem);
+
+            _branchPreviewValueItem = new NativeItem("No documented branch selected.");
+            _branchPreviewValueItem.Enabled = false;
+            Menu.Add(_branchPreviewValueItem);
 
             _startBranchTestItem = AddAction(
                 "Start the Branch Test",
@@ -377,7 +521,12 @@ namespace LSImmersiveLife
             if (testEvents.Length > 0)
                 UpdateBranchTestChoices(eventChoices[0]);
             else
+            {
+                UpdateTestEventPreview(string.Empty);
+                UpdateBranchPreview();
                 RefreshMenuControls();
+            }
+            RefreshDispatchSceneInspectionMenu();
         }
 
         private void UpdateBranchTestChoices(string eventName)
@@ -393,12 +542,17 @@ namespace LSImmersiveLife
             }
             else
             {
-                foreach (string branchName in branchChoices)
-                    _branchTestItem.Add(branchName);
-                _branchTestItem.SelectedItem = branchChoices[0];
+                for (int i = 0; i < branchChoices.Length; i++)
+                    _branchTestItem.Add("Branch "
+                        + (i + 1).ToString(CultureInfo.InvariantCulture)
+                        + " of "
+                        + branchChoices.Length.ToString(CultureInfo.InvariantCulture));
+                _branchTestItem.SelectedIndex = 0;
                 _branchTestItem.Enabled = true;
             }
 
+            UpdateTestEventPreview(eventName);
+            UpdateBranchPreview();
             RefreshMenuControls();
         }
 
@@ -410,7 +564,7 @@ namespace LSImmersiveLife
             bool developerEnabled = _settings.Enabled && _settings.DeveloperMenuEnabled;
             bool hasSelectedBranch = _branchCatalog.Find(
                 _testEventItem.SelectedItem,
-                _branchTestItem.SelectedItem) != null;
+                SelectedBranchName()) != null;
             bool hasTest = _activeTest != null || _lastTest != null;
 
             if (_startBranchTestItem != null)
@@ -421,6 +575,8 @@ namespace LSImmersiveLife
                 _showCheckpointTestItem.Enabled = developerEnabled && hasTest;
             if (_endCheckpointTaskItem != null)
                 _endCheckpointTaskItem.Enabled = developerEnabled && _activeTest != null;
+            if (_checkDispatchScenesItem != null)
+                _checkDispatchScenesItem.Enabled = developerEnabled;
 
             if (_liveBranchStatusItem != null)
             {
@@ -431,6 +587,1842 @@ namespace LSImmersiveLife
                     ? "No branch test is currently active."
                     : _activeTest.Branch.EventName + " — " + _activeTest.Branch.Name;
             }
+            RefreshDispatchSceneInspectionMenu();
+        }
+
+        private void UpdateTestEventPreview(string eventName)
+        {
+            if (_testEventPreviewValueItem == null)
+                return;
+            _testEventPreviewValueItem.Title = string.IsNullOrWhiteSpace(eventName)
+                ? "No Test Event selected."
+                : eventName;
+        }
+
+        private void UpdateBranchPreview()
+        {
+            if (_branchPreviewValueItem == null)
+                return;
+            LSDeveloperBranchDefinition branch = _branchCatalog.Find(
+                _testEventItem == null ? string.Empty : _testEventItem.SelectedItem,
+                SelectedBranchName());
+            _branchPreviewValueItem.Title = branch == null
+                ? "No documented branch selected."
+                : branch.Name;
+            _branchPreviewValueItem.Description = branch == null
+                ? "Choose a documented branch above."
+                : Limit(branch.ExpectedBehavior ?? branch.Name, 220);
+        }
+
+        private string SelectedBranchName()
+        {
+            if (_testEventItem == null || _branchTestItem == null)
+                return string.Empty;
+
+            string[] branchNames = _branchCatalog.BranchNames(_testEventItem.SelectedItem);
+            int selectedIndex = _branchTestItem.SelectedIndex;
+            return selectedIndex < 0 || selectedIndex >= branchNames.Length
+                ? string.Empty
+                : branchNames[selectedIndex];
+        }
+
+        private void BeginWaypointTeleport()
+        {
+            if (_waypointTeleportStage != WaypointTeleportStage.None)
+            {
+                Notify("A waypoint move is already in progress.");
+                return;
+            }
+
+            if (!_settings.Enabled || !_settings.DeveloperMenuEnabled)
+            {
+                Notify("Developer Mode is disabled in LSDeveloper.xml.");
+                return;
+            }
+
+            if (!Game.IsWaypointActive)
+            {
+                Notify("Set a map waypoint before choosing Teleport to Waypoint.");
+                return;
+            }
+
+            Ped player = Game.Player.Character;
+            if (player == null || !player.Exists())
+            {
+                Notify("The Player is not available for the waypoint move.");
+                return;
+            }
+
+            if (Function.Call<bool>(Hash.IS_SCREEN_FADED_OUT)
+                || Function.Call<bool>(Hash.IS_SCREEN_FADING_OUT)
+                || Function.Call<bool>(Hash.IS_SCREEN_FADING_IN))
+            {
+                Notify("Wait for the current screen transition to finish before teleporting.");
+                return;
+            }
+
+            Vector3 waypoint;
+            Entity target = player;
+            bool moveVehicle = false;
+            List<int> passengerHandles = new List<int>();
+            Vector3 origin = Vector3.Zero;
+            float originHeading = 0f;
+            try
+            {
+                waypoint = World.WaypointPosition;
+                moveVehicle = player.IsInVehicle();
+                if (moveVehicle)
+                {
+                    Vehicle vehicle = player.CurrentVehicle;
+                    if (vehicle == null || !vehicle.Exists())
+                    {
+                        Notify("The Player's current vehicle is unavailable; nothing was moved.");
+                        return;
+                    }
+                    target = vehicle;
+                    Ped[] occupants = vehicle.Occupants;
+                    if (occupants != null)
+                    {
+                        foreach (Ped occupant in occupants)
+                        {
+                            if (occupant != null && occupant.Exists()
+                                && occupant.Handle != player.Handle)
+                                passengerHandles.Add(occupant.Handle);
+                        }
+                    }
+                }
+                origin = target.Position;
+                originHeading = target.Heading;
+            }
+            catch (Exception error)
+            {
+                LogException("DEVELOPER_WAYPOINT_TELEPORT_PREPARE_FAILED", error);
+                Notify("The waypoint or current vehicle could not be read.");
+                return;
+            }
+
+            if (float.IsNaN(waypoint.X) || float.IsInfinity(waypoint.X)
+                || float.IsNaN(waypoint.Y) || float.IsInfinity(waypoint.Y)
+                || float.IsNaN(waypoint.Z) || float.IsInfinity(waypoint.Z))
+            {
+                Notify("The map waypoint does not have a usable position.");
+                return;
+            }
+
+            _waypointTeleportPlayer = player;
+            _waypointTeleportEntity = target;
+            _waypointTeleportWaypoint = waypoint;
+            _waypointTeleportHeightHint = waypoint.Z;
+            if (Math.Abs(waypoint.Z) < 0.1f)
+            {
+                try
+                {
+                    float approximateHeight = World.GetApproxHeightForPoint(
+                        new Vector2(waypoint.X, waypoint.Y));
+                    _waypointTeleportHeightHint = !float.IsNaN(approximateHeight)
+                        && !float.IsInfinity(approximateHeight)
+                        && approximateHeight > -50f && approximateHeight < 1800f
+                        ? approximateHeight : 50f;
+                }
+                catch { _waypointTeleportHeightHint = 50f; }
+            }
+            _waypointTeleportOrigin = origin;
+            _waypointTeleportOriginHeading = originHeading;
+            _waypointTeleportDestination = Vector3.Zero;
+            _waypointTeleportDestinationHeading = 0f;
+            _waypointTeleportOffsetMeters = 0f;
+            _waypointTeleportPlacement = string.Empty;
+            _waypointTeleportSurfaceNormalZ = 0f;
+            _waypointTeleportIsVehicle = moveVehicle;
+            _waypointTeleportPassengerHandles.Clear();
+            _waypointTeleportPassengerHandles.AddRange(passengerHandles);
+            _waypointTeleportDestinationResolved = false;
+            _waypointTeleportMoved = false;
+            _waypointSurfaceProbeHandle = 0;
+            _waypointSurfaceProbeAttempts = 0;
+            _waypointSurfaceProbeOrigin = Vector3.Zero;
+            _waypointSurfaceProbeEnd = Vector3.Zero;
+            _waypointFootGroundAttempts = 0;
+            _waypointFootGroundNextAttemptUtc = DateTime.MinValue;
+            _waypointSurfaceProbeFailure = string.Empty;
+            _waypointSurfaceProbeNextStartUtc = DateTime.MinValue;
+            _waypointSurfaceProbeCompleted = false;
+            _waypointTeleportNextPollUtc = DateTime.MinValue;
+            _waypointTeleportDeadlineUtc = DateTime.UtcNow.AddSeconds(
+                WaypointTeleportTimeoutSeconds);
+            _waypointTeleportLandingDeadlineUtc = DateTime.MinValue;
+            _waypointTeleportStage = WaypointTeleportStage.WaitingForScene;
+
+            try
+            {
+                Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                    waypoint.X, waypoint.Y, _waypointTeleportHeightHint);
+                _waypointTeleportSceneLoadRequested = Function.Call<bool>(
+                    Hash.NEW_LOAD_SCENE_START_SPHERE,
+                    waypoint.X,
+                    waypoint.Y,
+                    _waypointTeleportHeightHint,
+                    (float)WaypointTeleportSceneRadius,
+                    0);
+                if (!_waypointTeleportSceneLoadRequested)
+                {
+                    CancelWaypointTeleport(
+                        "GTA did not start streaming the waypoint area. Nothing was moved.",
+                        true);
+                    return;
+                }
+                Function.Call(Hash.DO_SCREEN_FADE_OUT,
+                    WaypointTeleportFadeOutMilliseconds);
+
+                LogRuntime(
+                    "DEVELOPER_WAYPOINT_TELEPORT_STARTED",
+                    "Player=" + player.Handle
+                    + "; Vehicle=" + (moveVehicle ? target.Handle.ToString(CultureInfo.InvariantCulture) : "none")
+                    + "; PassengerHandles=" + string.Join(",", passengerHandles)
+                    + "; Waypoint=" + waypoint
+                    + "; StreamHeightHint=" + _waypointTeleportHeightHint.ToString("0.0", CultureInfo.InvariantCulture));
+                Notify("Streaming the waypoint area and checking for a safe surface.");
+            }
+            catch (Exception error)
+            {
+                LogException("DEVELOPER_WAYPOINT_TELEPORT_START_FAILED", error);
+                CancelWaypointTeleport("The waypoint area could not be loaded.", true);
+            }
+        }
+
+        private void ResetRuntime()
+        {
+            if (_runtimeResetCommand == null)
+            {
+                Notify("~b~RUNTIME RESET~s~~n~No runtime reset route is available.");
+                return;
+            }
+
+            try
+            {
+                string result = _runtimeResetCommand();
+                bool recovered = !string.IsNullOrWhiteSpace(result)
+                    && result.StartsWith("Police runtime recovered.",
+                        StringComparison.OrdinalIgnoreCase);
+                bool roleUnavailable = !string.IsNullOrWhiteSpace(result)
+                    && result.StartsWith("No Police runtime is registered",
+                        StringComparison.OrdinalIgnoreCase);
+                bool authorityInactive = !string.IsNullOrWhiteSpace(result)
+                    && result.StartsWith("Police Authority must be active",
+                        StringComparison.OrdinalIgnoreCase);
+                if (_log != null)
+                    _log.Runtime("DEVELOPER_RUNTIME_RESET",
+                        string.IsNullOrWhiteSpace(result) ? "No result returned." : result);
+                Notify(recovered
+                    ? "~b~RUNTIME RESET~s~~n~Systems recovered. Scene actors retained."
+                        + "~n~Player and profile unchanged."
+                    : roleUnavailable
+                        ? "~b~RUNTIME RESET~s~~n~No Police runtime for this role."
+                            + "~n~Role unchanged."
+                        : authorityInactive
+                            ? "~b~RUNTIME RESET~s~~n~Police Authority is inactive."
+                                + "~n~No reset performed."
+                            : "~b~RUNTIME RESET~s~~n~No reset performed."
+                                + "~n~See LSDebug.log for details.");
+            }
+            catch (Exception ex)
+            {
+                if (_log != null)
+                    _log.Exception("DEVELOPER_RUNTIME_RESET_FAILED", ex);
+                Notify("~r~RUNTIME RESET FAILED~s~~n~See LSDebug.log for details.");
+            }
+        }
+
+        private void ProcessWaypointTeleport()
+        {
+            if (_waypointTeleportStage == WaypointTeleportStage.None)
+                return;
+
+            DateTime now = DateTime.UtcNow;
+            if (now < _waypointTeleportNextPollUtc)
+                return;
+            _waypointTeleportNextPollUtc = now.AddMilliseconds(
+                WaypointTeleportPollMilliseconds);
+
+            try
+            {
+                bool screenReady = Function.Call<bool>(Hash.IS_SCREEN_FADED_OUT);
+                bool sceneReady = !_waypointTeleportSceneLoadRequested
+                    || Function.Call<bool>(Hash.IS_NEW_LOAD_SCENE_LOADED);
+                if (!screenReady || !sceneReady)
+                {
+                    if (now >= _waypointTeleportDeadlineUtc)
+                    {
+                        if (_waypointTeleportStage
+                            == WaypointTeleportStage.VerifyingDestination)
+                        {
+                            FinishWaypointTeleport(
+                                false,
+                                "Moved=" + _waypointTeleportDestination
+                                + "; CollisionLoaded=false; Arrival=Unconfirmed; SceneStreamingTimedOut=true",
+                                "GTA could not finish loading the arrival area. The move may have happened, but landing is unconfirmed.");
+                        }
+                        else
+                            CancelWaypointTeleport(
+                                "The waypoint area did not finish loading. Nothing was moved.",
+                                true);
+                    }
+                    return;
+                }
+
+                if (_waypointTeleportPlayer == null
+                    || !_waypointTeleportPlayer.Exists()
+                    || Game.Player.Character == null
+                    || !Game.Player.Character.Exists()
+                    || Game.Player.Character.Handle != _waypointTeleportPlayer.Handle
+                    || _waypointTeleportEntity == null
+                    || !_waypointTeleportEntity.Exists())
+                {
+                    CancelWaypointTeleport(
+                        "The Player or selected vehicle changed during loading. Nothing was moved.",
+                        true);
+                    return;
+                }
+
+                if (_waypointTeleportIsVehicle)
+                {
+                    Vehicle currentVehicle = _waypointTeleportPlayer.CurrentVehicle;
+                    if (!_waypointTeleportPlayer.IsInVehicle()
+                        || currentVehicle == null
+                        || !currentVehicle.Exists()
+                        || currentVehicle.Handle != _waypointTeleportEntity.Handle)
+                    {
+                        CancelWaypointTeleport(
+                            "The Player left the selected vehicle during loading. Nothing was moved.",
+                            true);
+                        return;
+                    }
+                }
+                else if (_waypointTeleportPlayer.IsInVehicle())
+                {
+                    CancelWaypointTeleport(
+                        "The Player entered a vehicle during loading. Nothing was moved.",
+                        true);
+                    return;
+                }
+
+                if (_waypointTeleportStage
+                    == WaypointTeleportStage.VerifyingDestination)
+                {
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                        _waypointTeleportDestination.X,
+                        _waypointTeleportDestination.Y,
+                        _waypointTeleportDestination.Z);
+                    bool collisionLoaded = Function.Call<bool>(
+                        Hash.HAS_COLLISION_LOADED_AROUND_ENTITY,
+                        _waypointTeleportEntity.Handle);
+                    if (collisionLoaded)
+                    {
+                        float distanceFromDestination = SpatialDistance(
+                            _waypointTeleportEntity.Position,
+                            _waypointTeleportDestination);
+                        if (distanceFromDestination > 10f)
+                        {
+                            FinishWaypointTeleport(
+                                false,
+                                "Moved=" + _waypointTeleportEntity.Position
+                                + "; CollisionLoaded=true; Arrival=OutsideResolvedLandingArea"
+                                + "; DistanceMeters="
+                                + distanceFromDestination.ToString("0.0", CultureInfo.InvariantCulture),
+                                "The vehicle moved outside the checked landing area. Arrival is unconfirmed; inspect the position before continuing.");
+                            return;
+                        }
+
+                        if (_waypointTeleportIsVehicle)
+                        {
+                            Vehicle vehicle = _waypointTeleportEntity as Vehicle;
+                            Ped[] occupants = vehicle == null ? null : vehicle.Occupants;
+                            bool passengersRetained = _waypointTeleportPassengerHandles.Count == 0
+                                || (occupants != null
+                                && _waypointTeleportPassengerHandles.All(handle =>
+                                    occupants.Any(occupant => occupant != null
+                                        && occupant.Exists()
+                                        && occupant.Handle == handle)));
+                            if (!passengersRetained)
+                            {
+                                FinishWaypointTeleport(false,
+                                    "Vehicle=" + _waypointTeleportEntity.Handle
+                                    + "; Arrival=PassengerOccupancyUnconfirmed",
+                                    "The vehicle arrived, but its original passenger occupancy was not confirmed.");
+                                return;
+                            }
+                        }
+
+                        FinishWaypointTeleport(true,
+                            "Moved=" + _waypointTeleportEntity.Position
+                            + "; OffsetFromWaypointMeters="
+                            + _waypointTeleportOffsetMeters.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; Placement=" + (_waypointTeleportPlacement ?? "Unknown")
+                            + "; SurfaceNormalZ="
+                            + (_waypointTeleportSurfaceNormalZ <= 0f
+                                ? "not-captured"
+                                : _waypointTeleportSurfaceNormalZ.ToString("0.00", CultureInfo.InvariantCulture))
+                            + "; CollisionAroundEntity=true; Arrival=Confirmed"
+                            + "; PassengerHandlesRetained="
+                            + string.Join(",", _waypointTeleportPassengerHandles));
+                        return;
+                    }
+
+                    if (now >= _waypointTeleportLandingDeadlineUtc)
+                    {
+                        FinishWaypointTeleport(
+                            false,
+                            "Moved=" + _waypointTeleportEntity.Position
+                            + "; CollisionAroundEntity=false; Arrival=Unconfirmed; LandingWaitSeconds=5",
+                            "GTA did not confirm collision at the arrival point. The Player or vehicle may have moved, but landing is unconfirmed.");
+                        return;
+                    }
+                    return;
+                }
+
+                if (!_waypointSurfaceProbeCompleted
+                    && !_waypointTeleportDestinationResolved)
+                {
+                    int maximumSurfaceAttempts = _waypointTeleportIsVehicle
+                        ? WaypointTeleportSurfaceProbeMaximumAttempts
+                        : WaypointTeleportFootSurfaceProbeMaximumAttempts;
+                    if (_waypointSurfaceProbeHandle == 0)
+                    {
+                        if (now < _waypointSurfaceProbeNextStartUtc)
+                            return;
+
+                        _waypointSurfaceProbeAttempts++;
+                        _waypointSurfaceProbeHandle = StartWaypointSurfaceProbe();
+                        if (_waypointSurfaceProbeHandle == 0)
+                        {
+                            LogWaypointSurfaceProbe(0, false, Vector3.Zero,
+                                Vector3.Zero, "Probe did not start.");
+                            if (_waypointSurfaceProbeAttempts
+                                >= maximumSurfaceAttempts)
+                                _waypointSurfaceProbeCompleted = true;
+                            else
+                                _waypointSurfaceProbeNextStartUtc = now.AddMilliseconds(
+                                    WaypointTeleportSurfaceProbeRetryMilliseconds);
+                            return;
+                        }
+
+                        return;
+                    }
+
+                    bool surfaceHit;
+                    Vector3 surfacePosition;
+                    Vector3 surfaceNormal;
+                    int surfaceStatus = ReadWaypointSurfaceProbe(
+                        out surfaceHit,
+                        out surfacePosition,
+                        out surfaceNormal);
+                    if (surfaceStatus == 1)
+                    {
+                        if (now >= _waypointTeleportDeadlineUtc)
+                            CancelWaypointTeleport(
+                                "The waypoint surface check did not finish loading. Nothing was moved.",
+                                true);
+                        return;
+                    }
+
+                    _waypointSurfaceProbeHandle = 0;
+                    if (surfaceStatus == 2)
+                    {
+                        Vector3 surfaceDestination;
+                        float surfaceHeading;
+                        float surfaceOffsetMeters;
+                        float surfaceNormalZ;
+                        string surfaceFailure = string.Empty;
+                        if (surfaceHit
+                            && TryResolveWaypointSurface(
+                                surfacePosition,
+                                surfaceNormal,
+                                out surfaceDestination,
+                                out surfaceHeading,
+                                out surfaceOffsetMeters,
+                                out surfaceNormalZ,
+                                out surfaceFailure))
+                        {
+                            _waypointTeleportDestination = surfaceDestination;
+                            _waypointTeleportDestinationHeading = surfaceHeading;
+                            _waypointTeleportOffsetMeters = surfaceOffsetMeters;
+                            _waypointTeleportSurfaceNormalZ = surfaceNormalZ;
+                            _waypointTeleportPlacement = "SolidSurface";
+                            _waypointTeleportDestinationResolved = true;
+                        }
+                        else if (surfaceHit)
+                            _waypointSurfaceProbeFailure = surfaceFailure;
+
+                        LogWaypointSurfaceProbe(surfaceStatus, surfaceHit,
+                            surfacePosition, surfaceNormal,
+                            _waypointTeleportDestinationResolved
+                                ? "Accepted=" + _waypointTeleportDestination
+                                : surfaceHit ? surfaceFailure : "No surface hit.");
+
+                        if (!_waypointTeleportDestinationResolved
+                            && _waypointSurfaceProbeAttempts
+                                < maximumSurfaceAttempts)
+                        {
+                            _waypointSurfaceProbeNextStartUtc = now.AddMilliseconds(
+                                WaypointTeleportSurfaceProbeRetryMilliseconds);
+                            return;
+                        }
+
+                        _waypointSurfaceProbeCompleted = true;
+                    }
+                    else if (_waypointSurfaceProbeAttempts
+                        < maximumSurfaceAttempts)
+                    {
+                        LogWaypointSurfaceProbe(surfaceStatus, false,
+                            Vector3.Zero, Vector3.Zero,
+                            "Probe did not complete with a hit result.");
+                        _waypointSurfaceProbeNextStartUtc = now.AddMilliseconds(
+                            WaypointTeleportSurfaceProbeRetryMilliseconds);
+                        return;
+                    }
+                    else
+                    {
+                        LogWaypointSurfaceProbe(surfaceStatus, false,
+                            Vector3.Zero, Vector3.Zero,
+                            "Probe did not complete with a hit result.");
+                        _waypointSurfaceProbeCompleted = true;
+                    }
+                }
+
+                if (!_waypointTeleportDestinationResolved)
+                {
+                    if (!_waypointTeleportIsVehicle
+                        && now < _waypointFootGroundNextAttemptUtc)
+                        return;
+                    if (!_waypointTeleportIsVehicle)
+                        _waypointFootGroundAttempts++;
+                    Vector3 destination;
+                    float heading;
+                    float offsetMeters;
+                    string placement;
+                    string failureReason;
+                    if (!TryResolveWaypointTeleportDestination(
+                        out destination,
+                        out heading,
+                        out offsetMeters,
+                        out placement,
+                        out failureReason))
+                    {
+                        if (!_waypointTeleportIsVehicle
+                            && _waypointFootGroundAttempts
+                                < WaypointTeleportFootGroundMaximumAttempts
+                            && now < _waypointTeleportDeadlineUtc)
+                        {
+                            _waypointFootGroundNextAttemptUtc = now.AddMilliseconds(
+                                WaypointTeleportFootGroundRetryMilliseconds);
+                            return;
+                        }
+                        CancelWaypointTeleport(failureReason
+                            + " Surface probes=" + _waypointSurfaceProbeAttempts
+                            + "; Ground retries=" + _waypointFootGroundAttempts
+                            + "; Height hint="
+                            + _waypointTeleportHeightHint.ToString("0.0", CultureInfo.InvariantCulture)
+                            + (string.IsNullOrWhiteSpace(_waypointSurfaceProbeFailure)
+                                ? string.Empty
+                                : "; last surface=" + _waypointSurfaceProbeFailure), true);
+                        return;
+                    }
+
+                    _waypointTeleportDestination = destination;
+                    _waypointTeleportDestinationHeading = heading;
+                    _waypointTeleportOffsetMeters = offsetMeters;
+                    _waypointTeleportPlacement = placement;
+                    _waypointTeleportSurfaceNormalZ = 0f;
+                    _waypointTeleportDestinationResolved = true;
+
+                    if (offsetMeters > WaypointTeleportDestinationStreamThresholdMeters)
+                    {
+                        if (_waypointTeleportSceneLoadRequested)
+                        {
+                            Function.Call(Hash.NEW_LOAD_SCENE_STOP);
+                            _waypointTeleportSceneLoadRequested = false;
+                        }
+
+                        Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                            destination.X, destination.Y, destination.Z);
+                        _waypointTeleportSceneLoadRequested = Function.Call<bool>(
+                            Hash.NEW_LOAD_SCENE_START_SPHERE,
+                            destination.X,
+                            destination.Y,
+                            destination.Z,
+                            (float)WaypointTeleportSceneRadius,
+                            0);
+                        if (!_waypointTeleportSceneLoadRequested)
+                        {
+                            CancelWaypointTeleport(
+                                "GTA did not stream the nearby fallback position. Nothing was moved.",
+                                true);
+                            return;
+                        }
+
+                        // A fallback point can be outside the originally streamed area.
+                        // Let the existing 100 ms poll wait for that destination to load.
+                        return;
+                    }
+                }
+
+                Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                    _waypointTeleportDestination.X,
+                    _waypointTeleportDestination.Y,
+                    _waypointTeleportDestination.Z);
+                _waypointTeleportMoved = true;
+                _waypointTeleportEntity.Position = _waypointTeleportDestination;
+                if (_waypointTeleportIsVehicle)
+                {
+                    _waypointTeleportEntity.Heading = _waypointTeleportDestinationHeading;
+                    _waypointTeleportEntity.Velocity = Vector3.Zero;
+                }
+                else
+                    _waypointTeleportEntity.Velocity = Vector3.Zero;
+
+                _waypointTeleportStage = WaypointTeleportStage.VerifyingDestination;
+                _waypointTeleportLandingDeadlineUtc = now.AddSeconds(5);
+                _waypointTeleportDeadlineUtc = _waypointTeleportLandingDeadlineUtc;
+                _waypointTeleportNextPollUtc = now.AddMilliseconds(
+                    WaypointTeleportPollMilliseconds);
+            }
+            catch (Exception error)
+            {
+                LogException("DEVELOPER_WAYPOINT_TELEPORT_FAILED", error);
+                CancelWaypointTeleport(
+                    "The waypoint move could not be completed safely.",
+                    true);
+            }
+        }
+
+        private void LogWaypointSurfaceProbe(int status, bool hit,
+            Vector3 position, Vector3 normal, string result)
+        {
+            LogRuntime("DEVELOPER_WAYPOINT_SURFACE_PROBE",
+                "Attempt=" + _waypointSurfaceProbeAttempts
+                + "; Origin=" + _waypointSurfaceProbeOrigin
+                + "; End=" + _waypointSurfaceProbeEnd
+                + "; Status=" + status
+                + "; Hit=" + hit
+                + "; HitPosition=" + position
+                + "; Normal=" + normal
+                + "; SceneLoaded=true; CollisionRequested=true"
+                + "; GroundSample=not-run; SafePed=not-run"
+                + "; Result=" + result);
+        }
+
+        private int StartWaypointSurfaceProbe()
+        {
+            Vector3 waypoint = _waypointTeleportWaypoint;
+            // The extra foot probes reach nearby pavement without changing the
+            // established four-attempt vehicle path.
+            switch (_waypointSurfaceProbeAttempts)
+            {
+                case 2: waypoint.X += 8f; break;
+                case 3: waypoint.X -= 8f; break;
+                case 4: waypoint.Y += 8f; break;
+                case 5: waypoint.Y -= 8f; break;
+                case 6: waypoint.X += 16f; break;
+                case 7: waypoint.X -= 16f; break;
+                case 8: waypoint.X += 24f; break;
+                case 9: waypoint.X -= 24f; break;
+            }
+            Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                waypoint.X, waypoint.Y, _waypointTeleportHeightHint);
+            // Use a local ray for on-foot Z=0 pins. Keep the established
+            // vehicle probe range so the working road fallback is unchanged.
+            float startZ = _waypointTeleportIsVehicle
+                ? Math.Max(1800f, waypoint.Z + 500f)
+                : Math.Abs(_waypointTeleportWaypoint.Z) < 0.1f
+                    ? _waypointTeleportHeightHint + 75f
+                    : _waypointTeleportWaypoint.Z + 4f;
+            float endZ = _waypointTeleportIsVehicle
+                ? Math.Min(-250f, waypoint.Z - 100f)
+                : Math.Abs(_waypointTeleportWaypoint.Z) < 0.1f
+                    ? _waypointTeleportHeightHint - 100f
+                    : _waypointTeleportWaypoint.Z - 20f;
+
+            _waypointSurfaceProbeOrigin = new Vector3(waypoint.X, waypoint.Y, startZ);
+            _waypointSurfaceProbeEnd = new Vector3(waypoint.X, waypoint.Y, endZ);
+
+            return Function.Call<int>(
+                Hash.START_SHAPE_TEST_LOS_PROBE,
+                waypoint.X,
+                waypoint.Y,
+                startZ,
+                waypoint.X,
+                waypoint.Y,
+                endZ,
+                (int)(_waypointTeleportIsVehicle
+                    ? IntersectFlags.Map
+                    : IntersectFlags.Map | IntersectFlags.Objects),
+                0,
+                7);
+        }
+
+        private int ReadWaypointSurfaceProbe(
+            out bool hit,
+            out Vector3 hitPosition,
+            out Vector3 surfaceNormal)
+        {
+            hit = false;
+            hitPosition = Vector3.Zero;
+            surfaceNormal = Vector3.Zero;
+
+            using (OutputArgument hitOutput = new OutputArgument())
+            using (OutputArgument positionOutput = new OutputArgument())
+            using (OutputArgument normalOutput = new OutputArgument())
+            using (OutputArgument entityOutput = new OutputArgument())
+            {
+                int status = Function.Call<int>(
+                    Hash.GET_SHAPE_TEST_RESULT,
+                    _waypointSurfaceProbeHandle,
+                    hitOutput,
+                    positionOutput,
+                    normalOutput,
+                    entityOutput);
+                if (status != 2)
+                    return status;
+
+                hit = hitOutput.GetResult<bool>();
+                hitPosition = positionOutput.GetResult<Vector3>();
+                surfaceNormal = normalOutput.GetResult<Vector3>();
+                return status;
+            }
+        }
+
+        private bool TryResolveWaypointSurface(
+            Vector3 hitPosition,
+            Vector3 surfaceNormal,
+            out Vector3 destination,
+            out float heading,
+            out float offsetMeters,
+            out float surfaceNormalZ,
+            out string failureReason)
+        {
+            destination = Vector3.Zero;
+            heading = 0f;
+            offsetMeters = 0f;
+            surfaceNormalZ = 0f;
+            failureReason = "The waypoint surface did not pass the safe landing checks.";
+
+            if (!IsFinitePosition(hitPosition)
+                || !IsFinitePosition(surfaceNormal))
+                return false;
+
+            float minimumNormalZ = _waypointTeleportIsVehicle
+                ? WaypointTeleportMinimumVehicleSurfaceNormalZ
+                : WaypointTeleportMinimumFootSurfaceNormalZ;
+            if (surfaceNormal.Z < minimumNormalZ)
+            {
+                failureReason = "The surface at the pin is too steep for a safe landing.";
+                return false;
+            }
+
+            if (!_waypointTeleportIsVehicle)
+            {
+                if (Math.Abs(_waypointTeleportWaypoint.Z) >= 0.1f
+                    && Math.Abs(hitPosition.Z - _waypointTeleportWaypoint.Z) > 4f)
+                {
+                    failureReason = "The solid surface is at a different height from the selected pin.";
+                    return false;
+                }
+                Vector3 checkedFootDestination;
+                float checkedFootOffset;
+                if (!TryResolveVerifiedFootGroundPosition(hitPosition,
+                    out checkedFootDestination, out checkedFootOffset,
+                    out failureReason))
+                    return false;
+                destination = checkedFootDestination;
+                offsetMeters = checkedFootOffset;
+            }
+
+            if (_waypointTeleportIsVehicle)
+            {
+                float groundZ;
+                Vector3 groundNormal;
+                if (!World.GetGroundHeightAndNormal(
+                    hitPosition + new Vector3(0f, 0f, 1f),
+                    out groundZ, out groundNormal)
+                    || !IsFinitePosition(groundNormal)
+                    || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                    || Math.Abs(hitPosition.Z - groundZ) > 1.5f
+                    || groundNormal.Z < 0.65f)
+                {
+                    failureReason = "The vehicle landing surface has no confirmed ground support.";
+                    return false;
+                }
+            }
+
+            float horizontalOffset = HorizontalDistance(
+                hitPosition,
+                _waypointTeleportWaypoint);
+            if (horizontalOffset > WaypointTeleportMaximumOffsetMeters)
+            {
+                failureReason = "The nearest solid surface is more than 250 m from the waypoint.";
+                return false;
+            }
+
+            if (_waypointTeleportIsVehicle)
+                destination = hitPosition + (surfaceNormal * 0.25f);
+            heading = _waypointTeleportIsVehicle
+                ? _waypointTeleportEntity.Heading
+                : _waypointTeleportPlayer.Heading;
+            if (_waypointTeleportIsVehicle)
+                offsetMeters = horizontalOffset;
+            surfaceNormalZ = surfaceNormal.Z;
+            return true;
+        }
+
+        private bool IsWaypointFootLandingUnoccupied(Vector3 position,
+            out string reason)
+        {
+            reason = string.Empty;
+            foreach (Vehicle vehicle in World.GetNearbyVehicles(position, 1.5f))
+            {
+                if (vehicle != null && vehicle.Exists()
+                    && Math.Abs(vehicle.Position.Z - position.Z) < 2f)
+                {
+                    reason = "A vehicle occupies the selected walking position.";
+                    return false;
+                }
+            }
+            foreach (Ped ped in World.GetNearbyPeds(position, 1.0f))
+            {
+                if (ped != null && ped.Exists()
+                    && (_waypointTeleportPlayer == null
+                        || ped.Handle != _waypointTeleportPlayer.Handle)
+                    && Math.Abs(ped.Position.Z - position.Z) < 2f)
+                {
+                    reason = "A Ped occupies the selected walking position.";
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private bool TryResolveWaypointTeleportDestination(
+            out Vector3 destination,
+            out float heading,
+            out float offsetMeters,
+            out string placement,
+            out string failureReason)
+        {
+            destination = Vector3.Zero;
+            heading = 0f;
+            offsetMeters = 0f;
+            placement = string.Empty;
+            failureReason = "No safe destination was found near the waypoint. Nothing was moved.";
+
+            Vector3 groundPosition = _waypointTeleportWaypoint;
+            if (!_waypointTeleportIsVehicle
+                && Math.Abs(groundPosition.Z) < 0.1f)
+                groundPosition.Z = _waypointTeleportHeightHint;
+            float groundProbeZ = _waypointTeleportIsVehicle
+                ? Math.Max(1000f, _waypointTeleportWaypoint.Z + 100f)
+                : _waypointTeleportHeightHint
+                    + (_waypointFootGroundAttempts <= 1 ? 60f
+                        : _waypointFootGroundAttempts == 2 ? 120f
+                        : _waypointFootGroundAttempts == 3 ? 300f : 1000f);
+            bool groundFound = false;
+            using (OutputArgument groundOutput = new OutputArgument())
+            {
+                groundFound = Function.Call<bool>(
+                    Hash.GET_GROUND_Z_FOR_3D_COORD,
+                    _waypointTeleportWaypoint.X,
+                    _waypointTeleportWaypoint.Y,
+                    groundProbeZ,
+                    groundOutput,
+                    false);
+                if (groundFound)
+                {
+                    float groundZ = groundOutput.GetResult<float>();
+                    if (float.IsNaN(groundZ) || float.IsInfinity(groundZ))
+                        groundFound = false;
+                    else
+                        groundPosition = new Vector3(
+                            _waypointTeleportWaypoint.X,
+                            _waypointTeleportWaypoint.Y,
+                            groundZ);
+                }
+            }
+
+            if (_waypointTeleportIsVehicle)
+            {
+                string roadFailure;
+                if (!TryResolveWaypointRoadPosition(
+                    groundPosition,
+                    out destination,
+                    out heading,
+                    out offsetMeters,
+                    out roadFailure))
+                {
+                    failureReason = roadFailure;
+                    return false;
+                }
+
+                placement = "NearestRoad";
+                return true;
+            }
+
+            if (groundFound
+                && TryResolveSafePedPosition(
+                    groundPosition,
+                    out destination,
+                    out offsetMeters,
+                    out failureReason))
+            {
+                placement = "SafeGround";
+                LogWaypointFootGroundAttempt(groundProbeZ, groundFound,
+                    groundPosition, "SafeGround", "SafePed=Accepted");
+                return true;
+            }
+
+            string safePedFailure = failureReason;
+            string directGroundFailure = "not-run";
+            if (groundFound
+                && TryResolveVerifiedFootGroundPosition(groundPosition,
+                    out destination, out offsetMeters, out directGroundFailure))
+            {
+                placement = "VerifiedGround";
+                LogWaypointFootGroundAttempt(groundProbeZ, groundFound,
+                    groundPosition, placement,
+                    "SafePed=" + safePedFailure + "; DirectGround=" + directGroundFailure);
+                return true;
+            }
+
+            if (!groundFound
+                && TryResolveSafePedPosition(
+                    groundPosition,
+                    out destination,
+                    out offsetMeters,
+                    out failureReason))
+            {
+                placement = "NearbySafePosition";
+                LogWaypointFootGroundAttempt(groundProbeZ, groundFound,
+                    groundPosition, placement, "SafePed=Accepted");
+                return true;
+            }
+
+            Vector3 roadPosition;
+            float ignoredRoadHeading;
+            float roadOffsetMeters;
+            string roadPositionFailure;
+            if (TryResolveWaypointRoadPosition(
+                groundPosition,
+                out roadPosition,
+                out ignoredRoadHeading,
+                out roadOffsetMeters,
+                out roadPositionFailure)
+                && TryResolveSafePedPosition(
+                    roadPosition,
+                    out destination,
+                    out offsetMeters,
+                    out failureReason))
+            {
+                placement = "RoadsideSafePosition";
+                LogWaypointFootGroundAttempt(groundProbeZ, groundFound,
+                    groundPosition, placement, "SafePed=Accepted; Road=Confirmed");
+                return true;
+            }
+
+            failureReason = groundFound
+                ? "Ground was found, but neither pedestrian navigation nor the checked foot footprint was safe. Nothing was moved."
+                : "The pin has no ground position and no safe nearby walking route was found within 250 m. Nothing was moved.";
+            LogWaypointFootGroundAttempt(groundProbeZ, groundFound,
+                groundPosition, "Rejected", "SafePed=" + safePedFailure
+                + "; DirectGround=" + (groundFound ? directGroundFailure : "not-found")
+                + "; Road=" + roadPositionFailure);
+            return false;
+        }
+
+        private void LogWaypointFootGroundAttempt(float probeZ,
+            bool found, Vector3 ground, string result, string detail)
+        {
+            string normalEvidence = "not-confirmed";
+            if (found)
+            {
+                try
+                {
+                    float sampleZ;
+                    Vector3 normal;
+                    if (World.GetGroundHeightAndNormal(
+                        ground + new Vector3(0f, 0f, 2f),
+                        out sampleZ, out normal))
+                        normalEvidence = "Z=" + sampleZ.ToString("0.00", CultureInfo.InvariantCulture)
+                            + "; Normal=" + normal;
+                }
+                catch { normalEvidence = "probe-unavailable"; }
+            }
+            LogRuntime("DEVELOPER_WAYPOINT_FOOT_GROUND_ATTEMPT",
+                "Attempt=" + _waypointFootGroundAttempts
+                + "; Probe=(" + _waypointTeleportWaypoint.X.ToString("0.00", CultureInfo.InvariantCulture)
+                + "," + _waypointTeleportWaypoint.Y.ToString("0.00", CultureInfo.InvariantCulture)
+                + "," + probeZ.ToString("0.00", CultureInfo.InvariantCulture) + ")"
+                + "; GroundFound=" + found
+                + "; Ground=" + ground
+                + "; GroundNormal=" + normalEvidence
+                + "; SceneLoaded=true; CollisionRequested=true"
+                + "; Result=" + result
+                + "; Detail=" + detail);
+        }
+
+        private bool TryResolveVerifiedFootGroundPosition(Vector3 ground,
+            out Vector3 destination, out float offsetMeters, out string reason)
+        {
+            destination = Vector3.Zero;
+            offsetMeters = 0f;
+            reason = "The ground footprint was not confirmed.";
+            if (!IsFinitePosition(ground)
+                || (Math.Abs(_waypointTeleportWaypoint.Z) >= 0.1f
+                    && Math.Abs(ground.Z - _waypointTeleportWaypoint.Z) > 4f))
+            {
+                reason = "Ground height differs from the selected pin.";
+                return false;
+            }
+
+            float centerZ;
+            Vector3 centerNormal;
+            if (!World.GetGroundHeightAndNormal(ground + new Vector3(0f, 0f, 2f),
+                out centerZ, out centerNormal)
+                || !IsFinitePosition(centerNormal)
+                || float.IsNaN(centerZ) || float.IsInfinity(centerZ)
+                || centerNormal.Z < WaypointTeleportMinimumFootSurfaceNormalZ
+                || Math.Abs(centerZ - ground.Z) > 1f)
+            {
+                reason = "Ground height or center slope could not be confirmed.";
+                return false;
+            }
+
+            foreach (Vector3 offset in new[] {
+                new Vector3(0.4f, 0f, 0f), new Vector3(-0.4f, 0f, 0f),
+                new Vector3(0f, 0.4f, 0f), new Vector3(0f, -0.4f, 0f) })
+            {
+                float sampleZ;
+                Vector3 sampleNormal;
+                if (!World.GetGroundHeightAndNormal(
+                    ground + offset + new Vector3(0f, 0f, 2f),
+                    out sampleZ, out sampleNormal)
+                    || !IsFinitePosition(sampleNormal)
+                    || float.IsNaN(sampleZ) || float.IsInfinity(sampleZ)
+                    || sampleNormal.Z < WaypointTeleportMinimumFootSurfaceNormalZ
+                    || Math.Abs(sampleZ - centerZ) > 0.5f)
+                {
+                    reason = "The nearby foot footprint is steep, uneven, or not loaded.";
+                    return false;
+                }
+            }
+
+            Vector3 position = new Vector3(ground.X, ground.Y, centerZ + 0.08f);
+            if (!IsWaypointFootLandingUnoccupied(position, out reason))
+                return false;
+            offsetMeters = HorizontalDistance(position, _waypointTeleportWaypoint);
+            if (offsetMeters > WaypointTeleportMaximumOffsetMeters)
+            {
+                reason = "The checked ground is more than 250 m from the waypoint.";
+                return false;
+            }
+            destination = position;
+            reason = "GroundNormal=" + centerNormal
+                + "; FootprintSamples=4/4; OccupancyClear=true";
+            return true;
+        }
+
+        private bool TryResolveWaypointRoadPosition(
+            Vector3 searchPosition,
+            out Vector3 roadPosition,
+            out float roadHeading,
+            out float offsetMeters,
+            out string failureReason)
+        {
+            roadPosition = Vector3.Zero;
+            roadHeading = 0f;
+            offsetMeters = 0f;
+            failureReason = "No usable road was found within 250 m of the waypoint. Nothing was moved.";
+
+            using (OutputArgument nodeOutput = new OutputArgument())
+            using (OutputArgument headingOutput = new OutputArgument())
+            {
+                float zMeasureMultiplier = Math.Abs(searchPosition.Z) < 0.1f ? 0f : 3.0f;
+                bool nodeFound = Function.Call<bool>(
+                    Hash.GET_CLOSEST_VEHICLE_NODE_WITH_HEADING,
+                    searchPosition.X,
+                    searchPosition.Y,
+                    searchPosition.Z,
+                    nodeOutput,
+                    headingOutput,
+                    1,
+                    zMeasureMultiplier,
+                    0);
+                if (!nodeFound)
+                    return false;
+
+                Vector3 foundRoadPosition = nodeOutput.GetResult<Vector3>();
+                float foundRoadHeading = headingOutput.GetResult<float>();
+                if (!IsFinitePosition(foundRoadPosition)
+                    || float.IsNaN(foundRoadHeading)
+                    || float.IsInfinity(foundRoadHeading))
+                {
+                    failureReason = "The road lookup returned an invalid position. Nothing was moved.";
+                    return false;
+                }
+
+                float horizontalOffset = HorizontalDistance(
+                    foundRoadPosition,
+                    _waypointTeleportWaypoint);
+                if (horizontalOffset > WaypointTeleportMaximumOffsetMeters)
+                {
+                    failureReason = "The nearest road is more than 250 m from the waypoint. Nothing was moved.";
+                    return false;
+                }
+
+                float roadGroundZ;
+                Vector3 roadNormal;
+                if (!World.GetGroundHeightAndNormal(
+                    foundRoadPosition + new Vector3(0f, 0f, 1f),
+                    out roadGroundZ, out roadNormal)
+                    || float.IsNaN(roadGroundZ) || float.IsInfinity(roadGroundZ)
+                    || !IsFinitePosition(roadNormal)
+                    || Math.Abs(foundRoadPosition.Z - roadGroundZ) > 1.5f
+                    || roadNormal.Z < (_waypointTeleportIsVehicle ? 0.75f : 0.65f))
+                {
+                    failureReason = "The nearby road has no confirmed level ground for arrival. Nothing was moved.";
+                    return false;
+                }
+
+                roadPosition = new Vector3(
+                    foundRoadPosition.X, foundRoadPosition.Y, roadGroundZ);
+                roadHeading = foundRoadHeading;
+                offsetMeters = horizontalOffset;
+                return true;
+            }
+        }
+
+        private bool TryResolveSafePedPosition(
+            Vector3 searchPosition,
+            out Vector3 destination,
+            out float offsetMeters,
+            out string failureReason)
+        {
+            destination = Vector3.Zero;
+            offsetMeters = 0f;
+            failureReason = "No safe walking position was found near the waypoint.";
+
+            Vector3 safePosition;
+            if (!World.GetSafePositionForPed(
+                searchPosition,
+                out safePosition,
+                (GetSafePositionFlags)0))
+                return false;
+
+            if (!IsFinitePosition(safePosition))
+            {
+                failureReason = "The safe-position lookup returned an invalid position.";
+                return false;
+            }
+
+            float horizontalOffset = HorizontalDistance(
+                safePosition,
+                _waypointTeleportWaypoint);
+            if (horizontalOffset > WaypointTeleportMaximumOffsetMeters)
+            {
+                failureReason = "The nearest safe walking position is more than 250 m from the waypoint.";
+                return false;
+            }
+
+            float safeGroundZ;
+            Vector3 safeGroundNormal;
+            if (!World.GetGroundHeightAndNormal(
+                safePosition + new Vector3(0f, 0f, 2f),
+                out safeGroundZ,
+                out safeGroundNormal)
+                || float.IsNaN(safeGroundZ)
+                || float.IsInfinity(safeGroundZ)
+                || float.IsNaN(safeGroundNormal.Z)
+                || float.IsInfinity(safeGroundNormal.Z)
+                || safeGroundNormal.Z < 0.65f
+                || Math.Abs(safePosition.Z - safeGroundZ) > 2f)
+            {
+                failureReason = "The nearby walking position failed ground and slope checks.";
+                return false;
+            }
+
+            destination = new Vector3(
+                safePosition.X,
+                safePosition.Y,
+                safeGroundZ);
+            if (!IsWaypointFootLandingUnoccupied(destination, out failureReason))
+            {
+                destination = Vector3.Zero;
+                return false;
+            }
+            offsetMeters = horizontalOffset;
+            failureReason = string.Empty;
+            return true;
+        }
+
+        private static bool IsFinitePosition(Vector3 position)
+        {
+            return !float.IsNaN(position.X) && !float.IsInfinity(position.X)
+                && !float.IsNaN(position.Y) && !float.IsInfinity(position.Y)
+                && !float.IsNaN(position.Z) && !float.IsInfinity(position.Z);
+        }
+
+        private static float HorizontalDistance(Vector3 first, Vector3 second)
+        {
+            float dx = first.X - second.X;
+            float dy = first.Y - second.Y;
+            return (float)Math.Sqrt((dx * dx) + (dy * dy));
+        }
+
+        private static float SpatialDistance(Vector3 first, Vector3 second)
+        {
+            float dx = first.X - second.X;
+            float dy = first.Y - second.Y;
+            float dz = first.Z - second.Z;
+            return (float)Math.Sqrt((dx * dx) + (dy * dy) + (dz * dz));
+        }
+
+        private string TryRestoreWaypointTeleportOrigin()
+        {
+            if (!_waypointTeleportMoved
+                || _waypointTeleportEntity == null
+                || !_waypointTeleportEntity.Exists()
+                || _waypointTeleportPlayer == null
+                || !_waypointTeleportPlayer.Exists()
+                || !IsFinitePosition(_waypointTeleportOrigin))
+                return "OriginRestore=Unavailable";
+
+            if (_waypointTeleportIsVehicle)
+            {
+                Vehicle current = _waypointTeleportPlayer.CurrentVehicle;
+                if (current == null || !current.Exists()
+                    || current.Handle != _waypointTeleportEntity.Handle)
+                    return "OriginRestore=VehicleOccupancyChanged";
+                Ped[] occupants;
+                try { occupants = current.Occupants; }
+                catch { return "OriginRestore=OccupantsUnavailable"; }
+                if (_waypointTeleportPassengerHandles.Count > 0
+                    && (occupants == null
+                        || !_waypointTeleportPassengerHandles.All(handle =>
+                            occupants.Any(occupant => occupant != null
+                                && occupant.Exists()
+                                && occupant.Handle == handle))))
+                    return "OriginRestore=PassengerOccupancyChanged";
+            }
+            else if (_waypointTeleportPlayer.IsInVehicle())
+                return "OriginRestore=PlayerEnteredVehicle";
+
+            try
+            {
+                Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                    _waypointTeleportOrigin.X,
+                    _waypointTeleportOrigin.Y,
+                    _waypointTeleportOrigin.Z);
+                _waypointTeleportEntity.Position = _waypointTeleportOrigin;
+                _waypointTeleportEntity.Heading = _waypointTeleportOriginHeading;
+                _waypointTeleportEntity.Velocity = Vector3.Zero;
+                bool returned = SpatialDistance(
+                    _waypointTeleportEntity.Position,
+                    _waypointTeleportOrigin) <= 5f;
+                return returned
+                    ? "OriginRestore=PositionConfirmed; CollisionAtOrigin=Requested"
+                    : "OriginRestore=PositionUnconfirmed";
+            }
+            catch (Exception error)
+            {
+                LogException("DEVELOPER_WAYPOINT_ORIGIN_RESTORE_FAILED", error);
+                return "OriginRestore=Failed:" + error.GetType().Name;
+            }
+        }
+
+        private void FinishWaypointTeleport(
+            bool succeeded,
+            string context,
+            string notificationMessage = null)
+        {
+            if (_waypointTeleportStage == WaypointTeleportStage.None)
+                return;
+
+            bool movedVehicle = _waypointTeleportIsVehicle;
+            float offsetMeters = _waypointTeleportOffsetMeters;
+            bool stopSceneLoad = _waypointTeleportSceneLoadRequested;
+            if (!succeeded && _waypointTeleportMoved)
+                context = (context ?? string.Empty) + "; "
+                    + TryRestoreWaypointTeleportOrigin();
+            try
+            {
+                RestoreWaypointTeleportTransition(stopSceneLoad);
+            }
+            finally
+            {
+                _waypointTeleportStage = WaypointTeleportStage.None;
+                _waypointTeleportEntity = null;
+                _waypointTeleportPlayer = null;
+                _waypointTeleportWaypoint = Vector3.Zero;
+                _waypointTeleportHeightHint = 0f;
+                _waypointTeleportOrigin = Vector3.Zero;
+                _waypointTeleportOriginHeading = 0f;
+                _waypointTeleportDestination = Vector3.Zero;
+                _waypointTeleportDestinationHeading = 0f;
+                _waypointTeleportOffsetMeters = 0f;
+                _waypointTeleportSurfaceNormalZ = 0f;
+                _waypointTeleportPlacement = string.Empty;
+                _waypointTeleportNextPollUtc = DateTime.MinValue;
+                _waypointSurfaceProbeNextStartUtc = DateTime.MinValue;
+                _waypointTeleportDeadlineUtc = DateTime.MinValue;
+                _waypointTeleportLandingDeadlineUtc = DateTime.MinValue;
+                _waypointSurfaceProbeHandle = 0;
+                _waypointSurfaceProbeAttempts = 0;
+                _waypointSurfaceProbeOrigin = Vector3.Zero;
+                _waypointSurfaceProbeEnd = Vector3.Zero;
+                _waypointFootGroundAttempts = 0;
+                _waypointFootGroundNextAttemptUtc = DateTime.MinValue;
+                _waypointSurfaceProbeFailure = string.Empty;
+                _waypointTeleportPassengerHandles.Clear();
+                _waypointTeleportIsVehicle = false;
+                _waypointTeleportSceneLoadRequested = false;
+                _waypointTeleportDestinationResolved = false;
+                _waypointTeleportMoved = false;
+                _waypointSurfaceProbeCompleted = false;
+            }
+
+            LogRuntime(
+                succeeded
+                    ? "DEVELOPER_WAYPOINT_TELEPORT_COMPLETED"
+                    : "DEVELOPER_WAYPOINT_TELEPORT_CANCELLED",
+                context ?? string.Empty);
+            string successMessage = movedVehicle
+                ? "~b~WAYPOINT REACHED~s~~n~Vehicle and occupants stayed together."
+                : "~b~WAYPOINT REACHED~s~~n~Arrived on a safe surface.";
+            if (offsetMeters >= 10f)
+                successMessage += "~n~Arrival point: "
+                    + ((int)Math.Round(offsetMeters)).ToString(CultureInfo.InvariantCulture)
+                    + " m from the pin.";
+            Notify(succeeded
+                ? successMessage
+                : (notificationMessage ?? context ?? "Waypoint move cancelled."));
+        }
+
+        private void CancelWaypointTeleport(string reason, bool notify)
+        {
+            if (_waypointTeleportStage == WaypointTeleportStage.None)
+                return;
+
+            bool stopSceneLoad = _waypointTeleportSceneLoadRequested;
+            if (_waypointTeleportMoved)
+                reason = (reason ?? "Waypoint move cancelled.") + "; "
+                    + TryRestoreWaypointTeleportOrigin();
+            try
+            {
+                RestoreWaypointTeleportTransition(stopSceneLoad);
+            }
+            finally
+            {
+                _waypointTeleportStage = WaypointTeleportStage.None;
+                _waypointTeleportEntity = null;
+                _waypointTeleportPlayer = null;
+                _waypointTeleportWaypoint = Vector3.Zero;
+                _waypointTeleportHeightHint = 0f;
+                _waypointTeleportOrigin = Vector3.Zero;
+                _waypointTeleportOriginHeading = 0f;
+                _waypointTeleportDestination = Vector3.Zero;
+                _waypointTeleportDestinationHeading = 0f;
+                _waypointTeleportOffsetMeters = 0f;
+                _waypointTeleportSurfaceNormalZ = 0f;
+                _waypointTeleportPlacement = string.Empty;
+                _waypointTeleportNextPollUtc = DateTime.MinValue;
+                _waypointSurfaceProbeNextStartUtc = DateTime.MinValue;
+                _waypointTeleportDeadlineUtc = DateTime.MinValue;
+                _waypointTeleportLandingDeadlineUtc = DateTime.MinValue;
+                _waypointSurfaceProbeHandle = 0;
+                _waypointSurfaceProbeAttempts = 0;
+                _waypointSurfaceProbeOrigin = Vector3.Zero;
+                _waypointSurfaceProbeEnd = Vector3.Zero;
+                _waypointFootGroundAttempts = 0;
+                _waypointFootGroundNextAttemptUtc = DateTime.MinValue;
+                _waypointSurfaceProbeFailure = string.Empty;
+                _waypointTeleportPassengerHandles.Clear();
+                _waypointTeleportIsVehicle = false;
+                _waypointTeleportSceneLoadRequested = false;
+                _waypointTeleportDestinationResolved = false;
+                _waypointTeleportMoved = false;
+                _waypointSurfaceProbeCompleted = false;
+            }
+
+            LogRuntime(
+                "DEVELOPER_WAYPOINT_TELEPORT_CANCELLED",
+                reason ?? "Waypoint move cancelled.");
+            if (notify)
+                Notify(reason ?? "Waypoint move cancelled.");
+        }
+
+        private void RestoreWaypointTeleportTransition(bool stopSceneLoad)
+        {
+            if (stopSceneLoad)
+            {
+                try
+                {
+                    Function.Call(Hash.NEW_LOAD_SCENE_STOP);
+                }
+                catch (Exception error)
+                {
+                    LogException("DEVELOPER_WAYPOINT_TELEPORT_SCENE_STOP_FAILED", error);
+                }
+            }
+
+            try
+            {
+                Function.Call(Hash.DO_SCREEN_FADE_IN,
+                    WaypointTeleportFadeInMilliseconds);
+            }
+            catch (Exception error)
+            {
+                LogException("DEVELOPER_WAYPOINT_TELEPORT_FADE_RESTORE_FAILED", error);
+            }
+        }
+
+        private void ToggleDispatchSceneInspection()
+        {
+            if (!_settings.Enabled || !_settings.DeveloperMenuEnabled)
+            {
+                Notify("Developer Mode is disabled in LSDeveloper.xml.");
+                return;
+            }
+
+            _settings.CheckDispatchScenes = !_settings.CheckDispatchScenes;
+            if (!_settings.CheckDispatchScenes)
+                ClearDispatchSceneInspectionBlips();
+            try
+            {
+                _settings.Save(_configurationPath);
+                LogRuntime("DEVELOPER_DISPATCH_SCENE_CHECK_TOGGLED",
+                    "Enabled=" + _settings.CheckDispatchScenes
+                    + "; ExistingOccurrenceContinues=true; HiddenPreparationRetained=true");
+                Notify(_settings.CheckDispatchScenes
+                    ? "Dispatch scene check enabled. Request a Dispatch to inspect preparation."
+                    : "Dispatch scene check disabled. The current Dispatch preparation continues safely.");
+            }
+            catch (Exception error)
+            {
+                LogException("DEVELOPER_DISPATCH_SCENE_CHECK_SAVE_FAILED", error);
+                Notify("Dispatch scene check setting could not be saved.");
+            }
+            RefreshMenuControls();
+        }
+
+        private void RefreshDispatchSceneInspectionMenu()
+        {
+            if (_checkDispatchScenesItem != null)
+            {
+                _checkDispatchScenesItem.Title = "Check Dispatch Scenes: "
+                    + (_settings.CheckDispatchScenes ? "ON" : "OFF");
+                _checkDispatchScenesItem.Description =
+                    "Inspect the live Dispatch preparation. Prepared participants stay hidden until the offer is published.";
+            }
+            if (_dispatchSceneInspectionStatusItem != null
+                && !_settings.CheckDispatchScenes)
+                _dispatchSceneInspectionStatusItem.Description = "Inspection is disabled.";
+        }
+
+        internal void ObserveDispatchSceneUpdate(LSDeveloperDispatchSceneUpdate update)
+        {
+            if (update == null || _shutDown || !_settings.Enabled
+                || !_settings.DeveloperMenuEnabled || !_settings.CheckDispatchScenes)
+                return;
+
+            AddManualTrace(new LSDeveloperTraceEvent
+            {
+                TimestampUtc = update.TimestampUtc == DateTime.MinValue
+                    ? DateTime.UtcNow : update.TimestampUtc,
+                RuntimeSessionId = _log == null ? string.Empty : _log.SessionId,
+                Owner = "LSPDDispatch",
+                Category = "DEVELOPER_DISPATCH_SCENE_"
+                    + (update.Stage ?? "UNKNOWN").ToUpperInvariant(),
+                EventKind = "DispatchPreparationStage",
+                ActorHandle = update.ActorHandles == null || update.ActorHandles.Count == 0
+                    ? 0 : update.ActorHandles[0],
+                Reason = update.Reason ?? update.FailureStage ?? string.Empty,
+                Context = FormatDispatchSceneUpdate(update)
+            });
+
+            lock (_sync)
+            {
+                while (_dispatchSceneUpdates.Count >= 64)
+                    _dispatchSceneUpdates.Dequeue();
+                _dispatchSceneUpdates.Enqueue(update.Clone());
+            }
+        }
+
+        private void ProcessDispatchSceneInspection()
+        {
+            if (!_settings.CheckDispatchScenes)
+            {
+                lock (_sync)
+                    _dispatchSceneUpdates.Clear();
+                if (_dispatchInspectionBlips.Count > 0)
+                    ClearDispatchSceneInspectionBlips();
+                return;
+            }
+
+            List<LSDeveloperDispatchSceneUpdate> updates = new List<LSDeveloperDispatchSceneUpdate>();
+            lock (_sync)
+            {
+                while (_dispatchSceneUpdates.Count > 0 && updates.Count < 16)
+                    updates.Add(_dispatchSceneUpdates.Dequeue());
+            }
+
+            foreach (LSDeveloperDispatchSceneUpdate update in updates)
+            {
+                if (update == null)
+                    continue;
+                if (string.Equals(update.Stage, "SearchStarted", StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearDispatchSceneInspectionBlips();
+                    _dispatchInspectionSearchId = update.SearchId ?? string.Empty;
+                    _dispatchInspectionOccurrenceId = string.Empty;
+                    SetDispatchSceneInspectionStatus(
+                        "Searching catalog",
+                        "Dispatch is checking compatible catalog locations.");
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "LocationFound", StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearDispatchSceneInspectionBlips();
+                    _dispatchInspectionSearchId = update.SearchId ?? string.Empty;
+                    _dispatchInspectionOccurrenceId = update.OccurrenceId ?? string.Empty;
+                    string locationKind = update.IsInterior
+                        ? "Interior" : update.RequiresVehicle ? "Vehicle" : "Exterior";
+                    string locationName = string.IsNullOrWhiteSpace(update.LocationName)
+                        ? update.LocationId : update.LocationName;
+                    string label = "Catalog location: " + locationName
+                        + " [" + update.LocationId + "] | " + locationKind
+                        + " | " + update.Position;
+                    CreateDispatchInspectionBlip(update.Position, BlipColor.Green, label);
+                    SetDispatchSceneInspectionStatus(
+                        "Location found",
+                        "Location found. Preparing incident. " + Limit(label, 260));
+                    LogRuntime("DEVELOPER_DISPATCH_SCENE_LOCATION_FOUND",
+                        FormatDispatchSceneUpdate(update) + "; Marker=Green");
+                    Notify("Location found. Preparing incident.");
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "ProfilesSelected", StringComparison.OrdinalIgnoreCase))
+                {
+                    SetDispatchSceneInspectionStatus(
+                        "Profiles selected",
+                        "Criminal profile: " + update.CriminalProfileId
+                        + "; civilian pool: " + update.VictimPoolId
+                        + "; scene participant pool: " + update.SceneParticipantPoolId);
+                    LogRuntime("DEVELOPER_DISPATCH_SCENE_PROFILES_SELECTED",
+                        FormatDispatchSceneUpdate(update));
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "ActorsStaged", StringComparison.OrdinalIgnoreCase))
+                {
+                    int validActors = 0;
+                    for (int index = 0; index < update.ActorHandles.Count; index++)
+                    {
+                        int handle = update.ActorHandles[index];
+                        Ped actor = null;
+                        try { actor = Entity.FromHandle(handle) as Ped; } catch { }
+                        if (actor == null || !actor.Exists())
+                        {
+                            LogDebug("DEVELOPER_DISPATCH_SCENE_ACTOR_REGISTRATION_FAILED",
+                                FormatDispatchSceneUpdate(update) + "; Handle=" + handle
+                                + "; Result=PedEntityNotResolvable");
+                            continue;
+                        }
+
+                        validActors++;
+                        string role = index < update.ActorRoles.Count
+                            ? update.ActorRoles[index] : "Scene participant";
+                        string actorEvidence;
+                        try
+                        {
+                            int interiorId = Function.Call<int>(Hash.GET_INTERIOR_FROM_ENTITY, actor);
+                            bool visible = Function.Call<bool>(Hash.IS_ENTITY_VISIBLE, actor);
+                            actorEvidence = "Role=" + role + "; Handle=" + actor.Handle
+                                + "; ModelHash=" + actor.Model.Hash
+                                + "; Position=" + actor.Position
+                                + "; EntityInteriorId=" + interiorId
+                                + "; Visible=" + visible
+                                + "; Frozen=" + actor.IsPositionFrozen
+                                + "; BlocksAmbientEvents=" + actor.BlockPermanentEvents;
+                        }
+                        catch (Exception error)
+                        {
+                            actorEvidence = "Role=" + role + "; Handle=" + actor.Handle
+                                + "; Position=" + actor.Position
+                                + "; RegistrationProbe=" + error.GetType().Name;
+                        }
+                        LogRuntime("DEVELOPER_DISPATCH_SCENE_ACTOR_REGISTERED",
+                            FormatDispatchSceneUpdate(update) + "; " + actorEvidence);
+                        if (!_dispatchInspectionPedBlips.ContainsKey(actor.Handle))
+                        {
+                            try
+                            {
+                                Blip pedBlip = actor.AddBlip();
+                                if (pedBlip != null && pedBlip.Exists())
+                                {
+                                    pedBlip.Color = BlipColor.Blue;
+                                    pedBlip.Name = role + " | " + actor.Handle;
+                                    pedBlip.IsShortRange = false;
+                                    _dispatchInspectionPedBlips[actor.Handle] = pedBlip;
+                                }
+                            }
+                            catch (Exception error)
+                            {
+                                LogDebug("DEVELOPER_DISPATCH_SCENE_PED_BLIP_FAILED",
+                                    "Handle=" + actor.Handle + "; Reason=" + error.GetType().Name);
+                            }
+                        }
+                    }
+
+                    if (validActors == update.ActorHandles.Count && validActors > 0)
+                    {
+                        foreach (Blip marker in _dispatchInspectionBlips)
+                        {
+                            try
+                            {
+                                if (marker != null && marker.Exists())
+                                    marker.Color = BlipColor.Blue;
+                            }
+                            catch { }
+                        }
+                    }
+                    SetDispatchSceneInspectionStatus(
+                        "Participants staged",
+                        "Pedestrians staged: " + validActors + "/" + update.RequiredActorCount
+                        + ". Entity handles and their live positions were checked.");
+                    LogRuntime("DEVELOPER_DISPATCH_SCENE_ACTORS_STAGED",
+                        FormatDispatchSceneUpdate(update)
+                        + "; ActualPedEntities=" + validActors
+                        + "; Required=" + update.RequiredActorCount
+                        + "; ActorsCreated=" + update.ActorsCreated
+                        + "; ActorsReused=" + update.ActorsReused
+                        + "; Marker=Blue");
+                    Notify("Pedestrians staged. Checking incident.");
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "BranchesPrepared", StringComparison.OrdinalIgnoreCase))
+                {
+                    CreateDispatchInspectionBlip(
+                        update.Position,
+                        BlipColor.Yellow,
+                        "Dispatch event: " + update.EventTitle + " [" + update.EventId + "]");
+                    SetDispatchSceneInspectionStatus(
+                        "Event branches prepared",
+                        update.EventTitle + " [" + update.EventId + "]; Branches: "
+                        + string.Join(", ", update.BranchIds)
+                        + "; Pre-arrival: " + update.PreArrivalActivity
+                        + "; Suspect responses: " + string.Join(", ", update.SuspectResponseBranches)
+                        + "; Victim responses: " + string.Join(", ", update.VictimResponseBranches));
+                    LogRuntime("DEVELOPER_DISPATCH_SCENE_BRANCHES_PREPARED",
+                        FormatDispatchSceneUpdate(update)
+                        + "; Branches=" + string.Join(",", update.BranchIds)
+                        + "; SuspectResponseBranches=" + string.Join(",", update.SuspectResponseBranches)
+                        + "; VictimResponseBranches=" + string.Join(",", update.VictimResponseBranches)
+                        + "; PreArrivalActivity=" + update.PreArrivalActivity
+                        + "; Marker=Yellow");
+                    Notify("Dispatch event and behavior branches prepared.");
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "PreparationPending", StringComparison.OrdinalIgnoreCase))
+                {
+                    string pendingContext = string.IsNullOrWhiteSpace(update.OccurrenceId)
+                        ? "The catalog search candidate remains pending."
+                        : "The same occurrence is retained.";
+                    SetDispatchSceneInspectionStatus(
+                        "Preparation pending",
+                        "Still waiting for supported scene readiness: " + Limit(update.Reason, 260)
+                        + ". " + pendingContext);
+                    LogDebug("DEVELOPER_DISPATCH_SCENE_PREPARATION_PENDING",
+                        FormatDispatchSceneUpdate(update));
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "CandidateFailed", StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearDispatchSceneInspectionBlips();
+                    _dispatchInspectionOccurrenceId = string.Empty;
+                    string stage = HumanDispatchFailureStage(update.FailureStage, update.Reason);
+                    SetDispatchSceneInspectionStatus(
+                        "Candidate failed",
+                        "Scene check failed: " + stage + ". Dispatch is continuing its existing search.");
+                    LogDebug("DEVELOPER_DISPATCH_SCENE_CANDIDATE_FAILED",
+                        FormatDispatchSceneUpdate(update)
+                        + "; FirstFailedStage=" + stage
+                        + "; TechnicalReason=" + update.Reason);
+                    string signature = (update.SearchId ?? string.Empty) + ":"
+                        + update.CandidateAttempt + ":" + (update.FailureStage ?? string.Empty);
+                    DateTime now = DateTime.UtcNow;
+                    if (!string.Equals(signature, _lastInspectionFailureSignature,
+                            StringComparison.OrdinalIgnoreCase)
+                        && now - _lastInspectionFailureNoticeUtc >= TimeSpan.FromMilliseconds(1500))
+                    {
+                        _lastInspectionFailureSignature = signature;
+                        _lastInspectionFailureNoticeUtc = now;
+                        Notify("Scene check failed: " + stage + ". Dispatch is continuing its search.");
+                    }
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "OfferPublished", StringComparison.OrdinalIgnoreCase))
+                {
+                    _dispatchInspectionOccurrenceId = update.OccurrenceId ?? string.Empty;
+                    CreateDispatchInspectionBlip(
+                        update.Position,
+                        BlipColor.Orange,
+                        "SCENE READY — OFFER PUBLISHED: " + update.EventTitle
+                        + " [" + update.OccurrenceId + "]");
+                    SetDispatchSceneInspectionStatus(
+                        "Scene ready — offer published",
+                        update.EventTitle + " at " + update.LocationName
+                        + ". The prepared participants were released by Dispatch.");
+                    LogRuntime("DEVELOPER_DISPATCH_SCENE_OFFER_PUBLISHED",
+                        FormatDispatchSceneUpdate(update) + "; Marker=Orange");
+                    continue;
+                }
+
+                if (string.Equals(update.Stage, "OfferAccepted", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(update.Stage, "OccurrenceEnded", StringComparison.OrdinalIgnoreCase))
+                {
+                    ClearDispatchSceneInspectionBlips();
+                    _dispatchInspectionOccurrenceId = string.Empty;
+                    SetDispatchSceneInspectionStatus(
+                        string.Equals(update.Stage, "OfferAccepted", StringComparison.OrdinalIgnoreCase)
+                            ? "Offer accepted" : "Inspection occurrence ended",
+                        "Temporary Developer markers were cleared; normal Dispatch ownership continues.");
+                    LogRuntime("DEVELOPER_DISPATCH_SCENE_INSPECTION_CLEARED",
+                        FormatDispatchSceneUpdate(update));
+                }
+            }
+        }
+
+        private void CreateDispatchInspectionBlip(Vector3 position, BlipColor color, string name)
+        {
+            try
+            {
+                Blip marker = World.CreateBlip(position);
+                if (marker == null || !marker.Exists())
+                    return;
+                marker.Color = color;
+                marker.Name = Limit(name, 100);
+                marker.IsShortRange = false;
+                _dispatchInspectionBlips.Add(marker);
+            }
+            catch (Exception error)
+            {
+                LogDebug("DEVELOPER_DISPATCH_SCENE_BLIP_FAILED",
+                    "Color=" + color + "; Reason=" + error.GetType().Name);
+            }
+        }
+
+        private void ClearDispatchSceneInspectionBlips()
+        {
+            foreach (Blip blip in _dispatchInspectionBlips.ToArray())
+                DeleteDispatchInspectionBlip(blip);
+            foreach (Blip blip in _dispatchInspectionPedBlips.Values.ToArray())
+                DeleteDispatchInspectionBlip(blip);
+            _dispatchInspectionBlips.Clear();
+            _dispatchInspectionPedBlips.Clear();
+        }
+
+        private static void DeleteDispatchInspectionBlip(Blip blip)
+        {
+            try
+            {
+                if (blip != null && blip.Exists())
+                    blip.Delete();
+            }
+            catch { }
+        }
+
+        private void SetDispatchSceneInspectionStatus(string title, string description)
+        {
+            if (_dispatchSceneInspectionStatusItem == null)
+                return;
+            _dispatchSceneInspectionStatusItem.Title = "Dispatch Scene Check: " + Limit(title, 80);
+            _dispatchSceneInspectionStatusItem.Description = Limit(description, 360);
+        }
+
+        private static string FormatDispatchSceneUpdate(LSDeveloperDispatchSceneUpdate update)
+        {
+            return "Search=" + (update.SearchId ?? string.Empty)
+                + "; Occurrence=" + (update.OccurrenceId ?? string.Empty)
+                + "; CandidateAttempt=" + update.CandidateAttempt
+                + "; Stage=" + (update.Stage ?? string.Empty)
+                + "; Event=" + (update.EventId ?? string.Empty)
+                + "; Location=" + (update.LocationId ?? string.Empty)
+                + "; LocationName=" + (update.LocationName ?? string.Empty)
+                + "; Point=" + (update.PointId ?? string.Empty)
+                + "; Position=" + update.Position
+                + "; CriminalProfile=" + (update.CriminalProfileId ?? string.Empty)
+                + "; VictimPool=" + (update.VictimPoolId ?? string.Empty)
+                + "; ParticipantPool=" + (update.SceneParticipantPoolId ?? string.Empty)
+                + "; ActorsCreated=" + update.ActorsCreated
+                + "; ActorsReused=" + update.ActorsReused
+                + "; ActorHandles=" + string.Join(",", update.ActorHandles ?? new List<int>())
+                + "; ActorRoles=" + string.Join(",", update.ActorRoles ?? new List<string>())
+                + "; Branches=" + string.Join(",", update.BranchIds ?? new List<string>())
+                + "; SuspectBranches=" + string.Join(",",
+                    update.SuspectResponseBranches ?? new List<string>())
+                + "; VictimBranches=" + string.Join(",",
+                    update.VictimResponseBranches ?? new List<string>())
+                + "; FailureStage=" + (update.FailureStage ?? string.Empty)
+                + "; Reason=" + (update.Reason ?? string.Empty)
+                + "; TimestampUtc=" + update.TimestampUtc.ToString(
+                    "O", CultureInfo.InvariantCulture);
+        }
+
+        private static string HumanDispatchFailureStage(string stage, string reason)
+        {
+            string value = (stage ?? string.Empty) + " " + (reason ?? string.Empty);
+            if (value.IndexOf("InteriorActorIdentity", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("InteriorActorRoom", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("InteriorActorFloor", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("InteriorFloorAlignment", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("InteriorPhysicalDoor", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("InteriorAccess", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("InteriorRegistration", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("RoomRegistration", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("DoorCandidate", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Doorway", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "interior access or registration";
+            if (value.IndexOf("Ground", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Collision", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "physical ground readiness";
+            if (value.IndexOf("Placement", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Navigation", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Roster", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "participant placement";
+            if (value.IndexOf("Vehicle", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Seat", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "vehicle or seat capacity";
+            if (value.IndexOf("Model", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Profile", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Victim", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "participant profile or model";
+            if (value.IndexOf("CatalogLocation", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("LocationResolution", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "catalog location resolution";
+            if (value.IndexOf("CatalogCandidate", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "catalog candidate selection";
+            if (value.IndexOf("Branch", StringComparison.OrdinalIgnoreCase) >= 0
+                || value.IndexOf("Event", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "event branch compatibility";
+            if ((stage ?? string.Empty).StartsWith(
+                    "Interior", StringComparison.OrdinalIgnoreCase)
+                || (stage ?? string.Empty).IndexOf(
+                    "Door", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "interior access or registration";
+            return string.IsNullOrWhiteSpace(stage) ? "scene preparation" : Limit(stage, 70);
         }
 
         private void StartSelectedBranchTest()
@@ -441,7 +2433,7 @@ namespace LSImmersiveLife
                 return;
             }
 
-            StartTest(_testEventItem.SelectedItem, _branchTestItem.SelectedItem);
+            StartTest(_testEventItem.SelectedItem, SelectedBranchName());
         }
 
         private void StartTest(string eventName, string branchName)
@@ -2720,7 +4712,66 @@ namespace LSImmersiveLife
         {
             if (!_settings.ShowLiveNotifications)
                 return;
-            Notification.PostTicker(Limit(message, 700), false, false);
+            Notification.PostTicker(FormatNotification(message), false, false);
+        }
+
+        private static string FormatNotification(string message)
+        {
+            string normalized = (message ?? string.Empty)
+                .Replace("\r\n", "\n")
+                .Replace("\r", "\n")
+                .Replace("~n~", "\n")
+                .Replace(" || ", "\n")
+                .Replace("; ", "\n");
+            string[] sections = normalized.Split(
+                new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            var lines = new List<string>();
+            bool truncated = false;
+
+            foreach (string section in sections)
+            {
+                string remaining = section.Trim();
+                while (remaining.Length > NotificationLineCharacterLimit)
+                {
+                    if (lines.Count >= NotificationLineLimit)
+                    {
+                        truncated = true;
+                        break;
+                    }
+
+                    int splitAt = remaining.LastIndexOf(
+                        ' ', NotificationLineCharacterLimit - 1,
+                        NotificationLineCharacterLimit);
+                    if (splitAt <= 0)
+                        splitAt = NotificationLineCharacterLimit;
+                    lines.Add(remaining.Substring(0, splitAt).Trim());
+                    remaining = remaining.Substring(splitAt).Trim();
+                }
+
+                if (truncated)
+                    break;
+                if (remaining.Length > 0)
+                {
+                    if (lines.Count >= NotificationLineLimit)
+                    {
+                        truncated = true;
+                        break;
+                    }
+                    lines.Add(remaining);
+                }
+            }
+
+            if (lines.Count == 0)
+                return "Developer notification.";
+            if (truncated)
+            {
+                const string detailsPrompt = "Open Developer for full details.";
+                if (lines.Count >= NotificationLineLimit)
+                    lines[NotificationLineLimit - 1] = detailsPrompt;
+                else
+                    lines.Add(detailsPrompt);
+            }
+            return string.Join("~n~", lines.ToArray());
         }
 
         private void LogRuntime(string category, string message)
@@ -2942,6 +4993,77 @@ namespace LSImmersiveLife
         }
     }
 
+    internal sealed class LSDeveloperDispatchSceneUpdate
+    {
+        internal string Stage { get; set; }
+        internal DateTime TimestampUtc { get; set; }
+        internal string SearchId { get; set; }
+        internal string OccurrenceId { get; set; }
+        internal int CandidateAttempt { get; set; }
+        internal string EventId { get; set; }
+        internal string EventTitle { get; set; }
+        internal string LocationId { get; set; }
+        internal string LocationName { get; set; }
+        internal string LocationCategory { get; set; }
+        internal string PointId { get; set; }
+        internal Vector3 Position { get; set; }
+        internal bool IsInterior { get; set; }
+        internal bool RequiresVehicle { get; set; }
+        internal string CriminalProfileId { get; set; }
+        internal string CriminalModel { get; set; }
+        internal string VictimPoolId { get; set; }
+        internal string SceneParticipantPoolId { get; set; }
+        internal int RequiredActorCount { get; set; }
+        internal int ActorsCreated { get; set; }
+        internal int ActorsReused { get; set; }
+        internal List<int> ActorHandles { get; set; } = new List<int>();
+        internal List<string> ActorRoles { get; set; } = new List<string>();
+        internal List<string> BranchIds { get; set; } = new List<string>();
+        internal List<string> SuspectResponseBranches { get; set; } = new List<string>();
+        internal List<string> VictimResponseBranches { get; set; } = new List<string>();
+        internal string PreArrivalActivity { get; set; }
+        internal string FailureStage { get; set; }
+        internal string Reason { get; set; }
+
+        internal LSDeveloperDispatchSceneUpdate Clone()
+        {
+            return new LSDeveloperDispatchSceneUpdate
+            {
+                Stage = Stage,
+                TimestampUtc = TimestampUtc,
+                SearchId = SearchId,
+                OccurrenceId = OccurrenceId,
+                CandidateAttempt = CandidateAttempt,
+                EventId = EventId,
+                EventTitle = EventTitle,
+                LocationId = LocationId,
+                LocationName = LocationName,
+                LocationCategory = LocationCategory,
+                PointId = PointId,
+                Position = Position,
+                IsInterior = IsInterior,
+                RequiresVehicle = RequiresVehicle,
+                CriminalProfileId = CriminalProfileId,
+                CriminalModel = CriminalModel,
+                VictimPoolId = VictimPoolId,
+                SceneParticipantPoolId = SceneParticipantPoolId,
+                RequiredActorCount = RequiredActorCount,
+                ActorsCreated = ActorsCreated,
+                ActorsReused = ActorsReused,
+                ActorHandles = new List<int>(ActorHandles ?? new List<int>()),
+                ActorRoles = new List<string>(ActorRoles ?? new List<string>()),
+                BranchIds = new List<string>(BranchIds ?? new List<string>()),
+                SuspectResponseBranches = new List<string>(
+                    SuspectResponseBranches ?? new List<string>()),
+                VictimResponseBranches = new List<string>(
+                    VictimResponseBranches ?? new List<string>()),
+                PreArrivalActivity = PreArrivalActivity,
+                FailureStage = FailureStage,
+                Reason = Reason
+            };
+        }
+    }
+
     /// <summary>
     /// Static passive bridge used by the existing logger and central state
     /// setters. It contains no gameplay command and has no entity ownership.
@@ -2955,6 +5077,32 @@ namespace LSImmersiveLife
         {
             lock (Sync)
                 _current = developer;
+        }
+
+        internal static bool DispatchSceneInspectionEnabled
+        {
+            get
+            {
+                LSImmersiveDeveloper developer;
+                lock (Sync)
+                    developer = _current;
+                return developer != null && developer.IsDispatchSceneInspectionEnabled;
+            }
+        }
+
+        internal static void ReportDispatchSceneUpdate(
+            LSDeveloperDispatchSceneUpdate update)
+        {
+            LSImmersiveDeveloper developer;
+            lock (Sync)
+                developer = _current;
+            if (developer == null)
+                return;
+            try { developer.ObserveDispatchSceneUpdate(update); }
+            catch
+            {
+                // The diagnostic inspector must never interrupt a gameplay owner.
+            }
         }
 
         internal static void Detach(LSImmersiveDeveloper developer)
@@ -3071,6 +5219,7 @@ namespace LSImmersiveLife
     {
         internal bool Enabled { get; set; }
         internal bool DeveloperMenuEnabled { get; set; }
+        internal bool CheckDispatchScenes { get; set; }
         internal bool AutomaticRuntimeWatch { get; set; }
         internal bool AutomaticAnomalyDetection { get; set; }
         internal bool LiveBehavioralConfirmation { get; set; }
@@ -3092,6 +5241,7 @@ namespace LSImmersiveLife
         {
             Enabled = true;
             DeveloperMenuEnabled = true;
+            CheckDispatchScenes = false;
             AutomaticRuntimeWatch = false;
             AutomaticAnomalyDetection = true;
             LiveBehavioralConfirmation = true;
@@ -3131,6 +5281,8 @@ namespace LSImmersiveLife
 
                 result.Enabled = Bool(root, "enabled", result.Enabled);
                 result.DeveloperMenuEnabled = Bool(root, "developerMenuEnabled", result.DeveloperMenuEnabled);
+                result.CheckDispatchScenes = Bool(
+                    root, "checkDispatchScenes", result.CheckDispatchScenes);
                 result.AutomaticRuntimeWatch = Bool(
                     root,
                     "automaticRuntimeWatch",
@@ -3169,6 +5321,7 @@ namespace LSImmersiveLife
                 return;
             Enabled = source.Enabled;
             DeveloperMenuEnabled = source.DeveloperMenuEnabled;
+            CheckDispatchScenes = source.CheckDispatchScenes;
             AutomaticRuntimeWatch = source.AutomaticRuntimeWatch;
             AutomaticAnomalyDetection = source.AutomaticAnomalyDetection;
             LiveBehavioralConfirmation = source.LiveBehavioralConfirmation;
@@ -3213,6 +5366,7 @@ namespace LSImmersiveLife
                     new XAttribute("version", "2.0"),
                     new XAttribute("enabled", Enabled),
                     new XAttribute("developerMenuEnabled", DeveloperMenuEnabled),
+                    new XAttribute("checkDispatchScenes", CheckDispatchScenes),
                     new XAttribute("automaticRuntimeWatch", AutomaticRuntimeWatch),
                     new XAttribute("automaticAnomalyDetection", AutomaticAnomalyDetection),
                     new XAttribute("liveBehavioralConfirmation", LiveBehavioralConfirmation),
@@ -3370,7 +5524,6 @@ namespace LSImmersiveLife
                 trace.SourceMember = InferSourceMember(trace.Category, trace.Owner);
             return trace;
         }
-
         internal string ToTraceLine()
         {
             return TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)

@@ -505,6 +505,21 @@ namespace LSImmersiveLife
                     StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>
+        /// Returns locations that advertise an incident-neutral capability.
+        /// Potential capabilities are opt-in and must still pass the owning
+        /// gameplay system's live physical validation before use.
+        /// </summary>
+        internal IEnumerable<LSImmersiveLocationDefinition> FindByCapability(
+            string capability,
+            bool includePotential)
+        {
+            if (string.IsNullOrWhiteSpace(capability))
+                return Enumerable.Empty<LSImmersiveLocationDefinition>();
+            return _locations.Values.Where(location =>
+                location.HasCapability(capability, includePotential));
+        }
+
         internal IEnumerable<LSImmersiveLocationDefinition> FindByRegion(
             string region)
         {
@@ -604,6 +619,7 @@ namespace LSImmersiveLife
         {
             private readonly Dictionary<string, LSImmersiveLocationPoint> _points;
             private readonly List<LSImmersiveLocationBuildingCandidate> _buildingCandidates;
+            private readonly List<LSImmersiveLocationCapability> _capabilities;
 
             private LSImmersiveLocationDefinition(
                 string id,
@@ -625,7 +641,8 @@ namespace LSImmersiveLife
                 string sourceRef,
                 string notes,
                 Dictionary<string, LSImmersiveLocationPoint> points,
-                List<LSImmersiveLocationBuildingCandidate> buildingCandidates)
+                List<LSImmersiveLocationBuildingCandidate> buildingCandidates,
+                List<LSImmersiveLocationCapability> capabilities)
             {
                 Id = id;
                 Name = name;
@@ -648,6 +665,8 @@ namespace LSImmersiveLife
                 _points = points;
                 _buildingCandidates = buildingCandidates
                     ?? new List<LSImmersiveLocationBuildingCandidate>();
+                _capabilities = capabilities
+                    ?? new List<LSImmersiveLocationCapability>();
             }
 
             internal string Id { get; private set; }
@@ -690,6 +709,24 @@ namespace LSImmersiveLife
             internal IEnumerable<LSImmersiveLocationBuildingCandidate> BuildingCandidates
             {
                 get { return _buildingCandidates; }
+            }
+            internal IEnumerable<LSImmersiveLocationCapability> Capabilities
+            {
+                get { return _capabilities; }
+            }
+
+            internal bool HasCapability(string capability, bool includePotential)
+            {
+                if (string.IsNullOrWhiteSpace(capability))
+                    return false;
+                return _capabilities.Any(candidate =>
+                    string.Equals(candidate.Name, capability,
+                        StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(candidate.Status, "Validated",
+                            StringComparison.OrdinalIgnoreCase)
+                        || (includePotential
+                            && string.Equals(candidate.Status, "Potential",
+                                StringComparison.OrdinalIgnoreCase))));
             }
 
             internal bool TryGetPoint(
@@ -778,6 +815,32 @@ namespace LSImmersiveLife
                             "Building candidate in " + id)));
                 }
 
+                var capabilities = new List<LSImmersiveLocationCapability>();
+                var capabilityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (XElement capabilityNode in node.Elements("Capability"))
+                {
+                    string capabilityName = Required(
+                        capabilityNode, "name", "Capability in " + id);
+                    string capabilityStatus = Optional(
+                        capabilityNode, "status", "Potential");
+                    if (!string.Equals(capabilityStatus, "Potential",
+                            StringComparison.OrdinalIgnoreCase)
+                        && !string.Equals(capabilityStatus, "Validated",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidDataException(
+                            "Unsupported capability status in location: "
+                            + id + "/" + capabilityName + "/" + capabilityStatus);
+                    }
+                    if (!capabilityNames.Add(capabilityName))
+                        throw new InvalidDataException(
+                            "Duplicate location capability: " + id + "/" + capabilityName);
+                    capabilities.Add(new LSImmersiveLocationCapability(
+                        capabilityName,
+                        capabilityStatus,
+                        Optional(capabilityNode, "basis", string.Empty)));
+                }
+
                 var definition = new LSImmersiveLocationDefinition(
                     id,
                     name,
@@ -799,7 +862,8 @@ namespace LSImmersiveLife
                     node.Element("Notes") == null
                         ? string.Empty : node.Element("Notes").Value.Trim(),
                     points,
-                    buildingCandidates);
+                    buildingCandidates,
+                    capabilities);
                 definition.MainPlace = Optional(node, "mainPlace", string.Empty);
                 definition.Zone = Optional(node, "zone", string.Empty);
                 definition.Street = Optional(node, "street", string.Empty);
@@ -950,6 +1014,23 @@ namespace LSImmersiveLife
             internal string ModelName { get; private set; }
             internal string ModelHash { get; private set; }
             internal bool IdentityConfirmed { get; private set; }
+        }
+
+        internal sealed class LSImmersiveLocationCapability
+        {
+            internal LSImmersiveLocationCapability(
+                string name,
+                string status,
+                string basis)
+            {
+                Name = name;
+                Status = status;
+                Basis = basis ?? string.Empty;
+            }
+
+            internal string Name { get; private set; }
+            internal string Status { get; private set; }
+            internal string Basis { get; private set; }
         }
 
         /// <summary>

@@ -7,6 +7,7 @@
 <LSDeveloper version="2.0"
   enabled="true"
   developerMenuEnabled="true"
+  checkDispatchScenes="false"
   automaticRuntimeWatch="false"
   automaticAnomalyDetection="true"
   liveBehavioralConfirmation="true"

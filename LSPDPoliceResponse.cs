@@ -1983,6 +1983,63 @@ namespace LSImmersiveLife
         internal void Reset()
         {
             ReleaseAll();
+            ResetTrackingState();
+        }
+
+        internal void ResetPreservingActors()
+        {
+            Ped player = null;
+            Vehicle playerVehicle = null;
+            try
+            {
+                player = Game.Player.Character;
+                if (player != null && player.Exists())
+                    playerVehicle = player.CurrentVehicle;
+            }
+            catch { }
+            foreach (PoliceResponseUnit unit in _units.ToArray())
+            {
+                if (unit == null)
+                    continue;
+                SetEmergencySignals(unit, false);
+                try
+                {
+                    if (unit.Driver != null && unit.Driver.Exists())
+                    {
+                        Vehicle driverVehicle = unit.Driver.CurrentVehicle;
+                        bool playerOccupiesDriverVehicle = playerVehicle != null
+                            && playerVehicle.Exists() && driverVehicle != null
+                            && driverVehicle.Exists()
+                            && driverVehicle.Handle == playerVehicle.Handle;
+                        if ((player == null || !player.Exists()
+                                || unit.Driver.Handle != player.Handle)
+                            && !playerOccupiesDriverVehicle)
+                        {
+                            unit.Driver.IsPersistent = false;
+                            unit.Driver.MarkAsNoLongerNeeded();
+                        }
+                    }
+                }
+                catch { }
+                try
+                {
+                    if (unit.Vehicle != null && unit.Vehicle.Exists()
+                        && (playerVehicle == null || !playerVehicle.Exists()
+                            || unit.Vehicle.Handle != playerVehicle.Handle))
+                    {
+                        unit.Vehicle.IsPersistent = false;
+                        unit.Vehicle.MarkAsNoLongerNeeded();
+                    }
+                }
+                catch { }
+                unit.Owned = false;
+            }
+            _units.Clear();
+            ResetTrackingState();
+        }
+
+        private void ResetTrackingState()
+        {
             _authorityAcknowledgements.Clear();
             _authorityDeescalationTargets.Clear();
             _authorityDeescalationOccurrences.Clear();

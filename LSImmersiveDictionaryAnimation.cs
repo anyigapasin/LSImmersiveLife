@@ -219,6 +219,61 @@ internal static class LSImmersiveDictionaryAnimation
             out sceneHeading);
     }
 
+    // Dispatch has authored left and right standing pairs. Select the pair
+    // matching the suspect's side in the officer's current formation; keep the
+    // legacy right-side helper above for other callers with their own staging.
+    internal static bool TryPlaySynchronizedArrestForDispatch(
+        Ped officer,
+        Ped suspect,
+        out int sceneId,
+        out float longestClipDuration,
+        out Vector3 sceneOrigin,
+        out float sceneHeading,
+        out string officerClip,
+        out string suspectClip)
+    {
+        officerClip = null;
+        suspectClip = null;
+        sceneId = -1;
+        longestClipDuration = 0f;
+        sceneOrigin = Vector3.Zero;
+        sceneHeading = 0f;
+
+        if (officer == null || !officer.Exists()
+            || suspect == null || !suspect.Exists())
+            return false;
+
+        bool suspectOnOfficerLeft = false;
+        try
+        {
+            Vector3 forward = officer.ForwardVector;
+            Vector3 towardSuspect = suspect.Position - officer.Position;
+            float lateralPosition = forward.Y * towardSuspect.X
+                - forward.X * towardSuspect.Y;
+            suspectOnOfficerLeft = lateralPosition < -0.08f;
+        }
+        catch { }
+
+        officerClip = suspectOnOfficerLeft
+            ? "cop_p2_back_left" : "cop_p2_back_right";
+        suspectClip = suspectOnOfficerLeft
+            ? "crook_p2_back_left" : "crook_p2_back_right";
+        return TryPlaySynchronizedPair(
+            "mp_arrest_paired",
+            officer,
+            officerClip,
+            suspect,
+            suspectClip,
+            4.0f,
+            -4.0f,
+            -1,
+            1.0f,
+            out sceneId,
+            out longestClipDuration,
+            out sceneOrigin,
+            out sceneHeading);
+    }
+
     internal static bool TryPlaySynchronizedGroundArrest(
         Ped officer,
         Ped suspect,

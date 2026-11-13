@@ -41,6 +41,16 @@ namespace LSImmersiveLife
             get { return _selectedMode != LSRoleplayMode.NoneSelected; }
         }
 
+        internal string ResetSelectedRoleRuntime()
+        {
+            if (_selectedMode != LSRoleplayMode.PoliceAuthority)
+            {
+                return "No Police runtime is registered for the selected role. The role was left unchanged.";
+            }
+
+            return _policeUi.ResetPoliceRuntime();
+        }
+
         /// <summary>
         /// Receives the category selection from LSRoleplay. Selecting Police
         /// activates the existing Police Authority path and routes directly

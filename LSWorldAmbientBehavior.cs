@@ -63,6 +63,10 @@ namespace LSImmersiveLife
         private const float InteriorActivityMaximumDepth = 7f;
         private const float InteriorFloorAlignmentTolerance = 1.5f;
         private const float MappedDoorwayFloorProbeHeight = 2f;
+        private const float MappedDoorwayExteriorGroundCorrection = 3f;
+        private const float MappedDoorwayExteriorMaximumThresholdRadius = 5f;
+        private const float MappedDoorwayExteriorMinimumSideProgress = 0.35f;
+        private const float MappedDoorwayExteriorSafeSnapDistance = 1.25f;
         private const int UnlockedDoorSystemState = 0;
         private const int UnlockedThisFrameDoorSystemState = 3;
         private const float SurveyPointAreaRadius = 650f;
@@ -75,13 +79,19 @@ namespace LSImmersiveLife
         private const int MaximumDispatchLocationCandidateFailureExamples = 3;
         private const int MaximumDispatchLocationCandidateFailureStages = 8;
         private const int MaximumDispatchLocationFailureTokenLength = 80;
+        private const int MaximumPlayerRadiusParkedVehicleStagingCandidates = 4;
         private const int MaximumMappedInteriorDispatchCandidates = 3;
         private const int MaximumInsideOnlyInteriorSceneCandidates = 2;
         private const int MaximumDispatchInteriorPins = 6;
         private const int DispatchInteriorIdentityCacheLifetimeMilliseconds = 3000;
         private const float MaximumInteriorPlayerFallbackDistance = 18f;
+        private const float DispatchRemoteInteriorLoadSceneRadius = 55f;
+        private const float DispatchRemoteExteriorLoadSceneRadius = 55f;
         private const ulong PinInteriorInMemoryNativeHash = 0x2CA429C029CCF247;
         private const ulong UnpinInteriorNativeHash = 0x261CCE7EED010641;
+        private const ulong NewLoadSceneStartNativeHash = 0x212A8D0D2BABFAC2;
+        private const ulong IsNewLoadSceneLoadedNativeHash = 0x01B8247A7A8B9AD1;
+        private const ulong NewLoadSceneStopNativeHash = 0xC197616D221FF4A4;
         private const ulong GetNthClosestVehicleNodeWithHeadingNativeHash = 0x80CA6A8B6C094CC4;
         private const ulong AddDoorToSystemNativeHash = 0x6F8838D03D1DC226;
         private const int RecentLocationHistoryLimit = 8;
@@ -99,6 +109,28 @@ namespace LSImmersiveLife
         private const float DispatchVehicleGroundFallbackRoadNodeSnapDistance = 2f;
         private const float DispatchVehicleGroundFallbackElevationTolerance = 1.5f;
         private const float DispatchVehicleGroundFallbackHeadingTolerance = 35f;
+        private const float DispatchMovingRoadRecoveryMaximumShift = 20f;
+        private const float DispatchMovingRoadRecoveryMinimumShift = 3f;
+        private const float DispatchMovingRoadRecoveryMaximumNodeSearchDistance = 40f;
+        private const float DispatchMovingRoadRecoveryLateralOffset = 6f;
+        private static readonly float[] DispatchMovingRoadRecoveryOffsets =
+        {
+            8f,
+            -8f,
+            14f,
+            -14f
+        };
+        private static readonly float[] DispatchMovingRoadRecoveryLateralOffsets =
+        {
+            DispatchMovingRoadRecoveryLateralOffset,
+            -DispatchMovingRoadRecoveryLateralOffset
+        };
+        private static readonly float[] DispatchMovingRoadRecoveryLateralSceneOffsets =
+        {
+            -8f,
+            0f,
+            8f
+        };
         private static readonly float[] PlayerRadiusRoadsideLateralOffsets =
         {
             4f,
@@ -123,6 +155,7 @@ namespace LSImmersiveLife
         private const float DispatchParticipantDiagonalFallbackOffset = 0.88388348f;
         private const float DispatchParticipantOuterDiagonalFallbackOffset = 1.94454365f;
         private const float DispatchParticipantMaximumTotalOffset = 4f;
+        private const float DispatchPlayerRadiusOutdoorFootParticipantMaximumOffset = 4.5f;
         private const float DispatchParticipantMinimumSpacing = 1.5f;
         private const float DispatchExteriorFootprintProbeRadius = 3.5f;
         private const int DispatchExteriorMinimumOpenFootprintDirections = 3;
@@ -136,6 +169,7 @@ namespace LSImmersiveLife
         private const float DispatchExteriorFootCatalogSceneOffsetLimit = 6f;
         private const float DispatchExteriorActorMaximumHorizontalGroundOffset = 0.5f;
         private const float DispatchExteriorActorMaximumOriginHeightAboveGround = 3f;
+        private const float DispatchExteriorDeadVictimSettlementDriftLimit = 1.5f;
         private const float DispatchExteriorActorMaximumOriginBelowGround = 0.35f;
         private const int DispatchInteriorReadinessCacheMilliseconds = 2000;
         private const int DispatchInteriorCollisionRequestIntervalMilliseconds = 3000;
@@ -144,10 +178,19 @@ namespace LSImmersiveLife
             new Vector2(DispatchExteriorSameSiteFallbackOffset, 0f),
             new Vector2(-DispatchExteriorSameSiteFallbackOffset, 0f),
             new Vector2(0f, DispatchExteriorSameSiteFallbackOffset),
-            new Vector2(0f, -DispatchExteriorSameSiteFallbackOffset)
+            new Vector2(0f, -DispatchExteriorSameSiteFallbackOffset),
+            new Vector2(DispatchExteriorSameSiteFallbackOffset * 0.70710678f,
+                DispatchExteriorSameSiteFallbackOffset * 0.70710678f),
+            new Vector2(DispatchExteriorSameSiteFallbackOffset * 0.70710678f,
+                -DispatchExteriorSameSiteFallbackOffset * 0.70710678f),
+            new Vector2(-DispatchExteriorSameSiteFallbackOffset * 0.70710678f,
+                DispatchExteriorSameSiteFallbackOffset * 0.70710678f),
+            new Vector2(-DispatchExteriorSameSiteFallbackOffset * 0.70710678f,
+                -DispatchExteriorSameSiteFallbackOffset * 0.70710678f)
         };
         private const float DispatchVictimFallbackCorrectionDistance = 2.75f;
         private const float DispatchVictimMaximumSceneDistance = 5.25f;
+        private const float DispatchVictimExpandedFallbackOffset = 4f;
         private static readonly Vector2[] DispatchParticipantFallbackDirections =
         {
             new Vector2(DispatchParticipantFallbackOffset, 0f),
@@ -166,6 +209,17 @@ namespace LSImmersiveLife
             new Vector2(DispatchParticipantOuterDiagonalFallbackOffset, -DispatchParticipantOuterDiagonalFallbackOffset),
             new Vector2(-DispatchParticipantOuterDiagonalFallbackOffset, DispatchParticipantOuterDiagonalFallbackOffset),
             new Vector2(-DispatchParticipantOuterDiagonalFallbackOffset, -DispatchParticipantOuterDiagonalFallbackOffset)
+        };
+        private static readonly Vector2[] DispatchParticipantExpandedFallbackDirections =
+        {
+            new Vector2(3.75f, 0f),
+            new Vector2(-3.75f, 0f),
+            new Vector2(0f, 3.75f),
+            new Vector2(0f, -3.75f),
+            new Vector2(2.65165043f, 2.65165043f),
+            new Vector2(2.65165043f, -2.65165043f),
+            new Vector2(-2.65165043f, 2.65165043f),
+            new Vector2(-2.65165043f, -2.65165043f)
         };
         private static readonly Vector2[] DispatchVehicleStagingProbeOffsets =
         {
@@ -189,7 +243,19 @@ namespace LSImmersiveLife
             new Vector2(1.75f, 1.75f),
             new Vector2(1.75f, -1.75f),
             new Vector2(-1.75f, 1.75f),
-            new Vector2(-1.75f, -1.75f)
+            new Vector2(-1.75f, -1.75f),
+            new Vector2(DispatchVictimExpandedFallbackOffset, 0f),
+            new Vector2(-DispatchVictimExpandedFallbackOffset, 0f),
+            new Vector2(0f, DispatchVictimExpandedFallbackOffset),
+            new Vector2(0f, -DispatchVictimExpandedFallbackOffset),
+            new Vector2(DispatchVictimExpandedFallbackOffset * 0.70710678f,
+                DispatchVictimExpandedFallbackOffset * 0.70710678f),
+            new Vector2(DispatchVictimExpandedFallbackOffset * 0.70710678f,
+                -DispatchVictimExpandedFallbackOffset * 0.70710678f),
+            new Vector2(-DispatchVictimExpandedFallbackOffset * 0.70710678f,
+                DispatchVictimExpandedFallbackOffset * 0.70710678f),
+            new Vector2(-DispatchVictimExpandedFallbackOffset * 0.70710678f,
+                -DispatchVictimExpandedFallbackOffset * 0.70710678f)
         };
 
         private readonly Dictionary<int, AmbientActorContext> _actors =
@@ -215,6 +281,14 @@ namespace LSImmersiveLife
             _confirmedInteriorCrossingsByActor =
                 new Dictionary<int, AmbientConfirmedInteriorCrossing>();
         private readonly HashSet<int> _dispatchPinnedInteriorIds = new HashSet<int>();
+        private readonly HashSet<int> _dispatchRemoteInteriorSceneLoadedIds = new HashSet<int>();
+        private int _dispatchRemoteInteriorLoadSceneLiveInteriorId;
+        private Vector3 _dispatchRemoteInteriorLoadScenePosition;
+        private bool _dispatchRemoteInteriorLoadSceneOwned;
+        private string _dispatchRemoteExteriorLoadSceneKey;
+        private Vector3 _dispatchRemoteExteriorLoadScenePosition;
+        private bool _dispatchRemoteExteriorLoadSceneOwned;
+        private bool _dispatchRemoteExteriorLoadSceneLoaded;
         private readonly Dictionary<int, Tuple<bool, DateTime>> _dispatchInteriorReadinessCache =
             new Dictionary<int, Tuple<bool, DateTime>>();
         private readonly Dictionary<string, DateTime> _lastDispatchInteriorCollisionRequestAt =
@@ -496,6 +570,7 @@ namespace LSImmersiveLife
 
             AmbientInteriorAccessRoute nearest = null;
             float nearestDistance = float.MaxValue;
+            bool nearestUsesConfirmedInteriorSide = false;
             string walkablePositionFailure = string.Empty;
             string nearestSideFailure = string.Empty;
             float nearestSideFailureDistance = float.MaxValue;
@@ -637,10 +712,13 @@ namespace LSImmersiveLife
                         promptCurrentInteriorId,
                         promptTargetInteriorId,
                         enteringInterior);
-                    if (pairDistanceToActor < nearestDistance)
+                    if ((confirmedInsideAtThisPair && !nearestUsesConfirmedInteriorSide)
+                        || (confirmedInsideAtThisPair == nearestUsesConfirmedInteriorSide
+                            && pairDistanceToActor < nearestDistance))
                     {
                         nearestDistance = pairDistanceToActor;
                         nearest = promptRoute;
+                        nearestUsesConfirmedInteriorSide = confirmedInsideAtThisPair;
                     }
                     continue;
                 }
@@ -648,9 +726,7 @@ namespace LSImmersiveLife
                 Vector3 entryPosition = enteringInterior
                     ? pair.OutsidePoint.Position
                     : pair.InsidePoint.Position;
-                Vector3 destinationPosition = enteringInterior
-                    ? Vector3.Zero
-                    : outsideProbe;
+                Vector3 destinationPosition = Vector3.Zero;
                 if (enteringInterior
                     && !TryResolveInteriorWalkablePosition(
                         pair.InsidePoint.Position,
@@ -659,6 +735,36 @@ namespace LSImmersiveLife
                         out destinationPosition,
                         out walkablePositionFailure))
                     continue;
+                if (!enteringInterior
+                    && !TryResolveInteriorWalkablePosition(
+                        pair.InsidePoint.Position,
+                        liveInsideInteriorId,
+                        outsideProbe,
+                        out entryPosition,
+                        out walkablePositionFailure))
+                {
+                    if (confirmedInsideAtThisPair)
+                    {
+                        reason = walkablePositionFailure;
+                        return false;
+                    }
+                    continue;
+                }
+                if (!enteringInterior
+                    && !TryResolveMappedDoorwayExteriorDestination(
+                        pair,
+                        outsideProbe,
+                        liveInsideInteriorId,
+                        out destinationPosition,
+                        out walkablePositionFailure))
+                {
+                    if (confirmedInsideAtThisPair)
+                    {
+                        reason = walkablePositionFailure;
+                        return false;
+                    }
+                    continue;
+                }
                 int currentLiveInteriorId = enteringInterior
                     ? liveOutsideInteriorId
                     : liveInsideInteriorId;
@@ -674,10 +780,13 @@ namespace LSImmersiveLife
                     currentLiveInteriorId,
                     targetLiveInteriorId,
                     enteringInterior);
-                if (distance < nearestDistance)
+                if ((confirmedInsideAtThisPair && !nearestUsesConfirmedInteriorSide)
+                    || (confirmedInsideAtThisPair == nearestUsesConfirmedInteriorSide
+                        && distance < nearestDistance))
                 {
                     nearestDistance = distance;
                     nearest = candidateRoute;
+                    nearestUsesConfirmedInteriorSide = confirmedInsideAtThisPair;
                 }
             }
 
@@ -943,6 +1052,310 @@ namespace LSImmersiveLife
             return true;
         }
 
+        private bool TryAdvanceDispatchRemoteInteriorScene(
+            int liveInteriorId,
+            Vector3 insidePosition,
+            string locationId,
+            string catalogInteriorId,
+            out bool sceneLoaded,
+            out string evidence)
+        {
+            sceneLoaded = false;
+            evidence = string.Empty;
+            if (liveInteriorId == 0)
+            {
+                evidence = "Stage=InteriorRemoteScene; Location=" + (locationId ?? string.Empty)
+                    + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                    + "; LiveInteriorId=0; Result=NoLiveInteriorIdentity";
+                return false;
+            }
+
+            if (_dispatchRemoteInteriorSceneLoadedIds.Contains(liveInteriorId))
+            {
+                sceneLoaded = true;
+                evidence = "RemoteScene=LoadedPreviously; LiveInteriorId=" + liveInteriorId;
+                return true;
+            }
+
+            int playerInteriorId;
+            if (TryGetDispatchPlayerInteriorId(Game.Player.Character, out playerInteriorId)
+                && playerInteriorId == liveInteriorId)
+            {
+                StopOwnedDispatchRemoteInteriorLoadScene(
+                    "PlayerEnteredMappedInterior:" + liveInteriorId);
+                _dispatchRemoteInteriorSceneLoadedIds.Add(liveInteriorId);
+                _dispatchInteriorReadinessCache.Remove(liveInteriorId);
+                sceneLoaded = true;
+                evidence = "RemoteScene=PlayerAlreadyInside; LiveInteriorId=" + liveInteriorId;
+                return true;
+            }
+
+            if (_dispatchRemoteInteriorLoadSceneOwned
+                && _dispatchRemoteInteriorLoadSceneLiveInteriorId != liveInteriorId)
+                StopOwnedDispatchRemoteInteriorLoadScene(
+                    "DifferentMappedInteriorRequested:" + liveInteriorId);
+
+            if (!_dispatchRemoteInteriorLoadSceneOwned)
+            {
+                bool started;
+                try
+                {
+                    started = Function.Call<bool>(
+                        (Hash)NewLoadSceneStartNativeHash,
+                        insidePosition.X, insidePosition.Y, insidePosition.Z,
+                        0f, 0f, 0f,
+                        DispatchRemoteInteriorLoadSceneRadius,
+                        0);
+                }
+                catch (Exception ex)
+                {
+                    evidence = "Stage=InteriorRemoteScene; Location=" + (locationId ?? string.Empty)
+                        + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                        + "; LiveInteriorId=" + liveInteriorId
+                        + "; Native=NEW_LOAD_SCENE_START; Result=Exception:" + ex.GetType().Name;
+                    return false;
+                }
+
+                if (!started)
+                {
+                    evidence = "Stage=InteriorRemoteScene; Location=" + (locationId ?? string.Empty)
+                        + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                        + "; LiveInteriorId=" + liveInteriorId
+                        + "; Native=NEW_LOAD_SCENE_START; Result=Rejected";
+                    return false;
+                }
+
+                _dispatchRemoteInteriorLoadSceneOwned = true;
+                _dispatchRemoteInteriorLoadSceneLiveInteriorId = liveInteriorId;
+                _dispatchRemoteInteriorLoadScenePosition = insidePosition;
+                LogRuntimeTransition(
+                    "AMBIENT_WORLD_DISPATCH_REMOTE_INTERIOR_STREAM_STARTED",
+                    "Location=" + (locationId ?? string.Empty)
+                        + "; LiveInteriorId=" + liveInteriorId,
+                    "Location=" + (locationId ?? string.Empty)
+                        + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                        + "; LiveInteriorId=" + liveInteriorId
+                        + "; Position=" + insidePosition
+                        + "; Radius=" + DispatchRemoteInteriorLoadSceneRadius
+                        + "; Native=NEW_LOAD_SCENE_START; Result=Pending");
+            }
+
+            bool loaded;
+            try
+            {
+                loaded = Function.Call<bool>((Hash)IsNewLoadSceneLoadedNativeHash);
+            }
+            catch (Exception ex)
+            {
+                evidence = "Stage=InteriorRemoteScene; Location=" + (locationId ?? string.Empty)
+                    + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                    + "; LiveInteriorId=" + liveInteriorId
+                    + "; Native=IS_NEW_LOAD_SCENE_LOADED; Result=Exception:" + ex.GetType().Name;
+                return false;
+            }
+
+            if (!loaded)
+            {
+                evidence = "PENDING:Status=RemoteInteriorSceneLoading; Stage=InteriorRemoteScene"
+                    + "; Location=" + (locationId ?? string.Empty)
+                    + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                    + "; LiveInteriorId=" + liveInteriorId
+                    + "; Position=" + _dispatchRemoteInteriorLoadScenePosition
+                    + "; Native=IS_NEW_LOAD_SCENE_LOADED:false";
+                return true;
+            }
+
+            StopOwnedDispatchRemoteInteriorLoadScene(
+                "RemoteSceneLoaded:" + liveInteriorId);
+            _dispatchRemoteInteriorSceneLoadedIds.Add(liveInteriorId);
+            // A false readiness probe from before the remote scene load must
+            // not mask the fresh post-stream readiness state for its cache TTL.
+            _dispatchInteriorReadinessCache.Remove(liveInteriorId);
+            sceneLoaded = true;
+            LogRuntimeTransition(
+                "AMBIENT_WORLD_DISPATCH_REMOTE_INTERIOR_STREAM_RESOLVED",
+                "Location=" + (locationId ?? string.Empty)
+                    + "; LiveInteriorId=" + liveInteriorId,
+                "Location=" + (locationId ?? string.Empty)
+                    + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                    + "; LiveInteriorId=" + liveInteriorId
+                    + "; Position=" + insidePosition
+                    + "; Native=IS_NEW_LOAD_SCENE_LOADED; Result=Loaded");
+            evidence = "RemoteScene=Loaded; LiveInteriorId=" + liveInteriorId;
+            return true;
+        }
+
+        private void StopOwnedDispatchRemoteInteriorLoadScene(string reason)
+        {
+            if (!_dispatchRemoteInteriorLoadSceneOwned)
+                return;
+
+            int liveInteriorId = _dispatchRemoteInteriorLoadSceneLiveInteriorId;
+            try
+            {
+                Function.Call((Hash)NewLoadSceneStopNativeHash);
+                LogRuntimeTransition(
+                    "AMBIENT_WORLD_DISPATCH_REMOTE_INTERIOR_STREAM_STOPPED",
+                    "LiveInteriorId=" + liveInteriorId + "; Reason=" + (reason ?? string.Empty),
+                    "LiveInteriorId=" + liveInteriorId
+                        + "; Native=NEW_LOAD_SCENE_STOP; Result=StoppedOwnedRequest");
+            }
+            catch (Exception ex)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_REMOTE_INTERIOR_STREAM_STOP_FAILED",
+                    "LiveInteriorId=" + liveInteriorId
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; Exception=" + ex.GetType().Name);
+            }
+            finally
+            {
+                _dispatchRemoteInteriorLoadSceneOwned = false;
+                _dispatchRemoteInteriorLoadSceneLiveInteriorId = 0;
+                _dispatchRemoteInteriorLoadScenePosition = Vector3.Zero;
+            }
+        }
+
+        private string TryAdvanceDispatchRemoteExteriorScene(
+            string locationId,
+            string pointId,
+            Vector3 selectedPosition)
+        {
+            string key = (locationId ?? string.Empty).Trim()
+                + "|" + (pointId ?? string.Empty).Trim()
+                + "|" + selectedPosition.X.ToString("0.00", CultureInfo.InvariantCulture)
+                + "|" + selectedPosition.Y.ToString("0.00", CultureInfo.InvariantCulture)
+                + "|" + selectedPosition.Z.ToString("0.00", CultureInfo.InvariantCulture);
+            Ped player = Game.Player.Character;
+            if (player != null && player.Exists()
+                && Distance2D(player.Position, selectedPosition)
+                    <= DispatchRemoteExteriorLoadSceneRadius)
+                return "RemoteExteriorScene=LocalStreamingRange";
+
+            if (_dispatchRemoteExteriorLoadSceneOwned
+                && !string.Equals(_dispatchRemoteExteriorLoadSceneKey, key,
+                    StringComparison.OrdinalIgnoreCase))
+                StopOwnedDispatchRemoteExteriorLoadScene("DifferentExteriorSceneRequested");
+
+            if (_dispatchRemoteExteriorLoadSceneOwned
+                && string.Equals(_dispatchRemoteExteriorLoadSceneKey, key,
+                    StringComparison.OrdinalIgnoreCase)
+                && _dispatchRemoteExteriorLoadSceneLoaded)
+                return "RemoteExteriorScene=Loaded; Position="
+                    + _dispatchRemoteExteriorLoadScenePosition
+                    + "; GroundRevalidation=Required";
+
+            if (!_dispatchRemoteExteriorLoadSceneOwned)
+            {
+                if (_dispatchRemoteInteriorLoadSceneOwned)
+                    StopOwnedDispatchRemoteInteriorLoadScene("ExteriorDispatchSceneRequested");
+                bool started;
+                try
+                {
+                    started = Function.Call<bool>(
+                        (Hash)NewLoadSceneStartNativeHash,
+                        selectedPosition.X, selectedPosition.Y, selectedPosition.Z,
+                        0f, 0f, 0f,
+                        DispatchRemoteExteriorLoadSceneRadius,
+                        0);
+                }
+                catch (Exception ex)
+                {
+                    return "RemoteExteriorScene=StartException:" + ex.GetType().Name;
+                }
+
+                if (!started)
+                    return "RemoteExteriorScene=StartRejected";
+
+                _dispatchRemoteExteriorLoadSceneKey = key;
+                _dispatchRemoteExteriorLoadScenePosition = selectedPosition;
+                _dispatchRemoteExteriorLoadSceneOwned = true;
+                _dispatchRemoteExteriorLoadSceneLoaded = false;
+                LogRuntimeTransition(
+                    "AMBIENT_WORLD_DISPATCH_REMOTE_EXTERIOR_STREAM_STARTED",
+                    "Location=" + (locationId ?? string.Empty)
+                        + "; Point=" + (pointId ?? string.Empty),
+                    "Location=" + (locationId ?? string.Empty)
+                        + "; Point=" + (pointId ?? string.Empty)
+                        + "; Position=" + selectedPosition
+                        + "; Radius=" + DispatchRemoteExteriorLoadSceneRadius
+                        + "; Native=NEW_LOAD_SCENE_START; Result=Pending");
+            }
+
+            bool loaded;
+            try
+            {
+                loaded = Function.Call<bool>((Hash)IsNewLoadSceneLoadedNativeHash);
+            }
+            catch (Exception ex)
+            {
+                return "RemoteExteriorScene=LoadCheckException:" + ex.GetType().Name
+                    + "; Position=" + _dispatchRemoteExteriorLoadScenePosition;
+            }
+
+            if (!loaded)
+                return "RemoteExteriorScene=Pending; Position="
+                    + _dispatchRemoteExteriorLoadScenePosition
+                    + "; Native=IS_NEW_LOAD_SCENE_LOADED:false";
+
+            Vector3 loadedPosition = _dispatchRemoteExteriorLoadScenePosition;
+            _dispatchRemoteExteriorLoadSceneLoaded = true;
+            LogRuntimeTransition(
+                "AMBIENT_WORLD_DISPATCH_REMOTE_EXTERIOR_STREAM_RESOLVED",
+                "Location=" + (locationId ?? string.Empty)
+                    + "; Point=" + (pointId ?? string.Empty),
+                "Location=" + (locationId ?? string.Empty)
+                    + "; Point=" + (pointId ?? string.Empty)
+                    + "; Position=" + loadedPosition
+                    + "; Native=IS_NEW_LOAD_SCENE_LOADED; Result=Loaded"
+                    + "; GroundRevalidation=Required"
+                    + "; RequestRetainedUntilGroundConfirmation=true");
+            return "RemoteExteriorScene=Loaded; GroundRevalidation=Required";
+        }
+
+        private void StopOwnedDispatchRemoteExteriorLoadSceneAtPosition(
+            Vector3 validatedPosition,
+            string reason)
+        {
+            if (!_dispatchRemoteExteriorLoadSceneOwned
+                || Distance2D(_dispatchRemoteExteriorLoadScenePosition,
+                    validatedPosition) > 1.5f)
+                return;
+
+            StopOwnedDispatchRemoteExteriorLoadScene(reason);
+        }
+
+        private void StopOwnedDispatchRemoteExteriorLoadScene(string reason)
+        {
+            if (!_dispatchRemoteExteriorLoadSceneOwned)
+                return;
+
+            string key = _dispatchRemoteExteriorLoadSceneKey ?? string.Empty;
+            Vector3 position = _dispatchRemoteExteriorLoadScenePosition;
+            try
+            {
+                Function.Call((Hash)NewLoadSceneStopNativeHash);
+                LogRuntimeTransition(
+                    "AMBIENT_WORLD_DISPATCH_REMOTE_EXTERIOR_STREAM_STOPPED",
+                    "SceneKey=" + key + "; Reason=" + (reason ?? string.Empty),
+                    "Position=" + position
+                        + "; Native=NEW_LOAD_SCENE_STOP; Result=StoppedOwnedRequest");
+            }
+            catch (Exception ex)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_REMOTE_EXTERIOR_STREAM_STOP_FAILED",
+                    "Position=" + position
+                    + "; Reason=" + (reason ?? string.Empty)
+                    + "; Exception=" + ex.GetType().Name);
+            }
+            finally
+            {
+                _dispatchRemoteExteriorLoadSceneOwned = false;
+                _dispatchRemoteExteriorLoadSceneLoaded = false;
+                _dispatchRemoteExteriorLoadSceneKey = string.Empty;
+                _dispatchRemoteExteriorLoadScenePosition = Vector3.Zero;
+            }
+        }
+
         private bool TryRequestDispatchInteriorStreaming(
             int liveInteriorId,
             Vector3 insidePosition,
@@ -1013,10 +1426,60 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            reason = "PENDING:Status=InteriorNotReady; Stage=InteriorReadiness; Location=" + (locationId ?? string.Empty)
-                + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
-                + "; LiveInteriorId=" + liveInteriorId
-                + "; Native=IS_INTERIOR_READY:false"
+            bool remoteSceneLoaded;
+            string remoteSceneEvidence;
+            if (!TryAdvanceDispatchRemoteInteriorScene(
+                    liveInteriorId, insidePosition, locationId,
+                    catalogInteriorId, out remoteSceneLoaded,
+                    out remoteSceneEvidence))
+            {
+                reason = remoteSceneEvidence
+                    + "; StreamingRequest=PIN_INTERIOR_IN_MEMORY:"
+                    + (alreadyPinned ? "AlreadyPinned" : "Requested")
+                    + "; CollisionRequest=REQUEST_COLLISION_AT_COORD:"
+                    + (collisionRequestIssued ? "Issued" : "ThrottledByExistingBoundedRequest");
+                return false;
+            }
+
+            if (!remoteSceneLoaded)
+            {
+                reason = remoteSceneEvidence
+                    + "; StreamingRequest=PIN_INTERIOR_IN_MEMORY:"
+                    + (alreadyPinned ? "AlreadyPinned" : "Requested")
+                    + "; CollisionRequest=REQUEST_COLLISION_AT_COORD:"
+                    + (collisionRequestIssued ? "Issued" : "ThrottledByExistingBoundedRequest");
+                return true;
+            }
+
+            bool interiorReady;
+            try { interiorReady = IsInteriorReady(liveInteriorId); }
+            catch (Exception ex)
+            {
+                reason = "PENDING:Status=InteriorReadinessUnavailable; Stage=InteriorReadiness"
+                    + "; Location=" + (locationId ?? string.Empty)
+                    + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                    + "; LiveInteriorId=" + liveInteriorId
+                    + "; Native=IS_INTERIOR_READY; Result=Exception:" + ex.GetType().Name
+                    + "; " + remoteSceneEvidence;
+                return true;
+            }
+
+            if (!interiorReady)
+            {
+                reason = "PENDING:Status=InteriorNotReady; Stage=InteriorReadiness; Location=" + (locationId ?? string.Empty)
+                    + "; CatalogInteriorId=" + (catalogInteriorId ?? string.Empty)
+                    + "; LiveInteriorId=" + liveInteriorId
+                    + "; Native=IS_INTERIOR_READY:false"
+                    + "; StreamingRequest=PIN_INTERIOR_IN_MEMORY:"
+                    + (alreadyPinned ? "AlreadyPinned" : "Requested")
+                    + "; CollisionRequest=REQUEST_COLLISION_AT_COORD:"
+                    + (collisionRequestIssued ? "Issued" : "ThrottledByExistingBoundedRequest")
+                    + "; " + remoteSceneEvidence;
+                return true;
+            }
+
+            reason = remoteSceneEvidence
+                + "; InteriorReady=true"
                 + "; StreamingRequest=PIN_INTERIOR_IN_MEMORY:"
                 + (alreadyPinned ? "AlreadyPinned" : "Requested")
                 + "; CollisionRequest=REQUEST_COLLISION_AT_COORD:"
@@ -1026,8 +1489,13 @@ namespace LSImmersiveLife
 
         internal void ReleaseDispatchInteriorPinsExcept(
             IEnumerable<int> retainedLiveInteriorIds,
-            string reason)
+            string reason,
+            bool retainExteriorStreamRequest)
         {
+            if (_dispatchRemoteExteriorLoadSceneOwned && !retainExteriorStreamRequest)
+                StopOwnedDispatchRemoteExteriorLoadScene(
+                    "NoCommittedExteriorScene:" + (reason ?? string.Empty));
+
             HashSet<int> retained = new HashSet<int>(retainedLiveInteriorIds
                 ?? Enumerable.Empty<int>());
             int[] releaseCandidates = _dispatchPinnedInteriorIds
@@ -1058,10 +1526,17 @@ namespace LSImmersiveLife
                 if (!playerInteriorKnown || playerLiveInteriorId == liveInteriorId)
                     continue;
 
+                if (_dispatchRemoteInteriorLoadSceneOwned
+                    && _dispatchRemoteInteriorLoadSceneLiveInteriorId == liveInteriorId)
+                    StopOwnedDispatchRemoteInteriorLoadScene(
+                        "InteriorNoLongerRetained:" + (reason ?? string.Empty));
+
                 try
                 {
                     Function.Call((Hash)UnpinInteriorNativeHash, liveInteriorId);
                     _dispatchPinnedInteriorIds.Remove(liveInteriorId);
+                    _dispatchRemoteInteriorSceneLoadedIds.Remove(liveInteriorId);
+                    _dispatchInteriorReadinessCache.Remove(liveInteriorId);
                     LogDispatchInteriorPinTransition(liveInteriorId, "Released",
                         "LiveInteriorId=" + liveInteriorId
                         + "; Native=UNPIN_INTERIOR; Reason=" + (reason ?? string.Empty)
@@ -2308,6 +2783,266 @@ namespace LSImmersiveLife
             }
         }
 
+        private bool TryRefreshStagedInteriorActorRegistration(
+            Ped actor,
+            AmbientDispatchSceneResolution scene,
+            out string evidence)
+        {
+            evidence = string.Empty;
+            if (actor == null || !actor.Exists() || scene == null
+                || scene.LiveInteriorId == 0
+                || !_dispatchRemoteInteriorSceneLoadedIds.Contains(scene.LiveInteriorId))
+                return false;
+
+            DateTime now = DateTime.UtcNow;
+            if (scene.InteriorRegistrationRefreshNextAttemptAtUtcByHandle == null)
+                scene.InteriorRegistrationRefreshNextAttemptAtUtcByHandle =
+                    new Dictionary<int, DateTime>();
+            DateTime nextAttemptAtUtc;
+            if (scene.InteriorRegistrationRefreshNextAttemptAtUtcByHandle.TryGetValue(
+                    actor.Handle, out nextAttemptAtUtc)
+                && now < nextAttemptAtUtc)
+            {
+                evidence = "SamePositionRegistrationRefresh=RateLimited; Handle=" + actor.Handle
+                    + "; NextAttemptAtUtc=" + nextAttemptAtUtc.ToString(
+                        "O", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            Vector3 position = actor.Position;
+            scene.InteriorRegistrationRefreshNextAttemptAtUtcByHandle[actor.Handle] =
+                now.AddMilliseconds(DispatchInteriorCollisionRequestIntervalMilliseconds);
+            string collisionRequest = "Issued";
+            try
+            {
+                RequestInteriorCollision(position);
+            }
+            catch (Exception ex)
+            {
+                collisionRequest = "Exception:" + ex.GetType().Name;
+            }
+
+            try
+            {
+                Function.Call(Hash.SET_ENTITY_COORDS_NO_OFFSET,
+                    actor, position.X, position.Y, position.Z,
+                    false, false, false);
+                int entityInteriorId = Function.Call<int>(
+                    Hash.GET_INTERIOR_FROM_ENTITY, actor);
+                int coordinateInteriorId = GetInteriorAt(actor.Position);
+                int roomKey = Function.Call<int>(Hash.GET_ROOM_KEY_FROM_ENTITY, actor);
+                evidence = "SamePositionRegistrationRefresh=Issued"
+                    + "; Handle=" + actor.Handle
+                    + "; Position=" + position
+                    + "; EntityInteriorId=" + entityInteriorId
+                    + "; CoordinateInteriorId=" + coordinateInteriorId
+                    + "; RoomKey=" + roomKey
+                    + "; CollisionRequest=" + collisionRequest
+                    + "; NextRefreshMilliseconds="
+                    + DispatchInteriorCollisionRequestIntervalMilliseconds
+                    + "; Native=SET_ENTITY_COORDS_NO_OFFSET/GET_INTERIOR_FROM_ENTITY/"
+                    + "GET_INTERIOR_AT_COORDS/GET_ROOM_KEY_FROM_ENTITY";
+                return true;
+            }
+            catch (Exception ex)
+            {
+                evidence = "SamePositionRegistrationRefresh=Exception"
+                    + "; Handle=" + actor.Handle
+                    + "; Exception=" + ex.GetType().Name
+                    + "; CollisionRequest=" + collisionRequest
+                    + "; Native=REQUEST_COLLISION_AT_COORD/SET_ENTITY_COORDS_NO_OFFSET";
+                return true;
+            }
+        }
+
+        private bool TryFindDispatchMappedDoorWithStreaming(
+            AmbientDispatchSceneResolution scene,
+            Ped actor,
+            AmbientInteriorAccessRoute route,
+            string occurrenceId,
+            bool allowStreamingWait,
+            out Entity door,
+            out int doorHash,
+            out string reason)
+        {
+            door = null;
+            doorHash = 0;
+            reason = string.Empty;
+            if (scene == null || route == null || route.Pair == null
+                || route.Pair.InsidePoint == null)
+            {
+                reason = "Stage=InteriorDoorwayAccess; Result=MappedThresholdUnavailable";
+                return false;
+            }
+
+            if (scene.DoorwayStreamingRequestIssued
+                && !scene.DoorwayStreamingLoadCompleted)
+            {
+                string streamingProgress;
+                bool streamingAccepted = TryRequestDispatchInteriorStreaming(
+                    scene.LiveInteriorId,
+                    route.Pair.InsidePoint.Position,
+                    scene.LocationId,
+                    scene.CatalogInteriorId,
+                    out streamingProgress);
+                if (streamingAccepted
+                    && _dispatchRemoteInteriorSceneLoadedIds.Contains(scene.LiveInteriorId))
+                    scene.DoorwayStreamingLoadCompleted = true;
+                else if (!streamingAccepted)
+                {
+                    reason = "PENDING:Status=RemoteSceneRequestUnavailable; Stage=InteriorDoorwayReadiness"
+                        + "; Location=" + scene.LocationId
+                        + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                        + "; LiveInteriorId=" + scene.LiveInteriorId
+                        + "; RequestEvidence=" + streamingProgress;
+                    return false;
+                }
+            }
+
+            DateTime now = DateTime.UtcNow;
+            if (scene.DoorwayStreamingLoadCompleted
+                && scene.DoorwayPostStreamLookupAttempts > 0
+                && now < scene.DoorwayNextPostStreamLookupAtUtc)
+            {
+                reason = "PENDING:Status=DoorLookupPostStreamPending; Stage=InteriorDoorwayReadiness"
+                    + "; Location=" + scene.LocationId
+                    + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                    + "; LiveInteriorId=" + scene.LiveInteriorId
+                    + "; DoorLookup=Unresolved; StreamingConfirmed=true"
+                    + "; DoorLookupAttempt=" + scene.DoorwayPostStreamLookupAttempts
+                    + (string.IsNullOrWhiteSpace(scene.DoorwayLastPostStreamLookupFailure)
+                        ? string.Empty
+                        : "; LastLookup=" + scene.DoorwayLastPostStreamLookupFailure)
+                    + "; RetryAtUtc=" + scene.DoorwayNextPostStreamLookupAtUtc.ToString(
+                        "O", CultureInfo.InvariantCulture);
+                return false;
+            }
+
+            string lookupFailure;
+            if (TryFindThresholdDoor(actor, route, out door, out doorHash, out lookupFailure))
+            {
+                scene.DoorwayLastPostStreamLookupFailure = string.Empty;
+                if (scene.DoorwayStreamingRequestIssued
+                    && !scene.DoorwayStreamingResolutionLogged
+                    && string.Equals(scene.DoorwayStreamingRequestOccurrenceId,
+                        occurrenceId ?? string.Empty, StringComparison.Ordinal))
+                {
+                    scene.DoorwayStreamingResolutionLogged = true;
+                    LogRuntimeTransition(
+                        "AMBIENT_WORLD_DISPATCH_DOORWAY_STREAMING_RESOLVED",
+                        "Occurrence=" + (occurrenceId ?? string.Empty)
+                            + "; Location=" + scene.LocationId,
+                        "Occurrence=" + (occurrenceId ?? string.Empty)
+                            + "; Actor=" + (actor == null ? 0 : actor.Handle)
+                            + "; Location=" + scene.LocationId
+                            + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                            + "; LiveInteriorId=" + scene.LiveInteriorId
+                            + "; DoorEntity=" + door.Handle
+                            + "; DoorModel=" + door.Model.Hash
+                            + "; DoorHash=" + doorHash
+                            + "; StreamingConfirmed=true"
+                            + "; SameOccurrenceRetained=true");
+                }
+                return true;
+            }
+
+            scene.DoorwayLastPostStreamLookupFailure = lookupFailure ?? string.Empty;
+
+            bool unresolved = lookupFailure != null
+                && lookupFailure.IndexOf("Status=DoorUnresolved",
+                    StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!unresolved || !allowStreamingWait)
+            {
+                reason = "Stage=InteriorPhysicalDoorPreflight; Handle="
+                    + (actor == null ? 0 : actor.Handle)
+                    + "; Location=" + scene.LocationId
+                    + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                    + "; LiveInteriorId=" + scene.LiveInteriorId
+                    + "; Result=MappedPhysicalDoorUnavailable; Detail="
+                    + (lookupFailure ?? string.Empty);
+                return false;
+            }
+
+            if (!scene.DoorwayStreamingRequestIssued)
+            {
+                string streamingRequest;
+                if (!TryRequestDispatchInteriorStreaming(
+                    scene.LiveInteriorId,
+                    route.Pair.InsidePoint.Position,
+                    scene.LocationId,
+                    scene.CatalogInteriorId,
+                    out streamingRequest))
+                {
+                    reason = "PENDING:Status=RemoteSceneRequestUnavailable; Stage=InteriorDoorwayReadiness"
+                        + "; Location=" + scene.LocationId
+                        + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                        + "; LiveInteriorId=" + scene.LiveInteriorId
+                        + "; DoorLookup=Unresolved"
+                        + "; RequestEvidence=" + streamingRequest;
+                    return false;
+                }
+
+                scene.DoorwayStreamingRequestIssued = true;
+                scene.DoorwayStreamingRequestOccurrenceId = occurrenceId ?? string.Empty;
+                scene.DoorwayStreamingLoadCompleted =
+                    _dispatchRemoteInteriorSceneLoadedIds.Contains(scene.LiveInteriorId);
+                if (!scene.DoorwayStreamingLoadCompleted)
+                {
+                    reason = "PENDING:Status=DoorLookupPending; Stage=InteriorDoorwayReadiness"
+                        + "; Location=" + scene.LocationId
+                        + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                        + "; LiveInteriorId=" + scene.LiveInteriorId
+                        + "; DoorLookup=Unresolved; StreamingConfirmed=false"
+                        + "; RequestEvidence=" + streamingRequest;
+                    LogRuntimeTransition(
+                        "AMBIENT_WORLD_DISPATCH_DOORWAY_STREAMING_REQUESTED",
+                        "Occurrence=" + (occurrenceId ?? string.Empty)
+                            + "; Location=" + scene.LocationId,
+                        "Occurrence=" + (occurrenceId ?? string.Empty)
+                            + "; Actor=" + (actor == null ? 0 : actor.Handle)
+                            + "; Location=" + scene.LocationId
+                            + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                            + "; LiveInteriorId=" + scene.LiveInteriorId
+                            + "; DoorLookup=Unresolved"
+                            + "; StreamingRequest=" + streamingRequest
+                            + "; SameOccurrenceRetained=true"
+                            + "; SameActorRetained=" + (actor != null)
+                            + "; BeforeActorCreation=" + (actor == null));
+                    return false;
+                }
+
+                if (TryFindThresholdDoor(actor, route, out door, out doorHash, out lookupFailure))
+                {
+                    scene.DoorwayLastPostStreamLookupFailure = string.Empty;
+                    return true;
+                }
+                scene.DoorwayLastPostStreamLookupFailure = lookupFailure ?? string.Empty;
+            }
+
+            if (!scene.DoorwayStreamingLoadCompleted)
+            {
+                reason = "PENDING:Status=DoorLookupPending; Stage=InteriorDoorwayReadiness"
+                    + "; Location=" + scene.LocationId
+                    + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                    + "; LiveInteriorId=" + scene.LiveInteriorId
+                    + "; DoorLookup=Unresolved; StreamingConfirmed=false"
+                    + "; Native=NEW_LOAD_SCENE_START/IS_NEW_LOAD_SCENE_LOADED";
+                return false;
+            }
+
+            scene.DoorwayPostStreamLookupAttempts++;
+            scene.DoorwayNextPostStreamLookupAtUtc = now.AddMilliseconds(750);
+            reason = "PENDING:Status=DoorLookupPostStreamPending; Stage=InteriorDoorwayReadiness"
+                + "; Location=" + scene.LocationId
+                + "; CatalogInteriorId=" + scene.CatalogInteriorId
+                + "; LiveInteriorId=" + scene.LiveInteriorId
+                + "; DoorLookup=Unresolved; StreamingConfirmed=true"
+                + "; DoorLookupAttempt=" + scene.DoorwayPostStreamLookupAttempts
+                + "; NextLookupMilliseconds=750"
+                + "; LastLookup=" + (scene.DoorwayLastPostStreamLookupFailure ?? string.Empty);
+            return false;
+        }
+
         internal bool TryValidateDispatchInteriorActor(
             Ped actor,
             string actorRole,
@@ -2422,57 +3157,64 @@ namespace LSImmersiveLife
 
             bool interiorReady = false;
             bool interiorReadyAvailable = false;
-            if (!entityInteriorAvailable || entityInteriorId != scene.LiveInteriorId
-                || !roomKeyAvailable || roomKey == 0)
+            try
             {
-                try
-                {
-                    interiorReady = IsInteriorReady(scene.LiveInteriorId);
-                    interiorReadyAvailable = true;
-                }
-                catch
-                {
-                    // An unavailable readiness probe remains unresolved and
-                    // uses the existing bounded preparation retry.
-                }
+                interiorReady = IsInteriorReady(scene.LiveInteriorId);
+                interiorReadyAvailable = true;
+            }
+            catch
+            {
+                // An unavailable readiness probe remains unresolved and uses
+                // the existing bounded preparation retry.
             }
 
-            if (!entityInteriorAvailable || entityInteriorId != scene.LiveInteriorId)
+            if (!interiorReadyAvailable || !interiorReady)
             {
-                if (!entityInteriorAvailable || entityInteriorId == 0)
-                {
-                    // Interior readiness describes the mapped interior, not
-                    // whether this newly staged Ped has received its entity
-                    // interior/room registration. Keep the same hidden actor
-                    // through the existing bounded preparation retry. The
-                    // matching coordinate interior is only evidence for
-                    // retrying; it does not pass this identity gate.
-                    reason = "PENDING:Stage=InteriorActorIdentity; Handle=" + actor.Handle
-                        + "; ExpectedLiveInteriorId=" + scene.LiveInteriorId
-                        + "; EntityLiveInteriorId=" + (entityInteriorAvailable
-                            ? entityInteriorId.ToString(CultureInfo.InvariantCulture)
-                            : "Unavailable")
-                        + "; CoordinateLiveInteriorId=" + coordinateInteriorId
-                        + "; RoomKey=" + (roomKeyAvailable
-                            ? roomKey.ToString(CultureInfo.InvariantCulture) : "Unavailable")
-                        + "; InteriorReady=" + (interiorReadyAvailable
-                            ? interiorReady.ToString() : "Unavailable")
-                        + "; ReadinessScope=MappedInteriorOnly"
-                        + "; Native=GET_INTERIOR_FROM_ENTITY/GET_INTERIOR_AT_COORDS/GET_ROOM_KEY_FROM_ENTITY/IS_INTERIOR_READY"
-                        + "; Result=AwaitingActorInteriorRegistration";
-                    return false;
-                }
-
-                reason = "Stage=InteriorActorIdentity; Handle=" + actor.Handle
+                reason = "PENDING:Stage=InteriorWorldReadiness; Handle=" + actor.Handle
                     + "; ExpectedLiveInteriorId=" + scene.LiveInteriorId
-                    + "; EntityLiveInteriorId=" + entityInteriorId
+                    + "; EntityLiveInteriorId=" + (entityInteriorAvailable
+                        ? entityInteriorId.ToString(CultureInfo.InvariantCulture)
+                        : "Unavailable")
                     + "; CoordinateLiveInteriorId=" + coordinateInteriorId
                     + "; RoomKey=" + (roomKeyAvailable
                         ? roomKey.ToString(CultureInfo.InvariantCulture) : "Unavailable")
-                    + "; Native=GET_INTERIOR_FROM_ENTITY/GET_INTERIOR_AT_COORDS"
-                    + "; Result=EntityCoordinateInteriorMismatch";
+                    + "; InteriorReady=" + (interiorReadyAvailable
+                        ? interiorReady.ToString() : "Unavailable")
+                    + "; Native=IS_INTERIOR_READY"
+                    + "; Result=WaitingForSelectedInterior";
                 return false;
             }
+
+            string registrationRefreshEvidence = string.Empty;
+            if ((!entityInteriorAvailable || entityInteriorId == 0)
+                && interiorReadyAvailable && interiorReady
+                && _dispatchRemoteInteriorSceneLoadedIds.Contains(scene.LiveInteriorId))
+            {
+                TryRefreshStagedInteriorActorRegistration(
+                    actor, scene, out registrationRefreshEvidence);
+                try
+                {
+                    entityInteriorId = Function.Call<int>(
+                        Hash.GET_INTERIOR_FROM_ENTITY, actor);
+                    coordinateInteriorId = GetInteriorAt(actor.Position);
+                    roomKey = Function.Call<int>(Hash.GET_ROOM_KEY_FROM_ENTITY, actor);
+                    entityInteriorAvailable = true;
+                    roomKeyAvailable = true;
+                }
+                catch (Exception ex)
+                {
+                    registrationRefreshEvidence += "; RegistrationRecheck=Exception:"
+                        + ex.GetType().Name;
+                }
+            }
+
+            // GET_INTERIOR_FROM_ENTITY and GET_ROOM_KEY_FROM_ENTITY are
+            // diagnostic evidence only for mapped interiors. The runtime can
+            // report zero for a staged actor even when its coordinates resolve
+            // to the selected, loaded interior. Keep the coordinate identity,
+            // live interior readiness, floor alignment, actor validity, and
+            // doorway checks authoritative instead of rejecting this same
+            // retained actor on an entity/room registration discrepancy.
 
             float groundZ;
             Vector3 groundNormal;
@@ -2533,25 +3275,11 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            if (!roomKeyAvailable || roomKey == 0)
-            {
-                // A ready map interior still does not prove that the staged
-                // actor's room association has settled. Require a nonzero
-                // room key before success, but let the existing bounded retry
-                // observe registration on the same actor first.
-                reason = "PENDING:Stage=InteriorActorRoom; Handle=" + actor.Handle
-                    + "; Role=" + (actorRole ?? "Actor")
-                    + "; EntityLiveInteriorId=" + entityInteriorId
-                    + "; CoordinateLiveInteriorId=" + coordinateInteriorId
-                    + "; RoomKey=" + (roomKeyAvailable
-                        ? roomKey.ToString(CultureInfo.InvariantCulture) : "Unavailable")
-                    + "; InteriorReady=" + (interiorReadyAvailable
-                        ? interiorReady.ToString() : "Unavailable")
-                    + "; ReadinessScope=MappedInteriorOnly"
-                    + "; Native=GET_ROOM_KEY_FROM_ENTITY/IS_INTERIOR_READY"
-                    + "; Result=AwaitingActorRoomRegistration";
-                return false;
-            }
+            string actorInteriorRegistration = entityInteriorAvailable
+                && entityInteriorId == scene.LiveInteriorId
+                && roomKeyAvailable && roomKey != 0
+                    ? "EntityAndRoomConfirmed"
+                    : "CoordinateConfirmed; EntityRoomDifferenceDiagnostic";
 
             int weaponHash = 0;
             try
@@ -2616,98 +3344,18 @@ namespace LSImmersiveLife
 
                 Entity preflightDoor;
                 int preflightDoorHash;
-                if (!TryFindThresholdDoor(
-                    actor, doorwayRoute, out preflightDoor,
-                    out preflightDoorHash, out doorwayFailure))
+                if (!TryFindDispatchMappedDoorWithStreaming(
+                    scene,
+                    actor,
+                    doorwayRoute,
+                    occurrenceId,
+                    allowDoorStreamingWait,
+                    out preflightDoor,
+                    out preflightDoorHash,
+                    out doorwayFailure))
                 {
-                    if (allowDoorStreamingWait
-                        && doorwayFailure != null
-                        && doorwayFailure.IndexOf("Status=DoorUnresolved",
-                            StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        string streamingRequest;
-                        if (TryRequestDispatchInteriorStreaming(
-                            scene.LiveInteriorId,
-                            doorwayRoute.Pair.InsidePoint.Position,
-                            scene.LocationId,
-                            scene.CatalogInteriorId,
-                            out streamingRequest))
-                        {
-                            scene.DoorwayStreamingRequestIssued = true;
-                            scene.DoorwayStreamingRequestOccurrenceId = occurrenceId ?? string.Empty;
-                            reason = "PENDING:Stage=InteriorDoorwayReadiness; Status=DoorLookupPending"
-                                + "; Handle=" + actor.Handle
-                                + "; Location=" + (scene.LocationId ?? string.Empty)
-                                + "; CatalogInteriorId=" + (scene.CatalogInteriorId ?? string.Empty)
-                                + "; LiveInteriorId=" + scene.LiveInteriorId
-                                + "; DoorPair=" + doorwayRoute.Pair.InsidePoint.SourceRecord
-                                + "; DoorLookup=Unresolved"
-                                + "; StreamingConfirmed=false"
-                                + "; RequestEvidence=" + streamingRequest
-                                + "; Result=AwaitingMappedPhysicalDoor";
-                            LogRuntimeTransition(
-                                "AMBIENT_WORLD_DISPATCH_DOORWAY_STREAMING_REQUESTED",
-                                "Occurrence=" + (occurrenceId ?? string.Empty)
-                                    + "; Location=" + (scene.LocationId ?? string.Empty)
-                                    + "; Result=Pending",
-                                "Occurrence=" + (occurrenceId ?? string.Empty)
-                                    + "; Actor=" + actor.Handle
-                                    + "; Location=" + (scene.LocationId ?? string.Empty)
-                                    + "; CatalogInteriorId=" + scene.CatalogInteriorId
-                                    + "; LiveInteriorId=" + scene.LiveInteriorId
-                                    + "; DoorPair=" + doorwayRoute.Pair.InsidePoint.SourceRecord
-                                    + "; DoorLookup=Unresolved"
-                                    + "; StreamingRequest=" + streamingRequest
-                                    + "; SameOccurrenceRetained=true"
-                                    + "; SameActorRetained=true"
-                                    + "; OfferBlockedUntilPhysicalDoorResolves=true");
-                            return false;
-                        }
-
-                        reason = "Stage=InteriorPhysicalDoorPreflight; Handle=" + actor.Handle
-                            + "; Location=" + (scene.LocationId ?? string.Empty)
-                            + "; CatalogInteriorId=" + (scene.CatalogInteriorId ?? string.Empty)
-                            + "; LiveInteriorId=" + scene.LiveInteriorId
-                            + "; Result=MappedPhysicalDoorUnavailable; Detail="
-                            + (doorwayFailure ?? string.Empty)
-                            + "; StreamingRequestFailed=" + streamingRequest;
-                        return false;
-                    }
-
-                    reason = "Stage=InteriorPhysicalDoorPreflight; Handle=" + actor.Handle
-                        + "; Location=" + (scene.LocationId ?? string.Empty)
-                        + "; CatalogInteriorId=" + (scene.CatalogInteriorId ?? string.Empty)
-                        + "; LiveInteriorId=" + scene.LiveInteriorId
-                        + "; Result=MappedPhysicalDoorUnavailable; Detail="
-                        + (doorwayFailure ?? string.Empty);
+                    reason = doorwayFailure;
                     return false;
-                }
-
-                if (scene.DoorwayStreamingRequestIssued
-                    && !scene.DoorwayStreamingResolutionLogged
-                    && string.Equals(
-                        scene.DoorwayStreamingRequestOccurrenceId,
-                        occurrenceId ?? string.Empty,
-                        StringComparison.Ordinal))
-                {
-                    scene.DoorwayStreamingResolutionLogged = true;
-                    LogRuntimeTransition(
-                        "AMBIENT_WORLD_DISPATCH_DOORWAY_STREAMING_RESOLVED",
-                        "Occurrence=" + (occurrenceId ?? string.Empty)
-                            + "; Location=" + (scene.LocationId ?? string.Empty)
-                            + "; Result=MappedPhysicalDoorResolved",
-                        "Occurrence=" + (occurrenceId ?? string.Empty)
-                            + "; Actor=" + actor.Handle
-                            + "; Location=" + (scene.LocationId ?? string.Empty)
-                            + "; CatalogInteriorId=" + scene.CatalogInteriorId
-                            + "; LiveInteriorId=" + scene.LiveInteriorId
-                            + "; DoorEntity=" + preflightDoor.Handle
-                            + "; DoorModel=" + preflightDoor.Model.Hash
-                            + "; DoorHash=" + preflightDoorHash
-                            + "; DoorPair=" + doorwayRoute.Pair.InsidePoint.SourceRecord
-                            + "; StreamingConfirmed=true"
-                            + "; SameOccurrenceRetained=true"
-                            + "; SameActorRetained=true");
                 }
 
                 actorToThresholdStraightDistance = position.DistanceTo(doorwayRoute.EntryPosition);
@@ -2745,6 +3393,10 @@ namespace LSImmersiveLife
                     : "Unavailable")
                 + "; CoordinateLiveInteriorId=" + coordinateInteriorId
                 + "; ExpectedLiveInteriorId=" + scene.LiveInteriorId
+                + "; InteriorReady=" + interiorReady
+                + "; ActorInteriorRegistration=" + actorInteriorRegistration
+                + "; RegistrationRefresh=" + (string.IsNullOrWhiteSpace(
+                    registrationRefreshEvidence) ? "NotNeeded" : registrationRefreshEvidence)
                 + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
                 + "; GroundNormalZ=" + groundNormal.Z.ToString(
                     "0.00", CultureInfo.InvariantCulture)
@@ -2951,6 +3603,91 @@ namespace LSImmersiveLife
                     + "; SelectedLiveInteriorId=" + interiorId
                     + "; Result=CoordinateFallbackNativeUnavailable");
             return true;
+        }
+
+        internal bool TryGetDispatchPlayerInteriorIdForScene(
+            Ped player,
+            AmbientDispatchSceneResolution scene,
+            out int interiorId,
+            out string evidence)
+        {
+            interiorId = 0;
+            evidence = string.Empty;
+            if (player == null || !player.Exists() || scene == null
+                || scene.LiveInteriorId == 0)
+            {
+                evidence = "Result=PlayerOrSelectedSceneInteriorUnavailable";
+                return false;
+            }
+
+            int entityInteriorId = 0;
+            int coordinateInteriorId = 0;
+            int roomKey = 0;
+            bool entityIdentityAvailable = false;
+            bool coordinateIdentityAvailable = false;
+            try
+            {
+                entityInteriorId = Function.Call<int>(
+                    Hash.GET_INTERIOR_FROM_ENTITY, player);
+                entityIdentityAvailable = true;
+            }
+            catch { }
+            try
+            {
+                coordinateInteriorId = GetInteriorAt(player.Position);
+                coordinateIdentityAvailable = true;
+            }
+            catch { }
+            try
+            {
+                roomKey = Function.Call<int>(Hash.GET_ROOM_KEY_FROM_ENTITY, player);
+            }
+            catch { }
+
+            bool entityMatches = entityIdentityAvailable
+                && entityInteriorId == scene.LiveInteriorId;
+            bool coordinateMatches = coordinateIdentityAvailable
+                && coordinateInteriorId == scene.LiveInteriorId;
+            if (entityMatches || coordinateMatches)
+                interiorId = coordinateMatches
+                    ? coordinateInteriorId : entityInteriorId;
+
+            string result = entityMatches && coordinateMatches
+                ? "EntityAndCoordinateMatch"
+                : coordinateMatches
+                    ? "CoordinateMatchEntityDifferenceDiagnosticOnly"
+                    : entityMatches
+                        ? "EntityMatchCoordinateDifferenceDiagnosticOnly"
+                        : "NoSelectedSceneInteriorMatch";
+            evidence = "Player=" + player.Handle
+                + "; ExpectedLiveInteriorId=" + scene.LiveInteriorId
+                + "; EntityLiveInteriorId=" + (entityIdentityAvailable
+                    ? entityInteriorId.ToString(CultureInfo.InvariantCulture) : "Unavailable")
+                + "; CoordinateLiveInteriorId=" + (coordinateIdentityAvailable
+                    ? coordinateInteriorId.ToString(CultureInfo.InvariantCulture) : "Unavailable")
+                + "; RoomKey=" + roomKey
+                + "; Position=" + player.Position
+                + "; SelectedLiveInteriorId=" + interiorId
+                + "; Result=" + result;
+
+            if (_log != null)
+            {
+                if (entityMatches != coordinateMatches
+                    || (!entityIdentityAvailable && !coordinateIdentityAvailable))
+                    _log.RuntimeTransition(
+                        "AMBIENT_WORLD_DISPATCH_PLAYER_SCENE_INTERIOR_EVIDENCE",
+                        "Location=" + scene.LocationId
+                            + "; Expected=" + scene.LiveInteriorId
+                            + "; Entity=" + (entityIdentityAvailable ? entityInteriorId : -1)
+                            + "; Coordinate=" + (coordinateIdentityAvailable ? coordinateInteriorId : -1)
+                            + "; Result=" + result,
+                        evidence);
+                else
+                    _log.ClearRuntimeTransition(
+                        "AMBIENT_WORLD_DISPATCH_PLAYER_SCENE_INTERIOR_EVIDENCE");
+            }
+
+            return entityMatches || coordinateMatches;
         }
 
         private bool TryUseConfirmedInteriorCrossing(
@@ -3165,6 +3902,261 @@ namespace LSImmersiveLife
                 outside.Z);
         }
 
+        private bool TryResolveMappedDoorwayExteriorDestination(
+            LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair,
+            Vector3 outsideProbe,
+            int expectedInsideLiveInteriorId,
+            out Vector3 destination,
+            out string reason)
+        {
+            destination = Vector3.Zero;
+            reason = string.Empty;
+            if (pair == null || pair.InsideLocation == null
+                || pair.OutsidePoint == null || pair.InsidePoint == null
+                || expectedInsideLiveInteriorId == 0
+                || outsideProbe == Vector3.Zero
+                || float.IsNaN(outsideProbe.X) || float.IsInfinity(outsideProbe.X)
+                || float.IsNaN(outsideProbe.Y) || float.IsInfinity(outsideProbe.Y)
+                || float.IsNaN(outsideProbe.Z) || float.IsInfinity(outsideProbe.Z))
+            {
+                reason = "Stage=MappedDoorwayExteriorGround; Result=InvalidMappedEndpoint";
+                return false;
+            }
+
+            Vector3 outside = pair.OutsidePoint.Position;
+            Vector3 inside = pair.InsidePoint.Position;
+            float directionX = outside.X - inside.X;
+            float directionY = outside.Y - inside.Y;
+            float directionLength = (float)Math.Sqrt(
+                directionX * directionX + directionY * directionY);
+            if (directionLength < 0.05f || float.IsNaN(directionLength)
+                || float.IsInfinity(directionLength))
+            {
+                reason = "Stage=MappedDoorwayExteriorGround; Result=MappedThresholdHasNoHorizontalDirection";
+                return false;
+            }
+
+            directionX /= directionLength;
+            directionY /= directionLength;
+            float sideX = -directionY;
+            float sideY = directionX;
+            float midpointX = (outside.X + inside.X) * 0.5f;
+            float midpointY = (outside.Y + inside.Y) * 0.5f;
+            float[,] offsets =
+            {
+                { 0f, 0f },
+                { 0.65f, 0f },
+                { 1.25f, 0f },
+                { 0f, 0.55f },
+                { 0f, -0.55f }
+            };
+            int groundProbeCount = 0;
+            int groundFoundCount = 0;
+            int interiorIdentityRejectionCount = 0;
+            bool collisionOrGroundPending = false;
+            string lastFailure = string.Empty;
+
+            for (int index = 0; index < offsets.GetLength(0); index++)
+            {
+                Vector3 requested = new Vector3(
+                    outsideProbe.X + directionX * offsets[index, 0]
+                        + sideX * offsets[index, 1],
+                    outsideProbe.Y + directionY * offsets[index, 0]
+                        + sideY * offsets[index, 1],
+                    outsideProbe.Z);
+
+                float requestedSideProgress = (requested.X - midpointX) * directionX
+                    + (requested.Y - midpointY) * directionY;
+                float requestedThresholdDistance = Distance2D(
+                    requested, new Vector3(midpointX, midpointY, outsideProbe.Z));
+                if (requestedSideProgress < MappedDoorwayExteriorMinimumSideProgress
+                    || requestedThresholdDistance > MappedDoorwayExteriorMaximumThresholdRadius)
+                {
+                    lastFailure = "Candidate=" + requested
+                        + "; SideProgress=" + requestedSideProgress.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; ThresholdDistance=" + requestedThresholdDistance.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; Result=OutsideMappedThresholdBounds";
+                    continue;
+                }
+
+                // Player movement does not require an NPC navmesh node. Prefer
+                // a nearby safe coordinate when GTA supplies one, but retain the
+                // surveyed-side point if the doorway has no pedestrian node.
+                Vector3 candidate = requested;
+                Vector3 safeNavigationPoint;
+                try
+                {
+                    if (World.GetSafePositionForPed(
+                            requested,
+                            out safeNavigationPoint,
+                            (GetSafePositionFlags)0))
+                    {
+                        float safeHorizontalSnap = Distance2D(
+                            safeNavigationPoint, requested);
+                        float safeSideProgress = (safeNavigationPoint.X - midpointX) * directionX
+                            + (safeNavigationPoint.Y - midpointY) * directionY;
+                        if (!float.IsNaN(safeHorizontalSnap)
+                            && !float.IsInfinity(safeHorizontalSnap)
+                            && safeHorizontalSnap <= MappedDoorwayExteriorSafeSnapDistance
+                            && safeSideProgress >= MappedDoorwayExteriorMinimumSideProgress)
+                            candidate = safeNavigationPoint;
+                    }
+                }
+                catch
+                {
+                    // The captured mapped endpoint remains usable for manual
+                    // Player passage when GTA cannot provide an NPC nav point.
+                }
+
+                float candidateSideProgress = (candidate.X - midpointX) * directionX
+                    + (candidate.Y - midpointY) * directionY;
+                float candidateThresholdDistance = Distance2D(
+                    candidate, new Vector3(midpointX, midpointY, candidate.Z));
+                if (candidateSideProgress < MappedDoorwayExteriorMinimumSideProgress
+                    || candidateThresholdDistance > MappedDoorwayExteriorMaximumThresholdRadius)
+                {
+                    lastFailure = "Candidate=" + candidate
+                        + "; SideProgress=" + candidateSideProgress.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; ThresholdDistance=" + candidateThresholdDistance.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; Result=NavigationPointLeftMappedExteriorSide";
+                    continue;
+                }
+
+                try
+                {
+                    RequestInteriorCollision(candidate);
+                }
+                catch (Exception ex)
+                {
+                    collisionOrGroundPending = true;
+                    lastFailure = "Candidate=" + candidate
+                        + "; Stage=CollisionRequest; Result=Exception:" + ex.GetType().Name;
+                    continue;
+                }
+
+                Vector3 groundProbe = candidate;
+                groundProbe.Z += MappedDoorwayFloorProbeHeight;
+                groundProbeCount++;
+                float groundZ;
+                Vector3 groundNormal;
+                bool groundFound;
+                try
+                {
+                    groundFound = World.GetGroundHeightAndNormal(
+                        groundProbe, out groundZ, out groundNormal);
+                }
+                catch (Exception ex)
+                {
+                    groundFound = false;
+                    groundZ = float.NaN;
+                    groundNormal = Vector3.Zero;
+                    lastFailure = "Candidate=" + candidate
+                        + "; Stage=ExteriorGroundProbe; Result=Exception:" + ex.GetType().Name;
+                }
+
+                if (!groundFound)
+                {
+                    collisionOrGroundPending = true;
+                    if (string.IsNullOrWhiteSpace(lastFailure))
+                        lastFailure = "Candidate=" + candidate
+                            + "; Stage=ExteriorGroundProbe; Result=GroundPending";
+                    continue;
+                }
+
+                groundFoundCount++;
+                float groundCorrection = Math.Abs(candidate.Z - groundZ);
+                if (float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                    || float.IsNaN(groundNormal.Z) || float.IsInfinity(groundNormal.Z)
+                    || groundNormal.Z < 0.55f
+                    || float.IsNaN(groundCorrection) || float.IsInfinity(groundCorrection)
+                    || groundCorrection > MappedDoorwayExteriorGroundCorrection)
+                {
+                    lastFailure = "Candidate=" + candidate
+                        + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; NormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; GroundCorrection=" + groundCorrection.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; MaximumCorrection=" + MappedDoorwayExteriorGroundCorrection.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; Result=GroundOrSlopeUnsupported";
+                    continue;
+                }
+
+                Vector3 grounded = new Vector3(candidate.X, candidate.Y, groundZ);
+                int candidateLiveInteriorId;
+                try
+                {
+                    candidateLiveInteriorId = GetInteriorAt(grounded);
+                }
+                catch (Exception ex)
+                {
+                    collisionOrGroundPending = true;
+                    lastFailure = "Candidate=" + grounded
+                        + "; Stage=MappedThresholdIdentity; Result=Exception:" + ex.GetType().Name;
+                    continue;
+                }
+
+                // Some mapped storefront pairs report one live interior ID on
+                // both sides. The surveyed threshold geometry determines the
+                // side; a different nonzero live ID is a genuine adjacent shell.
+                if (candidateLiveInteriorId != 0
+                    && candidateLiveInteriorId != expectedInsideLiveInteriorId)
+                {
+                    interiorIdentityRejectionCount++;
+                    lastFailure = "Candidate=" + grounded
+                        + "; ExpectedInsideLiveInteriorId=" + expectedInsideLiveInteriorId
+                        + "; CandidateLiveInteriorId=" + candidateLiveInteriorId
+                        + "; Result=DifferentAdjacentInterior";
+                    continue;
+                }
+
+                destination = grounded;
+                Log("AMBIENT_WORLD_INTERIOR_DOORWAY_EXTERIOR_DESTINATION_RESOLVED",
+                    "Location=" + pair.InsideLocation.Id
+                    + "; OutsideCapture=" + pair.OutsidePoint.SourceRecord
+                    + "; InsideCapture=" + pair.InsidePoint.SourceRecord
+                    + "; CatalogInteriorId=" + pair.InteriorId
+                    + "; ExpectedInsideLiveInteriorId=" + expectedInsideLiveInteriorId
+                    + "; CandidateLiveInteriorId=" + candidateLiveInteriorId
+                    + "; CandidateIndex=" + index
+                    + "; GroundProbeCount=" + groundProbeCount
+                    + "; Navigation=SafePointPreferredWithMappedPointFallback"
+                    + "; Requested=" + requested
+                    + "; Resolved=" + grounded
+                    + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; NormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; GroundCorrection=" + groundCorrection.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; MappedSideProgress=" + candidateSideProgress.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; Result=GroundConfirmedMappedExteriorSide");
+                return true;
+            }
+
+            reason = collisionOrGroundPending && groundFoundCount == 0
+                ? "PENDING:Stage=MappedDoorwayExteriorGround; Location="
+                    + pair.InsideLocation.Id
+                    + "; CatalogInteriorId=" + pair.InteriorId
+                    + "; LiveInteriorId=" + expectedInsideLiveInteriorId
+                    + "; CandidateCount=" + offsets.GetLength(0)
+                    + "; GroundProbeCount=" + groundProbeCount
+                    + "; LastFailure=" + lastFailure
+                : "Stage=MappedDoorwayExteriorGround; Location="
+                    + pair.InsideLocation.Id
+                    + "; CatalogInteriorId=" + pair.InteriorId
+                    + "; LiveInteriorId=" + expectedInsideLiveInteriorId
+                    + "; CandidateCount=" + offsets.GetLength(0)
+                    + "; GroundProbeCount=" + groundProbeCount
+                    + "; GroundFound=" + groundFoundCount
+                    + "; InteriorIdentityRejections=" + interiorIdentityRejectionCount
+                    + "; LastFailure=" + lastFailure;
+            return false;
+        }
+
         private bool TryFindThresholdDoor(
             Ped actor,
             AmbientInteriorAccessRoute route,
@@ -3347,7 +4339,7 @@ namespace LSImmersiveLife
                 doorEntity = nearestRegisteredDoor;
                 doorHash = nearestRegisteredDoorHash;
                 Log("AMBIENT_WORLD_INTERIOR_DOOR_FOUND_NEAR_THRESHOLD",
-                    "Actor=" + actor.Handle
+                    "Actor=" + (actor == null ? 0 : actor.Handle)
                     + "; DoorEntity=" + doorEntity.Handle
                     + "; DoorHash=" + doorHash
                     + "; Location=" + route.Pair.InsideLocation.Id
@@ -3428,8 +4420,7 @@ namespace LSImmersiveLife
             doorEntity = null;
             doorHash = 0;
             reason = string.Empty;
-            if (actor == null || !actor.Exists() || route == null
-                || route.Pair == null || route.Pair.OutsidePoint == null
+            if (route == null || route.Pair == null || route.Pair.OutsidePoint == null
                 || route.Pair.InsidePoint == null
                 || route.Pair.InsideLocation == null)
             {
@@ -3506,7 +4497,7 @@ namespace LSImmersiveLife
                 doorEntity = nearestRegisteredDoor;
                 doorHash = nearestRegisteredDoorHash;
                 Log("AMBIENT_WORLD_MAPPED_DOOR_FOUND_AT_ENDPOINT",
-                    "Actor=" + actor.Handle
+                    "Actor=" + (actor == null ? 0 : actor.Handle)
                     + "; DoorEntity=" + doorEntity.Handle
                     + "; DoorHash=" + doorHash
                     + "; Location=" + route.Pair.InsideLocation.Id
@@ -3530,7 +4521,7 @@ namespace LSImmersiveLife
                     ? string.Empty
                     : "; DoorLookupError=" + doorLookupFailure);
             Log("AMBIENT_WORLD_MAPPED_DOOR_NOT_FOUND_AT_ENDPOINT",
-                "Actor=" + actor.Handle
+                "Actor=" + (actor == null ? 0 : actor.Handle)
                 + "; Location=" + route.Pair.InsideLocation.Id
                 + "; CatalogInteriorId=" + route.Pair.InteriorId
                 + "; Endpoint=" + (route.EnteringInterior
@@ -4284,7 +5275,8 @@ namespace LSImmersiveLife
                 _locationCatalog.FindByCategory("SurveyedCandidate");
             if (useNearbyCatalogFallback)
                 dispatchCatalogLocations = dispatchCatalogLocations.Concat(
-                    _locationCatalog.FindByCategory("AreaCandidate"));
+                    _locationCatalog.FindByCategory("AreaCandidate")).Concat(
+                    _locationCatalog.FindByCategory("ExternalAreaCandidate"));
             if (!string.IsNullOrWhiteSpace(preferredCatalogLocationId))
                 dispatchCatalogLocations = dispatchCatalogLocations.Where(location =>
                     location != null && string.Equals(location.Id,
@@ -4297,6 +5289,7 @@ namespace LSImmersiveLife
                 if ((excludedLocationIds != null
                         && excludedLocationIds.Contains(location.Id))
                     || IsRejectedSurveyRecord(location)
+                    || !IsEligibleExternalDispatchAreaCandidate(location, requiresVehicle)
                     || !IsCompatibleWithIncident(location, incidentType)
                     || (requiresVehicle
                         && string.Equals(location.Category, "SurveyedCandidate",
@@ -4764,7 +5757,8 @@ namespace LSImmersiveLife
             string requiredInteriorLocationId = null,
             string requiredPhysicalType = null,
             string requiredLocationContext = null,
-            IEnumerable<int> excludedPreparedPedHandles = null)
+            IEnumerable<int> excludedPreparedPedHandles = null,
+            bool allowUnstagedMovingRoadRecovery = false)
         {
             refreshed = null;
             reason = string.Empty;
@@ -4797,7 +5791,8 @@ namespace LSImmersiveLife
                     requiredInteriorLocationId,
                     requiredPhysicalType,
                     requiredLocationContext,
-                    excludedPreparedPedHandles))
+                    excludedPreparedPedHandles,
+                    allowUnstagedMovingRoadRecovery))
                 return false;
             if (refreshed == null)
             {
@@ -4837,7 +5832,8 @@ namespace LSImmersiveLife
             string requiredInteriorLocationId = null,
             string requiredPhysicalType = null,
             string requiredLocationContext = null,
-            IEnumerable<int> excludedPreparedPedHandles = null)
+            IEnumerable<int> excludedPreparedPedHandles = null,
+            bool allowUnstagedMovingRoadRecovery = false)
         {
             refreshed = null;
             reason = string.Empty;
@@ -4974,6 +5970,7 @@ namespace LSImmersiveLife
                     previous,
                     playerPosition,
                     requiresVehicle,
+                    allowUnstagedMovingRoadRecovery,
                     out refreshed,
                     out reason);
             }
@@ -5046,24 +6043,26 @@ namespace LSImmersiveLife
             Vector3 safePosition;
             Vector3 approachPosition;
             string placementEvidence;
-            if (!TryValidatePreparedDispatchExteriorScenePoint(
-                    previous.SceneCenter,
-                    previous.ExteriorRoadHeightTolerance,
-                    previous.AuthoredPosition,
-                    previous.AreaAnchorPosition,
-                    previous.MinimumExteriorOpenFootprintDirections,
-                    maximumSceneOffset,
+            bool usedSameSiteFallback;
+            float selectedPointOffset;
+            float maximumAcceptedPointOffset;
+            if (!TryRevalidatePreparedExteriorScenePointWithSameSiteFallback(
+                    previous,
                     excludedHandles,
+                    maximumSceneOffset,
                     out safePosition,
                     out approachPosition,
                     out placementEvidence,
+                    out selectedPointOffset,
+                    out maximumAcceptedPointOffset,
+                    out usedSameSiteFallback,
                     out reason))
                 return false;
 
-            float horizontalDrift = Distance2D(safePosition, previous.SceneCenter);
+            float horizontalDrift = selectedPointOffset;
             float verticalDrift = Math.Abs(safePosition.Z - previous.SceneCenter.Z);
             if (float.IsNaN(horizontalDrift) || float.IsInfinity(horizontalDrift)
-                || horizontalDrift > 0.75f || verticalDrift > 1f
+                || horizontalDrift > maximumAcceptedPointOffset || verticalDrift > 1f
                 || !IsDispatchExteriorLocationOffsetValid(
                     previous.AuthoredPosition, safePosition, maximumSceneOffset))
             {
@@ -5075,7 +6074,10 @@ namespace LSImmersiveLife
                         "0.00", CultureInfo.InvariantCulture)
                     + "; VerticalDrift=" + verticalDrift.ToString(
                         "0.00", CultureInfo.InvariantCulture)
-                    + "; MaximumHorizontalDrift=0.75; MaximumVerticalDrift=1.00";
+                        + "; MaximumHorizontalDrift="
+                        + maximumAcceptedPointOffset.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; SameSiteFallback=" + usedSameSiteFallback
+                        + "; MaximumVerticalDrift=1.00";
                 return false;
             }
 
@@ -5093,6 +6095,169 @@ namespace LSImmersiveLife
             return true;
         }
 
+        private bool TryRevalidatePreparedExteriorScenePointWithSameSiteFallback(
+            AmbientDispatchSceneResolution scene,
+            HashSet<int> excludedPreparedPedHandles,
+            float maximumSceneOffset,
+            out Vector3 safePosition,
+            out Vector3 approachPosition,
+            out string evidence,
+            out float selectedPointOffset,
+            out float maximumAcceptedPointOffset,
+            out bool usedSameSiteFallback,
+            out string reason)
+        {
+            safePosition = scene == null ? Vector3.Zero : scene.SceneCenter;
+            approachPosition = Vector3.Zero;
+            evidence = string.Empty;
+            selectedPointOffset = 0f;
+            maximumAcceptedPointOffset = 0.75f;
+            usedSameSiteFallback = false;
+            reason = "Stage=PreparedExteriorSceneIdentity; Result=SceneUnavailable";
+            if (scene == null || scene.Area == null)
+                return false;
+
+            string selectedPointFailure;
+            if (TryValidatePreparedDispatchExteriorScenePoint(
+                    scene.SceneCenter,
+                    scene.ExteriorRoadHeightTolerance,
+                    scene.AuthoredPosition,
+                    scene.AreaAnchorPosition,
+                    scene.MinimumExteriorOpenFootprintDirections,
+                    0.75f,
+                    excludedPreparedPedHandles,
+                    out safePosition,
+                    out approachPosition,
+                    out evidence,
+                    out selectedPointFailure,
+                    true,
+                    scene.LocationId,
+                    scene.PointId))
+            {
+                selectedPointOffset = Distance2D(safePosition, scene.SceneCenter);
+                if (selectedPointOffset <= 0.75f
+                    && IsDispatchExteriorLocationOffsetValid(
+                        scene.AuthoredPosition, safePosition, maximumSceneOffset))
+                {
+                    reason = string.Empty;
+                    return true;
+                }
+
+                selectedPointFailure = "Stage=PreparedExteriorSceneContinuity; Location="
+                    + scene.LocationId
+                    + "; Selected=" + scene.SceneCenter
+                    + "; Revalidated=" + safePosition
+                    + "; HorizontalDrift=" + selectedPointOffset.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; Maximum=0.75";
+            }
+
+            reason = selectedPointFailure;
+            // Once any participant has been staged, its placement is committed.
+            // Do not move the scene center under retained actors during revalidation.
+            if (excludedPreparedPedHandles != null
+                && excludedPreparedPedHandles.Count > 0)
+                return false;
+
+            bool footCatalogCandidate = IsFootActivityOnlySurveyCandidate(
+                scene.LocationId, scene.LocationCategory);
+            float sameSiteOffset = footCatalogCandidate
+                ? DispatchExteriorFootCatalogSameSiteFallbackOffset
+                : DispatchExteriorSameSiteFallbackOffset;
+            float locationOffsetLimit = Math.Min(maximumSceneOffset,
+                footCatalogCandidate
+                    ? DispatchExteriorFootCatalogSceneOffsetLimit
+                    : maximumSceneOffset);
+            string firstFallbackFailure = string.Empty;
+            string lastFallbackFailure = string.Empty;
+            int fallbackProbeCount = 0;
+            for (int index = 0;
+                index < DispatchExteriorSameSiteFallbackDirections.Length;
+                index++)
+            {
+                Vector2 offset = DispatchExteriorSameSiteFallbackDirections[index]
+                    * (sameSiteOffset / DispatchExteriorSameSiteFallbackOffset);
+                Vector3 requestedPosition = new Vector3(
+                    scene.SceneCenter.X + offset.X,
+                    scene.SceneCenter.Y + offset.Y,
+                    scene.SceneCenter.Z);
+                if (!IsDispatchExteriorLocationOffsetValid(
+                        scene.AuthoredPosition, requestedPosition, locationOffsetLimit))
+                {
+                    lastFallbackFailure = "Stage=ExteriorLocationSnap; Requested="
+                        + requestedPosition + "; Maximum="
+                        + locationOffsetLimit.ToString("0.00", CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                fallbackProbeCount++;
+                Vector3 candidatePosition;
+                Vector3 candidateApproach;
+                string candidateEvidence;
+                string candidateFailure;
+                if (!TryValidatePreparedDispatchExteriorScenePoint(
+                        requestedPosition,
+                        scene.ExteriorRoadHeightTolerance,
+                        scene.AuthoredPosition,
+                        scene.AreaAnchorPosition,
+                        scene.MinimumExteriorOpenFootprintDirections,
+                        sameSiteOffset,
+                        excludedPreparedPedHandles,
+                        out candidatePosition,
+                        out candidateApproach,
+                        out candidateEvidence,
+                        out candidateFailure,
+                        false,
+                        scene.LocationId,
+                        scene.PointId))
+                {
+                    lastFallbackFailure = candidateFailure;
+                    if (string.IsNullOrWhiteSpace(firstFallbackFailure))
+                        firstFallbackFailure = candidateFailure;
+                    continue;
+                }
+
+                float candidateOffset = Distance2D(candidatePosition, scene.SceneCenter);
+                if (float.IsNaN(candidateOffset) || float.IsInfinity(candidateOffset)
+                    || candidateOffset > sameSiteOffset
+                    || !IsDispatchExteriorLocationOffsetValid(
+                        scene.AuthoredPosition, candidatePosition, locationOffsetLimit))
+                {
+                    lastFallbackFailure = "Stage=PreparedExteriorSceneContinuity; Requested="
+                        + requestedPosition + "; Revalidated=" + candidatePosition
+                        + "; Offset=" + candidateOffset.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; MaximumSameSiteOffset=" + sameSiteOffset.ToString(
+                            "0.00", CultureInfo.InvariantCulture);
+                    continue;
+                }
+
+                safePosition = candidatePosition;
+                approachPosition = candidateApproach;
+                selectedPointOffset = candidateOffset;
+                maximumAcceptedPointOffset = sameSiteOffset;
+                usedSameSiteFallback = true;
+                evidence = candidateEvidence
+                    + "; Revalidation=SameCatalogLocationAlternative"
+                    + "; Probe=" + (index + 1)
+                    + "; Requested=" + requestedPosition
+                    + "; PreviousSceneCenter=" + scene.SceneCenter
+                    + "; OriginalFailure=" + selectedPointFailure;
+                reason = string.Empty;
+                return true;
+            }
+
+            reason = (selectedPointFailure ?? string.Empty)
+                + "; SameLocationFallbackProbes=" + fallbackProbeCount
+                + "; MaximumSameLocationOffset=" + sameSiteOffset.ToString(
+                    "0.00", CultureInfo.InvariantCulture) + "m"
+                + "; FirstFallbackFailure=" + (string.IsNullOrWhiteSpace(firstFallbackFailure)
+                    ? "None" : firstFallbackFailure)
+                + "; LastFallbackFailure=" + (string.IsNullOrWhiteSpace(lastFallbackFailure)
+                    ? "None" : lastFallbackFailure);
+            return false;
+        }
+
         private bool TryValidatePreparedDispatchExteriorScenePoint(
             Vector3 selectedPosition,
             float maximumStreetHeightDelta,
@@ -5105,7 +6270,9 @@ namespace LSImmersiveLife
             out Vector3 approachPosition,
             out string evidence,
             out string reason,
-            bool navigationPreviouslyValidated = false)
+            bool navigationPreviouslyValidated = false,
+            string locationId = null,
+            string pointId = null)
         {
             safePosition = selectedPosition;
             approachPosition = Vector3.Zero;
@@ -5172,10 +6339,14 @@ namespace LSImmersiveLife
                     selectedPosition, out groundZ, out groundNormal);
                 if (!groundHeightFound)
                 {
+                    string remoteSceneEvidence = TryAdvanceDispatchRemoteExteriorScene(
+                        locationId, pointId, selectedPosition);
                     Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
                         selectedPosition.X, selectedPosition.Y, selectedPosition.Z);
                     reason = "PENDING:Status=CollisionPending; Stage=PreparedExteriorSceneGround;"
-                        + " CollisionRequest=REQUEST_COLLISION_AT_COORD; Selected=" + selectedPosition;
+                        + " CollisionRequest=REQUEST_COLLISION_AT_COORD; Selected=" + selectedPosition
+                        + "; " + remoteSceneEvidence
+                        + "; GroundConfirmation=StillRequired";
                     return false;
                 }
                 if (float.IsNaN(groundZ) || float.IsInfinity(groundZ)
@@ -5243,6 +6414,9 @@ namespace LSImmersiveLife
                     + "; NavigationSampleDistance=" + navigationSampleDistance.ToString(
                         "0.00", CultureInfo.InvariantCulture)
                     + "; FreshSafeCoordinateDidNotMoveScene=true";
+                StopOwnedDispatchRemoteExteriorLoadSceneAtPosition(
+                    selectedPosition,
+                    "ExteriorGroundAndApproachConfirmed");
                 return true;
             }
             catch (Exception ex)
@@ -5291,23 +6465,23 @@ namespace LSImmersiveLife
             Vector3 safePosition;
             Vector3 approachPosition;
             string placementEvidence;
-            if (!TryValidatePreparedDispatchExteriorScenePoint(
-                    previous.SceneCenter,
-                    previous.ExteriorRoadHeightTolerance,
-                    previous.AuthoredPosition,
-                    previous.AreaAnchorPosition,
-                    previous.MinimumExteriorOpenFootprintDirections,
-                    0.75f,
+            bool usedSameSiteFallback;
+            float selectedPointOffset;
+            float maximumAcceptedPointOffset;
+            if (!TryRevalidatePreparedExteriorScenePointWithSameSiteFallback(
+                    previous,
                     excludedHandles,
+                    DispatchExteriorFootCatalogSceneOffsetLimit,
                     out safePosition,
                     out approachPosition,
                     out placementEvidence,
-                    out reason,
-                    true)
-                || Distance2D(safePosition, previous.SceneCenter) > 0.75f
+                    out selectedPointOffset,
+                    out maximumAcceptedPointOffset,
+                    out usedSameSiteFallback,
+                    out reason)
+                || selectedPointOffset > maximumAcceptedPointOffset
                 || !IsDispatchExteriorLocationOffsetValid(
-                    previous.AuthoredPosition,
-                    safePosition,
+                    previous.AuthoredPosition, safePosition,
                     DispatchExteriorFootCatalogSceneOffsetLimit))
             {
                 if (string.IsNullOrWhiteSpace(reason))
@@ -5320,13 +6494,14 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            float selectedPointOffset = Distance2D(
+            selectedPointOffset = Distance2D(
                 safePosition, previous.SceneCenter);
             previous.SceneCenter = safePosition;
             previous.ActorPosition = safePosition;
             previous.ExteriorApproachPosition = approachPosition;
             previous.ExteriorPlacementEvidence = placementEvidence
                 + "; Revalidation=SelectedFootScenePoint"
+                + "; SameSiteFallback=" + usedSameSiteFallback
                 + "; SelectedPointOffset=" + selectedPointOffset.ToString(
                         "0.00", CultureInfo.InvariantCulture);
             previous.ValidationStatus = "RuntimeRevalidatedSelectedFootCatalogScene";
@@ -5362,8 +6537,11 @@ namespace LSImmersiveLife
             }
 
             float playerDistance = Distance2D(previous.SceneCenter, playerPosition);
-            Vector3 selectionAnchor = previous.AreaAnchorPosition == Vector3.Zero
-                ? playerPosition : previous.AreaAnchorPosition;
+            Vector3 selectionAnchor = previous.HasSelectionAnchor
+                && previous.SelectionAnchorPosition != Vector3.Zero
+                ? previous.SelectionAnchorPosition
+                : previous.AreaAnchorPosition == Vector3.Zero
+                    ? playerPosition : previous.AreaAnchorPosition;
             float selectionDistance = Distance2D(previous.SceneCenter, selectionAnchor);
             float minimumPlayerDistance;
             float maximumPlayerDistance;
@@ -5375,15 +6553,14 @@ namespace LSImmersiveLife
                 maximumPlayerDistance = previous.MaximumPlayerDistance;
             }
             if (selectionDistance < minimumPlayerDistance
-                || selectionDistance > maximumPlayerDistance
-                || playerDistance > maximumPlayerDistance)
+                || selectionDistance > maximumPlayerDistance)
             {
                 reason = "Stage=PlayerRadiusOutdoorFootRevalidationRange; PlayerDistance="
                     + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; SelectionDistance=" + selectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; Result=Rejected";
+                    + "; RangeBasis=CommittedSelectionAnchor; Result=Rejected";
                 return false;
             }
 
@@ -5416,28 +6593,31 @@ namespace LSImmersiveLife
             float refreshedPlayerDistance = Distance2D(safePosition, playerPosition);
             float refreshedSelectionDistance = Distance2D(safePosition, selectionAnchor);
             if (refreshedSelectionDistance < minimumPlayerDistance
-                || refreshedSelectionDistance > maximumPlayerDistance
-                || refreshedPlayerDistance > maximumPlayerDistance)
+                || refreshedSelectionDistance > maximumPlayerDistance)
             {
                 reason = "Stage=PlayerRadiusOutdoorFootRevalidationResolvedRange; PlayerDistance="
                     + refreshedPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; SelectionDistance=" + refreshedSelectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; Result=Rejected";
+                    + "; RangeBasis=CommittedSelectionAnchor; Result=Rejected";
                 return false;
             }
 
             previous.SceneCenter = safePosition;
             previous.ActorPosition = safePosition;
             previous.Heading = (float)(Math.Atan2(
-                playerPosition.X - safePosition.X,
-                playerPosition.Y - safePosition.Y) * 180d / Math.PI);
+                selectionAnchor.X - safePosition.X,
+                selectionAnchor.Y - safePosition.Y) * 180d / Math.PI);
+            previous.ExteriorApproachPosition = approachPosition;
+            previous.ExteriorPlacementEvidence = exteriorEvidence
+                + "; Revalidation=CommittedOutdoorFootScene";
             refreshed = previous;
             Log("AMBIENT_WORLD_PLAYER_RADIUS_OUTDOOR_FOOT_SCENE_REVALIDATED",
                 "ScenePosition=" + safePosition
                 + "; PlayerDistance=" + Distance2D(safePosition, playerPosition)
                     .ToString("0.0", CultureInfo.InvariantCulture)
+                + "; SelectionAnchor=" + selectionAnchor
                 + "; ExcludedPreparedPeds=" + excludedHandles.Count
                 + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/"
                     + "GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/GET_NEXT_POSITION_ON_STREET"
@@ -5472,8 +6652,11 @@ namespace LSImmersiveLife
             }
 
             float playerDistance = Distance2D(previous.SceneCenter, playerPosition);
-            Vector3 selectionAnchor = previous.AreaAnchorPosition == Vector3.Zero
-                ? playerPosition : previous.AreaAnchorPosition;
+            Vector3 selectionAnchor = previous.HasSelectionAnchor
+                && previous.SelectionAnchorPosition != Vector3.Zero
+                ? previous.SelectionAnchorPosition
+                : previous.AreaAnchorPosition == Vector3.Zero
+                    ? playerPosition : previous.AreaAnchorPosition;
             float selectionDistance = Distance2D(previous.SceneCenter, selectionAnchor);
             float minimumPlayerDistance;
             float maximumPlayerDistance;
@@ -5485,15 +6668,14 @@ namespace LSImmersiveLife
                 maximumPlayerDistance = previous.MaximumPlayerDistance;
             }
             if (selectionDistance < minimumPlayerDistance
-                || selectionDistance > maximumPlayerDistance
-                || playerDistance > maximumPlayerDistance)
+                || selectionDistance > maximumPlayerDistance)
             {
                 reason = "Stage=PlayerRadiusRoadFootRevalidationRange; PlayerDistance="
                     + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; SelectionDistance=" + selectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; Result=Rejected";
+                    + "; RangeBasis=CommittedSelectionAnchor; Result=Rejected";
                 return false;
             }
 
@@ -5527,24 +6709,27 @@ namespace LSImmersiveLife
             float refreshedPlayerDistance = Distance2D(safePedPosition, playerPosition);
             float refreshedSelectionDistance = Distance2D(safePedPosition, selectionAnchor);
             if (refreshedSelectionDistance < minimumPlayerDistance
-                || refreshedSelectionDistance > maximumPlayerDistance
-                || refreshedPlayerDistance > maximumPlayerDistance)
+                || refreshedSelectionDistance > maximumPlayerDistance)
             {
                 reason = "Stage=PlayerRadiusRoadFootRevalidationResolvedRange; PlayerDistance="
                     + refreshedPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; SelectionDistance=" + refreshedSelectionDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "; RequiredRange=" + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                     + "-" + maximumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                    + "; Result=Rejected";
+                    + "; RangeBasis=CommittedSelectionAnchor; Result=Rejected";
                 return false;
             }
 
             previous.SceneCenter = safePedPosition;
             previous.ActorPosition = safePedPosition;
+            previous.ExteriorApproachPosition = approachPosition;
+            previous.ExteriorPlacementEvidence = exteriorEvidence
+                + "; Revalidation=CommittedRoadFootScene";
             refreshed = previous;
             Log("AMBIENT_WORLD_PLAYER_RADIUS_ROAD_FOOT_SCENE_REVALIDATED",
                 "ScenePosition=" + safePedPosition
                 + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; SelectionAnchor=" + selectionAnchor
                 + "; ExcludedPreparedPeds=" + excludedHandles.Count
                 + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/GET_GROUND_Z_AND_NORMAL"
                 + "; OwnershipPreserved=true");
@@ -5562,7 +6747,8 @@ namespace LSImmersiveLife
             bool requiresVehicleStaging,
             string requiredPhysicalType,
             string requiredLocationContext,
-            out string reason)
+            out string reason,
+            IEnumerable<int> excludedPreparedPedHandles = null)
         {
             reason = string.Empty;
             if (previous == null || !previous.IsInteriorScene
@@ -5784,13 +6970,36 @@ namespace LSImmersiveLife
                         + "; CollisionRequest=Exception:" + ex.GetType().Name;
                     return false;
                 }
-                reason = "PENDING:Stage=SceneRevalidationFloor; LiveInteriorId="
-                    + previous.LiveInteriorId
-                    + "; SafePositionFound=" + safePositionFound
-                    + "; GroundHeightFound=" + groundHeightFound
-                    + "; Native=GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
-                    + "; CollisionRequest=REQUEST_COLLISION_AT_COORD";
-                return false;
+                if (!groundHeightFound)
+                {
+                    reason = "PENDING:Stage=SceneRevalidationFloor; LiveInteriorId="
+                        + previous.LiveInteriorId
+                        + "; SafePositionFound=" + safePositionFound
+                        + "; GroundHeightFound=false"
+                        + "; Native=GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
+                        + "; CollisionRequest=REQUEST_COLLISION_AT_COORD";
+                    return false;
+                }
+                if (!safePositionFound
+                    && (float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                        || float.IsNaN(groundNormal.Z)
+                        || float.IsInfinity(groundNormal.Z)
+                        || groundNormal.Z < 0.55f
+                        || Math.Abs(previous.SceneCenter.Z - groundZ)
+                            > InteriorFloorAlignmentTolerance))
+                {
+                    reason = "PENDING:Stage=SceneRevalidationFloor; LiveInteriorId="
+                        + previous.LiveInteriorId
+                        + "; SafePositionFound=false; GroundHeightFound=true"
+                        + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; GroundNormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; CollisionRequest=REQUEST_COLLISION_AT_COORD";
+                    return false;
+                }
+                // An interior scene center can lack a safe Ped coordinate
+                // while a nearby role position is valid. Keep the authored
+                // center and verify that bounded local floor separately.
+                safePosition = previous.SceneCenter;
             }
 
             int sceneCenterInteriorId = GetInteriorAt(previous.SceneCenter);
@@ -5799,24 +7008,155 @@ namespace LSImmersiveLife
             bool validGroundHeight = !float.IsNaN(groundZ) && !float.IsInfinity(groundZ);
             float floorDelta = validGroundHeight
                 ? Math.Abs(previous.SceneCenter.Z - groundZ) : float.PositiveInfinity;
+            string nearbyInteriorFloorSupportEvidence = string.Empty;
             string floorFailureResult = sceneCenterInteriorId != previous.LiveInteriorId
                 ? "SceneCenterInteriorIdentityMismatch"
                 : safePositionInteriorId != previous.LiveInteriorId
                     ? "SafePositionInteriorIdentityMismatch"
-                    : float.IsNaN(navigationCorrection) || float.IsInfinity(navigationCorrection)
-                        || navigationCorrection > 2.25f
-                        ? "SafeNavigationCorrectionExceeded"
-                        : !validGroundHeight
-                            ? "GroundHeightInvalid"
-                            : groundNormal.Z < 0.55f
-                                ? "GroundNormalBelowMinimum"
-                                : floorDelta > InteriorFloorAlignmentTolerance
-                                    ? "FloorAlignmentExceeded"
-                                    : string.Empty;
+                    : !safePositionFound
+                        ? "SafePositionUnavailable"
+                        : float.IsNaN(navigationCorrection) || float.IsInfinity(navigationCorrection)
+                            || navigationCorrection > 2.25f
+                            ? "SafeNavigationCorrectionExceeded"
+                            : !validGroundHeight
+                                ? "GroundHeightInvalid"
+                                : groundNormal.Z < 0.55f
+                                    ? "GroundNormalBelowMinimum"
+                                    : floorDelta > InteriorFloorAlignmentTolerance
+                                        ? "FloorAlignmentExceeded"
+                                        : string.Empty;
+            if ((string.Equals(floorFailureResult, "SafeNavigationCorrectionExceeded",
+                    StringComparison.Ordinal)
+                    || string.Equals(floorFailureResult, "SafePositionUnavailable",
+                        StringComparison.Ordinal))
+                && sceneCenterInteriorId == previous.LiveInteriorId
+                && safePositionInteriorId == previous.LiveInteriorId
+                && validGroundHeight
+                && !float.IsNaN(groundNormal.Z)
+                && !float.IsInfinity(groundNormal.Z)
+                && groundNormal.Z >= 0.55f
+                && floorDelta <= InteriorFloorAlignmentTolerance)
+            {
+                DateTime now = DateTime.UtcNow;
+                bool cachedLocalSupport = previous.InteriorFloorSupportFallbackValidated
+                    && previous.InteriorFloorSupportFallbackLiveInteriorId
+                        == previous.LiveInteriorId
+                    && previous.InteriorFloorSupportFallbackSceneCenter.DistanceTo(
+                        previous.SceneCenter) <= 0.05f
+                    && now < previous.InteriorFloorSupportFallbackValidUntilUtc;
+                Vector3 nearbySupportPosition = previous.InteriorFloorSupportFallbackPosition;
+                string nearbySupportFailure = string.Empty;
+                bool nearbySupportValidated = cachedLocalSupport;
+                if (!nearbySupportValidated)
+                {
+                    if (now < previous.InteriorFloorSupportFallbackNextProbeUtc)
+                    {
+                        nearbySupportFailure = previous.InteriorFloorSupportFallbackLastFailure;
+                    }
+                    else
+                    {
+                        var excludedHandles = new HashSet<int>(
+                            (excludedPreparedPedHandles ?? Enumerable.Empty<int>())
+                                .Where(handle => handle > 0));
+                        nearbySupportValidated = TryResolveInteriorNearbyPedPosition(
+                            previous.SceneCenter,
+                            previous.LiveInteriorId,
+                            null,
+                            out nearbySupportPosition,
+                            out nearbySupportFailure,
+                            DispatchParticipantMinimumSpacing,
+                            excludedHandles);
+                        previous.InteriorFloorSupportFallbackNextProbeUtc = now.AddMilliseconds(
+                            DispatchInteriorReadinessCacheMilliseconds);
+                        previous.InteriorFloorSupportFallbackLastFailure = nearbySupportFailure;
+                    }
+                    if (nearbySupportValidated)
+                    {
+                        previous.InteriorFloorSupportFallbackValidated = true;
+                        previous.InteriorFloorSupportFallbackLiveInteriorId =
+                            previous.LiveInteriorId;
+                        previous.InteriorFloorSupportFallbackSceneCenter =
+                            previous.SceneCenter;
+                        previous.InteriorFloorSupportFallbackPosition =
+                            nearbySupportPosition;
+                        previous.InteriorFloorSupportFallbackValidUntilUtc = now.AddMilliseconds(
+                            DispatchInteriorReadinessCacheMilliseconds);
+                    }
+                }
+
+                if (nearbySupportValidated)
+                {
+                    nearbyInteriorFloorSupportEvidence = "; LocalFloorSupport="
+                        + nearbySupportPosition
+                        + "; LocalFloorSupportValidation="
+                        + (cachedLocalSupport ? "RecentBoundedValidation" : "FreshBoundedValidation")
+                        + "; LocalFloorSupportMaximumOffset="
+                        + DispatchParticipantMaximumTotalOffset.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "m; SceneCenterUnchanged=true";
+                    floorFailureResult = string.Empty;
+                    if (!previous.InteriorFloorSupportFallbackTransitionLogged)
+                    {
+                        previous.InteriorFloorSupportFallbackTransitionLogged = true;
+                        LogRuntimeTransition(
+                            "AMBIENT_WORLD_DISPATCH_INTERIOR_LOCAL_FLOOR_SUPPORT",
+                            "Location=" + previous.LocationId
+                                + ";Point=" + previous.PointId
+                                + ";LiveInteriorId=" + previous.LiveInteriorId,
+                            "Location=" + previous.LocationId
+                                + "; Point=" + previous.PointId
+                                + "; LiveInteriorId=" + previous.LiveInteriorId
+                                + "; SceneCenter=" + previous.SceneCenter
+                                + "; OriginalNavigationCorrection="
+                                + navigationCorrection.ToString(
+                                    "0.00", CultureInfo.InvariantCulture)
+                                + "; SceneCenterSafePositionFound=" + safePositionFound
+                                + "; LocalFloorSupport=" + nearbySupportPosition
+                                + "; MaximumLocalOffset="
+                                + DispatchParticipantMaximumTotalOffset.ToString(
+                                    "0.00", CultureInfo.InvariantCulture)
+                                + "m; SameInteriorFloorGroundAndOccupancyValidated=true"
+                                + "; SceneCenterUnchanged=true");
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(nearbySupportFailure)
+                    && nearbySupportFailure.IndexOf("PENDING:",
+                        StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    reason = "PENDING:Stage=SceneRevalidationFloor; CatalogInteriorId="
+                        + previous.CatalogInteriorId + "; LiveInteriorId="
+                        + previous.LiveInteriorId
+                        + "; OriginalNavigationCorrection="
+                        + navigationCorrection.ToString("0.00", CultureInfo.InvariantCulture)
+                        + "; LocalFloorSupport=" + nearbySupportFailure
+                        + "; CollisionOrInteriorReadinessStillPending=true";
+                    return false;
+                }
+                else if (!string.IsNullOrWhiteSpace(nearbySupportFailure))
+                {
+                    if (string.Equals(floorFailureResult, "SafePositionUnavailable",
+                            StringComparison.Ordinal)
+                        && nearbySupportFailure.IndexOf(
+                            "Stage=InteriorParticipantPlacement",
+                            StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        reason = "PENDING:Stage=SceneRevalidationFloor; CatalogInteriorId="
+                            + previous.CatalogInteriorId + "; LiveInteriorId="
+                            + previous.LiveInteriorId
+                            + "; SceneCenterSafePositionFound=false"
+                            + "; LocalFloorSupport=" + nearbySupportFailure
+                            + "; CollisionOrInteriorReadinessStillPending=true";
+                        return false;
+                    }
+                    nearbyInteriorFloorSupportEvidence = "; LocalFloorSupportRejected="
+                        + nearbySupportFailure;
+                }
+            }
             if (!string.IsNullOrWhiteSpace(floorFailureResult))
             {
                 string floorEvidence = "; SceneCenterLiveInteriorId=" + sceneCenterInteriorId
                     + "; SafePositionLiveInteriorId=" + safePositionInteriorId
+                    + "; SafePositionFound=" + safePositionFound
                     + "; NavigationCorrection=" + navigationCorrection.ToString(
                         "0.00", CultureInfo.InvariantCulture)
                     + "; GroundZ=" + (validGroundHeight
@@ -5825,6 +7165,7 @@ namespace LSImmersiveLife
                         "0.00", CultureInfo.InvariantCulture)
                     + "; FloorDelta=" + (validGroundHeight
                         ? floorDelta.ToString("0.00", CultureInfo.InvariantCulture) : "Invalid")
+                    + nearbyInteriorFloorSupportEvidence
                     + "; IsInteriorReady=" + interiorReady
                     + "; PlayerInsideLiveInterior=" + playerInsideLiveInterior
                     + "; Native=GET_INTERIOR_AT_COORDS/GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
@@ -5884,6 +7225,84 @@ namespace LSImmersiveLife
                 out reason);
         }
 
+        private string ClassifyExteriorNavigationFailure(
+            Vector3 requestedPosition,
+            string stage)
+        {
+            float groundZ = 0f;
+            Vector3 groundNormal = Vector3.Zero;
+            bool groundFound;
+            try
+            {
+                groundFound = World.GetGroundHeightAndNormal(
+                    requestedPosition, out groundZ, out groundNormal);
+            }
+            catch (Exception ex)
+            {
+                string collisionRequest = "Unavailable";
+                try
+                {
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                        requestedPosition.X, requestedPosition.Y, requestedPosition.Z);
+                    collisionRequest = "Issued";
+                }
+                catch (Exception collisionException)
+                {
+                    collisionRequest = "Exception:" + collisionException.GetType().Name;
+                }
+                return "PENDING:Status=CollisionPending; Stage="
+                    + (stage ?? "ExteriorNavigation")
+                    + "; Native=GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
+                    + "; Requested=" + requestedPosition
+                    + "; Result=GroundProbeUnavailable; Exception=" + ex.GetType().Name
+                    + "; CollisionRequest=REQUEST_COLLISION_AT_COORD:" + collisionRequest;
+            }
+
+            if (!groundFound)
+            {
+                try { RequestInteriorCollision(requestedPosition); }
+                catch (Exception ex)
+                {
+                    return "PENDING:Status=CollisionPending; Stage="
+                        + (stage ?? "ExteriorNavigation")
+                        + "; Native=GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
+                        + "; Requested=" + requestedPosition
+                        + "; GroundFound=false; CollisionRequest=Exception:" + ex.GetType().Name;
+                }
+                return "PENDING:Status=CollisionPending; Stage="
+                    + (stage ?? "ExteriorNavigation")
+                    + "; Native=GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
+                    + "; Requested=" + requestedPosition
+                    + "; GroundFound=false; CollisionRequest=REQUEST_COLLISION_AT_COORD";
+            }
+
+            bool validHeight = !float.IsNaN(groundZ) && !float.IsInfinity(groundZ);
+            bool validNormal = !float.IsNaN(groundNormal.Z)
+                && !float.IsInfinity(groundNormal.Z);
+            float verticalDelta = validHeight
+                ? Math.Abs(requestedPosition.Z - groundZ) : float.PositiveInfinity;
+            if (!validHeight || !validNormal || groundNormal.Z < 0.55f
+                || verticalDelta > 3f)
+            {
+                return "Stage=ExteriorGroundNormal; Native=GET_SAFE_COORD_FOR_PED/"
+                    + "GET_GROUND_HEIGHT_AND_NORMAL"
+                    + "; Requested=" + requestedPosition
+                    + "; GroundZ=" + (validHeight
+                        ? groundZ.ToString("0.00", CultureInfo.InvariantCulture) : "Invalid")
+                    + "; NormalZ=" + (validNormal
+                        ? groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture) : "Invalid")
+                    + "; VerticalDelta=" + verticalDelta.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; Result=UnsupportedGround";
+            }
+
+            return "Stage=" + (stage ?? "ExteriorNavigation")
+                + "; Native=GET_SAFE_COORD_FOR_PED/GET_GROUND_HEIGHT_AND_NORMAL"
+                + "; Requested=" + requestedPosition
+                + "; GroundZ=" + groundZ.ToString("0.00", CultureInfo.InvariantCulture)
+                + "; NormalZ=" + groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture)
+                + "; GroundConfirmed=true; Result=NoWalkablePedNodeOnConfirmedGround";
+        }
+
         internal bool TryResolveDispatchParticipantPosition(
             Vector3 preferredPosition,
             AmbientDispatchSceneResolution scene,
@@ -5922,10 +7341,24 @@ namespace LSImmersiveLife
             string lastFailure = "No nearby pedestrian position was checked.";
             string firstFailure = string.Empty;
             int placementProbeCount = 0;
+            float maximumLocalOffset = scene != null
+                && string.Equals(scene.LocationCategory, "PlayerRadiusOutdoorFoot",
+                    StringComparison.OrdinalIgnoreCase)
+                ? DispatchPlayerRadiusOutdoorFootParticipantMaximumOffset
+                : DispatchParticipantMaximumTotalOffset;
+            bool hasConfirmedWideFootprint = scene != null
+                && !scene.IsInteriorScene
+                && scene.ConfirmedExteriorOpenFootprintDirections
+                    >= scene.MinimumExteriorOpenFootprintDirections
+                && scene.MinimumExteriorOpenFootprintDirections
+                    >= DispatchExteriorMinimumOpenFootprintDirections;
+            float fallbackNavigationCorrectionLimit = hasConfirmedWideFootprint
+                ? Math.Min(maximumLocalOffset, DispatchParticipantMaximumTotalOffset)
+                : DispatchParticipantFallbackOffset;
             for (int index = -1; index < DispatchParticipantFallbackDirections.Length; index++)
             {
                 Vector3 candidate = preferredPosition;
-                float correctionLimit = DispatchParticipantMaximumTotalOffset;
+                float correctionLimit = maximumLocalOffset;
                 if (index >= 0)
                 {
                     Vector2 offset = DispatchParticipantFallbackDirections[index];
@@ -5933,7 +7366,10 @@ namespace LSImmersiveLife
                         preferredPosition.X + offset.X,
                         preferredPosition.Y + offset.Y,
                         preferredPosition.Z);
-                    correctionLimit = DispatchParticipantFallbackOffset;
+                    correctionLimit = scene != null
+                        && string.Equals(scene.LocationCategory,
+                            "PlayerRadiusOutdoorFoot", StringComparison.OrdinalIgnoreCase)
+                        ? maximumLocalOffset : fallbackNavigationCorrectionLimit;
                 }
 
                 Vector3 resolved;
@@ -5963,11 +7399,11 @@ namespace LSImmersiveLife
                 }
 
                 if (resolved.DistanceTo(preferredPosition)
-                    > DispatchParticipantMaximumTotalOffset)
+                    > maximumLocalOffset)
                 {
                     lastFailure = "Stage=ParticipantPlacementRadius; Native=Vector3.Distance"
                         + "; Result=Safe point exceeds "
-                        + DispatchParticipantMaximumTotalOffset.ToString(
+                        + maximumLocalOffset.ToString(
                             "0.##", CultureInfo.InvariantCulture) + "m.";
                     continue;
                 }
@@ -5993,8 +7429,86 @@ namespace LSImmersiveLife
                 return true;
             }
 
+            // A measured wide exterior can have a valid participant point
+            // between the authored formation offsets. Try one additional
+            // bounded ring only after the regular candidates fail; every point
+            // still receives the same ground, nav, approach, footprint,
+            // spacing, and occupancy validation, and remains inside the
+            // existing total scene-local offset.
+            bool allowExpandedWideRosterSearch = scene != null
+                && !scene.IsInteriorScene
+                && scene.ConfirmedExteriorOpenFootprintDirections
+                    >= scene.MinimumExteriorOpenFootprintDirections
+                && scene.MinimumExteriorOpenFootprintDirections
+                    >= DispatchExteriorMinimumOpenFootprintDirections;
+            if (allowExpandedWideRosterSearch)
+            {
+                foreach (Vector2 offset in DispatchParticipantExpandedFallbackDirections)
+                {
+                    Vector3 candidate = new Vector3(
+                        preferredPosition.X + offset.X,
+                        preferredPosition.Y + offset.Y,
+                        preferredPosition.Z);
+                    Vector3 resolved;
+                    Vector3 approachPosition;
+                    string exteriorEvidence;
+                    string candidateFailure;
+                    placementProbeCount++;
+                    if (!TryValidateDispatchExteriorPosition(
+                            candidate,
+                            fallbackNavigationCorrectionLimit,
+                            scene.ExteriorRoadHeightTolerance,
+                            scene.AuthoredPosition,
+                            scene.AreaAnchorPosition,
+                            scene.MinimumExteriorOpenFootprintDirections,
+                            null,
+                            out resolved,
+                            out approachPosition,
+                            out exteriorEvidence,
+                            out candidateFailure))
+                    {
+                        lastFailure = candidateFailure;
+                        if (string.IsNullOrWhiteSpace(firstFailure))
+                            firstFailure = candidateFailure;
+                        continue;
+                    }
+
+                    if (resolved.DistanceTo(preferredPosition) > maximumLocalOffset)
+                    {
+                        lastFailure = "Stage=ParticipantPlacementRadius; Native=Vector3.Distance"
+                            + "; Result=Expanded wide-scene point exceeds "
+                            + maximumLocalOffset.ToString(
+                                "0.##", CultureInfo.InvariantCulture) + "m.";
+                        continue;
+                    }
+                    if (!IsSeparatedFromReservedPositions(
+                        resolved, reservedPositions, minimumReservedSpacing))
+                    {
+                        lastFailure = "Stage=ParticipantSpacing; Native=LocalVector2Distance"
+                            + "; MinimumSpacing=" + minimumReservedSpacing.ToString(
+                                "0.00", CultureInfo.InvariantCulture)
+                            + "m; Result=Expanded wide-scene point overlaps a reserved participant.";
+                        continue;
+                    }
+
+                    safePosition = resolved;
+                    reason = string.Empty;
+                    if (logSuccessfulResolution)
+                        Log("AMBIENT_WORLD_DISPATCH_PARTICIPANT_POSITION_VALIDATED",
+                            "Location=" + scene.LocationId
+                            + "; Point=" + scene.PointId
+                            + "; Position=" + resolved
+                            + "; OutdoorApproach=" + approachPosition
+                            + "; Search=ExpandedWideSceneRosterRing"
+                            + "; Probe=" + placementProbeCount
+                            + "; Requested=" + candidate
+                            + "; Evidence=" + exteriorEvidence);
+                    return true;
+                }
+            }
+
             reason = "Stage=ParticipantPlacement; Probes=" + placementProbeCount
-                + "; MaximumLocalOffset=" + DispatchParticipantMaximumTotalOffset.ToString(
+                + "; MaximumLocalOffset=" + maximumLocalOffset.ToString(
                     "0.##", CultureInfo.InvariantCulture) + "m"
                 + "; FirstFailure=" + (string.IsNullOrWhiteSpace(firstFailure)
                     ? "None" : firstFailure)
@@ -6010,7 +7524,9 @@ namespace LSImmersiveLife
             out Vector3 validatedGroundPosition,
             out string evidence,
             out string reason,
-            Vector3? prevalidatedGroundPosition = null)
+            Vector3? prevalidatedGroundPosition = null,
+            Vehicle occurrenceVehicle = null,
+            Vector3? occurrenceVehicleStagingPosition = null)
         {
             validatedGroundPosition = Vector3.Zero;
             evidence = string.Empty;
@@ -6051,9 +7567,71 @@ namespace LSImmersiveLife
             }
 
             Vector3 actorPosition = actor.Position;
+            Vehicle actorVehicle = null;
+            bool actorInVehicle = actor.IsInVehicle();
+            if (actorInVehicle)
+            {
+                try { actorVehicle = actor.CurrentVehicle; }
+                catch { }
+                if (actorVehicle == null || !actorVehicle.Exists())
+                {
+                    reason = "Stage=ExteriorActorVehicle; Role=" + (role ?? string.Empty)
+                        + "; Handle=" + actor.Handle
+                        + "; Result=VehicleOccupantIdentityUnavailable";
+                    return false;
+                }
+            }
+            if (occurrenceVehicle != null
+                && (!occurrenceVehicle.Exists() || !actorInVehicle
+                    || actorVehicle == null
+                    || actorVehicle.Handle != occurrenceVehicle.Handle
+                    || !occurrenceVehicleStagingPosition.HasValue))
+            {
+                reason = "Stage=ExteriorActorVehicleAssignment; Role=" + (role ?? string.Empty)
+                    + "; Handle=" + actor.Handle
+                    + "; ExpectedVehicle=" + (occurrenceVehicle.Exists()
+                        ? occurrenceVehicle.Handle.ToString(CultureInfo.InvariantCulture)
+                        : "missing")
+                    + "; ActualVehicle=" + (actorVehicle == null
+                        ? "missing" : actorVehicle.Handle.ToString(CultureInfo.InvariantCulture))
+                    + "; StagingPlan=" + occurrenceVehicleStagingPosition
+                    + "; Result=AssignedDispatchVehicleNotConfirmed";
+                return false;
+            }
+
             float sceneDistance = Distance2D(actorPosition, scene.SceneCenter);
+            string occurrenceVehicleEvidence = string.Empty;
+            if (sceneDistance > DispatchVictimMaximumSceneDistance + 6f
+                && occurrenceVehicle != null
+                && occurrenceVehicleStagingPosition.HasValue)
+            {
+                Vector3 validatedVehiclePosition;
+                string vehicleEvidence;
+                string vehicleFailure;
+                if (TryValidateDispatchAdditionalMovingRoadVehiclePosition(
+                    scene,
+                    occurrenceVehicleStagingPosition.Value,
+                    occurrenceVehicle.Position,
+                    out validatedVehiclePosition,
+                    out vehicleEvidence,
+                    out vehicleFailure))
+                    occurrenceVehicleEvidence = vehicleEvidence;
+                else
+                {
+                    reason = "Stage=ExteriorActorSceneRange; Role=" + (role ?? string.Empty)
+                        + "; Handle=" + actor.Handle
+                        + "; Position=" + actorPosition
+                        + "; SceneCenter=" + scene.SceneCenter
+                        + "; Distance=" + sceneDistance.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; AdditionalVehicleValidation=" + vehicleFailure
+                        + "; Result=ActorOutsideValidatedOccurrenceFootprint";
+                    return false;
+                }
+            }
             if (float.IsNaN(sceneDistance) || float.IsInfinity(sceneDistance)
-                || sceneDistance > DispatchVictimMaximumSceneDistance + 6f)
+                || (sceneDistance > DispatchVictimMaximumSceneDistance + 6f
+                    && string.IsNullOrEmpty(occurrenceVehicleEvidence)))
             {
                 reason = "Stage=ExteriorActorSceneRange; Role=" + (role ?? string.Empty)
                     + "; Handle=" + actor.Handle
@@ -6065,24 +7643,16 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            if (actor.IsInVehicle())
+            if (actorInVehicle)
             {
-                Vehicle actorVehicle = null;
-                try { actorVehicle = actor.CurrentVehicle; }
-                catch { }
-                if (actorVehicle == null || !actorVehicle.Exists())
-                {
-                    reason = "Stage=ExteriorActorVehicle; Role=" + (role ?? string.Empty)
-                        + "; Handle=" + actor.Handle
-                        + "; Result=VehicleOccupantIdentityUnavailable";
-                    return false;
-                }
                 evidence = "Role=" + (role ?? string.Empty)
                     + "; Handle=" + actor.Handle
                     + "; Position=" + actorPosition
                     + "; EntityInteriorId=0; CoordinateInteriorId=0; RoomKey=0"
                     + "; VehicleOccupant=true; Vehicle=" + actorVehicle.Handle
-                    + "; VehiclePlacement=ValidatedByDispatchVehicleOwner";
+                    + "; VehiclePlacement=ValidatedByDispatchVehicleOwner"
+                    + (string.IsNullOrEmpty(occurrenceVehicleEvidence)
+                        ? string.Empty : "; " + occurrenceVehicleEvidence);
                 validatedGroundPosition = actorPosition;
                 return true;
             }
@@ -6108,7 +7678,9 @@ namespace LSImmersiveLife
                     out approachPosition,
                     out placementEvidence,
                     out reason,
-                    true);
+                    true,
+                    scene.LocationId,
+                    scene.PointId);
             }
             else
             {
@@ -6202,7 +7774,9 @@ namespace LSImmersiveLife
             Vector3 preparedPosition,
             Vector3 preparedGroundPosition,
             out string evidence,
-            out string reason)
+            out string reason,
+            Vehicle occurrenceVehicle = null,
+            Vector3? occurrenceVehicleStagingPosition = null)
         {
             evidence = string.Empty;
             reason = string.Empty;
@@ -6213,10 +7787,16 @@ namespace LSImmersiveLife
             }
 
             Vector3 actorPosition = actor.Position;
+            bool settledDeadVictim = string.Equals(
+                    role, "Victim", StringComparison.OrdinalIgnoreCase)
+                && (actor.IsDead || actor.Health <= 0)
+                && !actor.IsInVehicle();
+            float maximumPreparedDrift = settledDeadVictim
+                ? DispatchExteriorDeadVictimSettlementDriftLimit : 0.75f;
             float horizontalDrift = Distance2D(actorPosition, preparedPosition);
             float verticalDrift = Math.Abs(actorPosition.Z - preparedPosition.Z);
             if (float.IsNaN(horizontalDrift) || float.IsInfinity(horizontalDrift)
-                || horizontalDrift > 0.75f
+                || horizontalDrift > maximumPreparedDrift
                 || float.IsNaN(verticalDrift) || float.IsInfinity(verticalDrift)
                 || verticalDrift > 1.0f)
             {
@@ -6225,6 +7805,8 @@ namespace LSImmersiveLife
                     + "; PreparedPosition=" + preparedPosition
                     + "; CurrentPosition=" + actorPosition
                     + "; HorizontalDrift=" + horizontalDrift.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; MaximumHorizontalDrift=" + maximumPreparedDrift.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
                     + "; VerticalDrift=" + verticalDrift.ToString("0.00", CultureInfo.InvariantCulture)
                     + "; Result=PreparedActorMoved";
                 return false;
@@ -6258,20 +7840,10 @@ namespace LSImmersiveLife
                 return false;
             }
 
-            float sceneDistance = Distance2D(actorPosition, scene.SceneCenter);
-            if (float.IsNaN(sceneDistance) || float.IsInfinity(sceneDistance)
-                || sceneDistance > DispatchVictimMaximumSceneDistance + 6f)
+            Vehicle actorVehicle = null;
+            bool actorInVehicle = actor.IsInVehicle();
+            if (actorInVehicle)
             {
-                reason = "Stage=PreparedExteriorActorSceneRange; Role=" + (role ?? string.Empty)
-                    + "; Handle=" + actor.Handle
-                    + "; Distance=" + sceneDistance.ToString("0.00", CultureInfo.InvariantCulture)
-                    + "; Result=ActorOutsideLocalDispatchSite";
-                return false;
-            }
-
-            if (actor.IsInVehicle())
-            {
-                Vehicle actorVehicle = null;
                 try { actorVehicle = actor.CurrentVehicle; }
                 catch { }
                 if (actorVehicle == null || !actorVehicle.Exists())
@@ -6281,11 +7853,75 @@ namespace LSImmersiveLife
                         + "; Result=VehicleOccupantIdentityUnavailable";
                     return false;
                 }
+            }
+            if (occurrenceVehicle != null
+                && (!occurrenceVehicle.Exists() || !actorInVehicle
+                    || actorVehicle == null
+                    || actorVehicle.Handle != occurrenceVehicle.Handle
+                    || !occurrenceVehicleStagingPosition.HasValue))
+            {
+                reason = "Stage=PreparedExteriorActorVehicleAssignment; Role=" + (role ?? string.Empty)
+                    + "; Handle=" + actor.Handle
+                    + "; ExpectedVehicle=" + (occurrenceVehicle.Exists()
+                        ? occurrenceVehicle.Handle.ToString(CultureInfo.InvariantCulture)
+                        : "missing")
+                    + "; ActualVehicle=" + (actorVehicle == null
+                        ? "missing" : actorVehicle.Handle.ToString(CultureInfo.InvariantCulture))
+                    + "; StagingPlan=" + occurrenceVehicleStagingPosition
+                    + "; Result=AssignedDispatchVehicleNotConfirmed";
+                return false;
+            }
+
+            float sceneDistance = Distance2D(actorPosition, scene.SceneCenter);
+            string occurrenceVehicleEvidence = string.Empty;
+            if (sceneDistance > DispatchVictimMaximumSceneDistance + 6f
+                && occurrenceVehicle != null
+                && occurrenceVehicleStagingPosition.HasValue)
+            {
+                Vector3 validatedVehiclePosition;
+                string vehicleEvidence;
+                string vehicleFailure;
+                if (TryValidateDispatchAdditionalMovingRoadVehiclePosition(
+                    scene,
+                    occurrenceVehicleStagingPosition.Value,
+                    occurrenceVehicle.Position,
+                    out validatedVehiclePosition,
+                    out vehicleEvidence,
+                    out vehicleFailure))
+                    occurrenceVehicleEvidence = vehicleEvidence;
+                else
+                {
+                    reason = "Stage=PreparedExteriorActorSceneRange; Role=" + (role ?? string.Empty)
+                        + "; Handle=" + actor.Handle
+                        + "; Position=" + actorPosition
+                        + "; SceneCenter=" + scene.SceneCenter
+                        + "; Distance=" + sceneDistance.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; AdditionalVehicleValidation=" + vehicleFailure
+                        + "; Result=ActorOutsideValidatedOccurrenceFootprint";
+                    return false;
+                }
+            }
+            if (float.IsNaN(sceneDistance) || float.IsInfinity(sceneDistance)
+                || (sceneDistance > DispatchVictimMaximumSceneDistance + 6f
+                    && string.IsNullOrEmpty(occurrenceVehicleEvidence)))
+            {
+                reason = "Stage=PreparedExteriorActorSceneRange; Role=" + (role ?? string.Empty)
+                    + "; Handle=" + actor.Handle
+                    + "; Distance=" + sceneDistance.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; Result=ActorOutsideLocalDispatchSite";
+                return false;
+            }
+
+            if (actorInVehicle)
+            {
                 evidence = "Role=" + (role ?? string.Empty)
                     + "; Handle=" + actor.Handle
                     + "; Position=" + actorPosition
                     + "; Vehicle=" + actorVehicle.Handle
-                    + "; PreparedSnapshot=true; FreshSafeCoordinateQuery=false";
+                    + "; PreparedSnapshot=true; FreshSafeCoordinateQuery=false"
+                    + (string.IsNullOrEmpty(occurrenceVehicleEvidence)
+                        ? string.Empty : "; " + occurrenceVehicleEvidence);
                 return true;
             }
 
@@ -6302,6 +7938,98 @@ namespace LSImmersiveLife
                     + "; Result=Exception:" + ex.GetType().Name;
                 return false;
             }
+
+            if (settledDeadVictim)
+            {
+                // A dead victim can settle under ragdoll physics after the
+                // offer is published. Requiring GET_SAFE_COORD_FOR_PED for
+                // that corpse may return a distant living-ped navigation node
+                // and incorrectly keep an otherwise staged murder call from
+                // being accepted. Validate the same corpse at its current
+                // position against fresh exterior ground, slope, height,
+                // interior identity and the already selected scene bounds.
+                Vector3 groundProbe = actorPosition;
+                groundProbe.Z += MappedDoorwayFloorProbeHeight;
+                Vector3 groundNormal;
+                float currentGroundZ;
+                bool currentGroundFound;
+                try
+                {
+                    currentGroundFound = World.GetGroundHeightAndNormal(
+                        groundProbe, out currentGroundZ, out groundNormal);
+                }
+                catch (Exception ex)
+                {
+                    reason = "Stage=PreparedExteriorDeadVictimGround; Handle="
+                        + actor.Handle
+                        + "; Native=GET_GROUND_HEIGHT_AND_NORMAL; Result=Exception:"
+                        + ex.GetType().Name;
+                    return false;
+                }
+
+                Vector3 currentGroundPosition = new Vector3(
+                    actorPosition.X, actorPosition.Y, currentGroundZ);
+                bool validGround = currentGroundFound
+                    && !float.IsNaN(currentGroundZ)
+                    && !float.IsInfinity(currentGroundZ)
+                    && !float.IsNaN(groundNormal.Z)
+                    && !float.IsInfinity(groundNormal.Z)
+                    && groundNormal.Z >= 0.55f
+                    && IsDispatchExteriorActorGroundAlignmentValid(
+                        actorPosition,
+                        currentGroundPosition,
+                        heightAboveGround,
+                        inAir,
+                        DispatchExteriorActorMaximumHorizontalGroundOffset,
+                        DispatchExteriorActorMaximumOriginHeightAboveGround,
+                        DispatchExteriorActorMaximumOriginBelowGround);
+                if (!validGround)
+                {
+                    reason = "Stage=PreparedExteriorDeadVictimGround; Handle="
+                        + actor.Handle
+                        + "; Position=" + actorPosition
+                        + "; GroundFound=" + currentGroundFound
+                        + "; GroundZ=" + (float.IsNaN(currentGroundZ)
+                            || float.IsInfinity(currentGroundZ)
+                            ? "Invalid" : currentGroundZ.ToString(
+                                "0.00", CultureInfo.InvariantCulture))
+                        + "; NormalZ=" + (float.IsNaN(groundNormal.Z)
+                            || float.IsInfinity(groundNormal.Z)
+                            ? "Invalid" : groundNormal.Z.ToString(
+                                "0.00", CultureInfo.InvariantCulture))
+                        + "; HeightAboveGround=" + heightAboveGround.ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                        + "; IsInAir=" + inAir
+                        + "; Result=CurrentCorpseGroundNotConfirmed";
+                    return false;
+                }
+
+                evidence = "Role=Victim"
+                    + "; Handle=" + actor.Handle
+                    + "; Position=" + actorPosition
+                    + "; PreparedPosition=" + preparedPosition
+                    + "; HorizontalDrift=" + horizontalDrift.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; MaximumHorizontalDrift=" + maximumPreparedDrift.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; VerticalDrift=" + verticalDrift.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; CurrentGroundPosition=" + currentGroundPosition
+                    + "; GroundNormalZ=" + groundNormal.Z.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; HeightAboveGround=" + heightAboveGround.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; IsInAir=" + inAir
+                    + "; EntityInteriorId=0; CoordinateInteriorId=0; RoomKey=0"
+                    + "; SceneDistance=" + sceneDistance.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; DeadVictimRagdollSettlement=true"
+                    + "; SamePreparedHandle=true"
+                    + "; FreshPedNavigationQuery=false"
+                    + "; ExteriorGroundAndSlopeRevalidated=true";
+                return true;
+            }
+
             if (!IsDispatchExteriorActorGroundAlignmentValid(
                 actorPosition,
                 preparedGroundPosition,
@@ -6343,7 +8071,7 @@ namespace LSImmersiveLife
                 Distance2D(candidate, position) < minimumSpacing);
         }
 
-        private bool TryResolveDispatchVictimPosition(
+        internal bool TryResolveDispatchVictimPosition(
             Vector3 preferredPosition,
             AmbientDispatchSceneResolution scene,
             IEnumerable<Vector3> reservedSuspectPositions,
@@ -6459,6 +8187,368 @@ namespace LSImmersiveLife
                 reservedSuspectPositions,
                 out victim,
                 out reason);
+        }
+
+        internal bool TryPrepareDispatchVehicleVictimOccupant(
+            LSPDDispatchEvent incident,
+            Ped victim,
+            Vehicle vehicle,
+            out string reason)
+        {
+            reason = string.Empty;
+            int seat = incident == null ? -1 : incident.VictimVehicleSeat;
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff
+                || victim == null || !victim.Exists() || victim.IsDead
+                || victim.Health <= 0
+                || incident.Victim == null || incident.Victim.Handle != victim.Handle
+                || vehicle == null || !vehicle.Exists()
+                || incident.SuspectVehicle == null
+                || !incident.SuspectVehicle.Exists()
+                || incident.SuspectVehicle.Handle != vehicle.Handle
+                || incident.VictimVehicle == null
+                || !incident.VictimVehicle.Exists()
+                || incident.VictimVehicle.Handle != vehicle.Handle
+                || !incident.HasVictimVehicleSeat)
+            {
+                reason = "Stage=VehicleVictimSeatIdentity; Result=OccurrenceVictimOrVehicleUnavailable";
+                return false;
+            }
+
+            if (incident.VehicleVictimSeatPedHandle != victim.Handle
+                || incident.VehicleVictimSeatVehicleHandle != vehicle.Handle)
+            {
+                incident.VehicleVictimSeatReady = false;
+                incident.VehicleVictimSeatPedHandle = victim.Handle;
+                incident.VehicleVictimSeatVehicleHandle = vehicle.Handle;
+                incident.VehicleVictimSeatTaskAttempts = 0;
+                incident.VehicleVictimSeatNextTaskAt = DateTime.MinValue;
+            }
+
+            try
+            {
+                int passengerCapacity = Math.Max(0, Math.Min(16,
+                    Function.Call<int>(Hash.GET_VEHICLE_MAX_NUMBER_OF_PASSENGERS, vehicle)));
+                if (seat >= 0 && seat >= passengerCapacity)
+                {
+                    reason = "Stage=VehicleVictimSeatCapacity; Occurrence=" + incident.Id
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Seat=" + seat
+                        + "; PassengerCapacity=" + passengerCapacity
+                        + "; Result=AuthoredSeatUnavailable";
+                    return false;
+                }
+
+                int seatOccupant = Function.Call<int>(
+                    Hash.GET_PED_IN_VEHICLE_SEAT, vehicle, seat, false);
+                bool seatWasPreviouslyConfirmed = incident.VehicleVictimSeatReady;
+                bool victimInVehicle = victim.IsInVehicle()
+                    && victim.CurrentVehicle != null
+                    && victim.CurrentVehicle.Exists()
+                    && victim.CurrentVehicle.Handle == vehicle.Handle;
+                if (victimInVehicle && seatOccupant == victim.Handle)
+                {
+                    incident.VehicleVictimSeatReady = true;
+                    if (!seatWasPreviouslyConfirmed)
+                        Log("AMBIENT_WORLD_DISPATCH_VEHICLE_VICTIM_SEAT_CONFIRMED",
+                            "Occurrence=" + incident.Id
+                            + "; Victim=" + victim.Handle
+                            + "; Vehicle=" + vehicle.Handle
+                            + "; Seat=" + seat
+                            + "; Native=GET_PED_IN_VEHICLE_SEAT"
+                            + "; PhysicalEntry=true; Teleport=false");
+                    reason = "Stage=VehicleVictimSeat; Occurrence=" + incident.Id
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Seat=" + seat
+                        + "; PassengerCapacity=" + passengerCapacity
+                        + "; Confirmed=true";
+                    return true;
+                }
+
+                if (victim.IsInVehicle())
+                {
+                    Vehicle currentVehicle = victim.CurrentVehicle;
+                    reason = "Stage=VehicleVictimSeatIdentity; Occurrence=" + incident.Id
+                        + "; Victim=" + victim.Handle
+                        + "; ExpectedVehicle=" + vehicle.Handle
+                        + "; ActualVehicle=" + (currentVehicle == null || !currentVehicle.Exists()
+                            ? 0 : currentVehicle.Handle)
+                        + "; ExpectedSeat=" + seat
+                        + "; ObservedSeatOccupant=" + seatOccupant
+                        + "; Result=VictimOccupiesUnexpectedSeatOrVehicle";
+                    return false;
+                }
+                if (seatOccupant != 0)
+                {
+                    reason = "Stage=VehicleVictimSeatOccupancy; Occurrence=" + incident.Id
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Seat=" + seat
+                        + "; Occupant=" + seatOccupant
+                        + "; Result=AuthoredSeatOccupiedByAnotherPed";
+                    return false;
+                }
+
+                if (incident.VehicleVictimSeatTaskAttempts >= 4)
+                {
+                    reason = "Stage=VehicleVictimSeatEntry; Occurrence=" + incident.Id
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Seat=" + seat
+                        + "; Attempts=" + incident.VehicleVictimSeatTaskAttempts
+                        + "; SeatOccupant=" + seatOccupant
+                        + "; Result=BoundedPhysicalEntryAttemptsExhausted";
+                    return false;
+                }
+                DateTime now = DateTime.UtcNow;
+                if (now < incident.VehicleVictimSeatNextTaskAt)
+                {
+                    reason = "PENDING:Stage=VehicleVictimSeatEntry; Occurrence=" + incident.Id
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; Seat=" + seat
+                        + "; Attempts=" + incident.VehicleVictimSeatTaskAttempts
+                        + "; NextTaskAt=" + incident.VehicleVictimSeatNextTaskAt.ToString(
+                            "O", CultureInfo.InvariantCulture);
+                    return false;
+                }
+
+                victim.IsPositionFrozen = false;
+                victim.BlockPermanentEvents = true;
+                Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS, victim, true);
+                Function.Call(Hash.TASK_ENTER_VEHICLE,
+                    victim, vehicle, 15000, seat, 1.0f, 1, 0);
+                Function.Call(Hash.SET_PED_KEEP_TASK, victim, true);
+                incident.VehicleVictimSeatTaskAttempts++;
+                incident.VehicleVictimSeatNextTaskAt = now.AddSeconds(3);
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_VICTIM_ENTRY_TASK_ISSUED",
+                    "Occurrence=" + incident.Id
+                    + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Seat=" + seat
+                    + "; Attempt=" + incident.VehicleVictimSeatTaskAttempts
+                    + "; Task=TASK_ENTER_VEHICLE"
+                    + "; NextTaskAt=" + incident.VehicleVictimSeatNextTaskAt.ToString(
+                        "O", CultureInfo.InvariantCulture)
+                    + "; Teleport=false; Owner=AmbientWorld");
+                reason = "PENDING:Stage=VehicleVictimSeatEntry; Occurrence=" + incident.Id
+                    + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Seat=" + seat
+                    + "; Attempts=" + incident.VehicleVictimSeatTaskAttempts
+                    + "; Task=TASK_ENTER_VEHICLE; PhysicalConfirmationRequired=true";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=VehicleVictimSeatEntry; Occurrence=" + incident.Id
+                    + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Seat=" + seat
+                    + "; Result=NativeFailure; Exception=" + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_VICTIM_ENTRY_FAILED", reason);
+                return false;
+            }
+        }
+
+        internal bool TryOrderDispatchCarjackingVictimExit(
+            LSPDDispatchEvent incident,
+            Ped suspect,
+            Ped victim,
+            Vehicle vehicle,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff
+                || !string.Equals(incident.VehicleActivity, "carjacking",
+                    StringComparison.OrdinalIgnoreCase)
+                || !incident.HasVictimVehicleSeat
+                || suspect == null || !suspect.Exists() || suspect.IsDead
+                || victim == null || !victim.Exists() || victim.IsDead
+                || victim.Health <= 0
+                || vehicle == null || !vehicle.Exists()
+                || incident.Victim == null || incident.Victim.Handle != victim.Handle
+                || incident.VictimVehicle == null || !incident.VictimVehicle.Exists()
+                || incident.VictimVehicle.Handle != vehicle.Handle
+                || incident.SuspectVehicle == null || !incident.SuspectVehicle.Exists()
+                || incident.SuspectVehicle.Handle != vehicle.Handle
+                || (victim.IsInVehicle() && (victim.CurrentVehicle == null
+                    || !victim.CurrentVehicle.Exists()
+                    || victim.CurrentVehicle.Handle != vehicle.Handle)))
+            {
+                reason = "Stage=CarjackingVictimExitIdentity; Result=OccurrencePedOrVehicleUnavailable";
+                return false;
+            }
+
+            int victimSeatOccupant;
+            try
+            {
+                victimSeatOccupant = Function.Call<int>(
+                    Hash.GET_PED_IN_VEHICLE_SEAT,
+                    vehicle, incident.VictimVehicleSeat, false);
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=CarjackingVictimExitSeatProbe; Exception="
+                    + ex.GetType().Name;
+                return false;
+            }
+            bool forcedCarjack = string.Equals(
+                incident.VehicleVictimExitBehavior, "forced_carjack",
+                StringComparison.OrdinalIgnoreCase);
+            bool victimStillInAuthoredSeat = victim.IsInVehicle()
+                && victim.CurrentVehicle != null && victim.CurrentVehicle.Exists()
+                && victim.CurrentVehicle.Handle == vehicle.Handle
+                && victimSeatOccupant == victim.Handle;
+            bool victimSafelyOutside = !victim.IsInVehicle()
+                && victim.Position.DistanceTo(vehicle.Position) <= 15f
+                && victimSeatOccupant == 0;
+            if ((!forcedCarjack && !victimStillInAuthoredSeat)
+                || (forcedCarjack && incident.VictimVehicleSeat != -1)
+                || (forcedCarjack && !victimStillInAuthoredSeat
+                    && !victimSafelyOutside))
+            {
+                reason = "Stage=CarjackingVictimExitSeatIdentity; Occurrence="
+                    + incident.Id + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; AuthoredSeat=" + incident.VictimVehicleSeat
+                    + "; SeatOccupant=" + victimSeatOccupant
+                    + "; Result=ExactVictimSeatNotConfirmed";
+                return false;
+            }
+
+            try
+            {
+                victim.BlockPermanentEvents = true;
+                Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS,
+                    victim, true);
+                if (forcedCarjack)
+                {
+                    int assignedSeat;
+                    if (incident.VictimVehicleSeat != -1
+                        || !incident.VehicleEntrySeatByPedHandle.TryGetValue(
+                            suspect.Handle, out assignedSeat)
+                        || assignedSeat != -1
+                        || suspect.IsInVehicle())
+                    {
+                        reason = "Stage=ForcedCarjackEntry; Occurrence="
+                            + incident.Id + "; Suspect=" + suspect.Handle
+                            + "; Victim=" + victim.Handle
+                            + "; Vehicle=" + vehicle.Handle
+                            + "; AssignedSeat=" + (incident.VehicleEntrySeatByPedHandle
+                                .ContainsKey(suspect.Handle)
+                                    ? incident.VehicleEntrySeatByPedHandle[suspect.Handle] : -99)
+                            + "; Result=PhysicalDriverSeatEntryNotReady";
+                        return false;
+                    }
+
+                    // GTA TASK_ENTER_VEHICLE flag 8 performs a normal physical
+                    // entry while allowing the occupant of that assigned seat
+                    // to be carjacked from it. Flags 3 and 16 warp the Ped.
+                    const int carjackOccupiedSeatFlag = 8;
+                    Function.Call(Hash.TASK_ENTER_VEHICLE,
+                        suspect, vehicle, 15000, assignedSeat,
+                        1.0f, carjackOccupiedSeatFlag, 0);
+                    Function.Call(Hash.SET_PED_KEEP_TASK, suspect, true);
+                    Log("AMBIENT_WORLD_DISPATCH_CARJACK_VICTIM_FORCED_EXIT_TASK",
+                        "Occurrence=" + incident.Id
+                        + "; Suspect=" + suspect.Handle
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; VictimSeat=" + incident.VictimVehicleSeat
+                        + "; SuspectSeat=" + assignedSeat
+                        + "; Task=TASK_ENTER_VEHICLE; EntryFlag="
+                        + carjackOccupiedSeatFlag
+                        + "; OccupiedSeatCarjack=true; Teleport=false; Owner=AmbientWorld");
+                }
+                else if (string.Equals(incident.VehicleVictimExitBehavior,
+                             "threatened_exit", StringComparison.OrdinalIgnoreCase)
+                    && incident.VictimVehicleSeat >= 0
+                    && !suspect.IsInVehicle())
+                {
+                    Function.Call(Hash.TASK_LEAVE_VEHICLE, victim, vehicle, 0);
+                    Function.Call(Hash.SET_PED_KEEP_TASK, victim, true);
+                    Log("AMBIENT_WORLD_DISPATCH_CARJACK_VICTIM_SELF_EXIT_TASK",
+                        "Occurrence=" + incident.Id
+                        + "; Suspect=" + suspect.Handle
+                        + "; Victim=" + victim.Handle
+                        + "; Vehicle=" + vehicle.Handle
+                        + "; VictimSeat=" + incident.VictimVehicleSeat
+                        + "; Task=TASK_LEAVE_VEHICLE; ExitFlag=0"
+                        + "; PhysicalExit=true; Teleport=false; Owner=AmbientWorld");
+                }
+                else
+                {
+                    reason = "Stage=CarjackingVictimExitBehavior; Occurrence="
+                        + incident.Id + "; Behavior="
+                        + incident.VehicleVictimExitBehavior
+                        + "; VictimSeat=" + incident.VictimVehicleSeat
+                        + "; Result=UnsupportedOrInvalid";
+                    return false;
+                }
+                return true;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=CarjackingVictimExitTask; Occurrence="
+                    + incident.Id + "; Suspect=" + suspect.Handle
+                    + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Behavior=" + incident.VehicleVictimExitBehavior
+                    + "; Exception=" + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_CARJACKING_VICTIM_EXIT_FAILED", reason);
+                return false;
+            }
+        }
+
+        internal bool TryStartDispatchCarjackingVictimHandsUp(
+            LSPDDispatchEvent incident,
+            Ped victim,
+            Vehicle vehicle,
+            out string reason)
+        {
+            reason = string.Empty;
+            if (incident == null || !incident.OwnedByDispatch
+                || incident.HasConvoyCustodyHandoff
+                || victim == null || !victim.Exists() || victim.IsDead
+                || victim.Health <= 0 || victim.IsInVehicle()
+                || incident.Victim == null || incident.Victim.Handle != victim.Handle
+                || vehicle == null || !vehicle.Exists()
+                || incident.VictimVehicle == null || !incident.VictimVehicle.Exists()
+                || incident.VictimVehicle.Handle != vehicle.Handle
+                || !incident.HasVictimVehicleSeat
+                || victim.Position.DistanceTo(vehicle.Position) > 15f)
+            {
+                reason = "Stage=CarjackingVictimHandsUp; Result=ExactVictimNotSafelyOutsideAssignedVehicle";
+                return false;
+            }
+            try
+            {
+                victim.BlockPermanentEvents = true;
+                Function.Call(Hash.SET_BLOCKING_OF_NON_TEMPORARY_EVENTS,
+                    victim, true);
+                victim.Task.HandsUp(120000);
+                Log("AMBIENT_WORLD_DISPATCH_CARJACK_VICTIM_SURRENDER_STARTED",
+                    "Occurrence=" + incident.Id
+                    + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Behavior=" + incident.VehicleVictimExitBehavior
+                    + "; VictimInVehicle=false; Task=TASK_HANDS_UP"
+                    + "; DurationMilliseconds=120000; Teleport=false; Owner=AmbientWorld");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                reason = "Stage=CarjackingVictimHandsUp; Occurrence="
+                    + incident.Id + "; Victim=" + victim.Handle
+                    + "; Vehicle=" + vehicle.Handle
+                    + "; Exception=" + ex.GetType().Name;
+                Log("AMBIENT_WORLD_DISPATCH_CARJACKING_VICTIM_HANDSUP_FAILED", reason);
+                return false;
+            }
         }
 
         internal bool TryCreateDispatchSceneVehicle(
@@ -6632,14 +8722,73 @@ namespace LSImmersiveLife
                 && GetDispatchHeadingDifferenceDegrees(
                     scene.VehicleHeading, confirmedRoadHeading)
                     <= DispatchVehicleGroundFallbackHeadingTolerance;
+            bool groundHeightFinite = !float.IsNaN(groundZ)
+                && !float.IsInfinity(groundZ);
+            bool groundNormalFinite = !float.IsNaN(groundNormal.Z)
+                && !float.IsInfinity(groundNormal.Z);
+            bool groundHeightMatchesStaging = groundFound && groundHeightFinite
+                && Math.Abs(staging.Z - groundZ) <= 3f;
+            bool groundProbeInconclusive = !groundFound || !groundHeightFinite
+                || !groundNormalFinite || !groundHeightMatchesStaging;
+            bool confirmedSteepGround = groundFound && groundNormalFinite
+                && groundNormal.Z < 0.65f;
+            bool canRetryGroundProbe = interiorId == 0
+                && (!movingRoadStaging || movingRoadPositionConfirmed)
+                && groundProbeInconclusive
+                && !(movingRoadStaging && groundedByConfirmedRoadNode);
+            if (canRetryGroundProbe)
+            {
+                bool collisionRequested = false;
+                string collisionRequestFailure = string.Empty;
+                try
+                {
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                        staging.X, staging.Y, staging.Z);
+                    collisionRequested = true;
+                }
+                catch (Exception ex)
+                {
+                    collisionRequestFailure = "Exception:" + ex.GetType().Name;
+                }
+
+                reason = "Stage=VehicleGroundProbe; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD/"
+                    + "REQUEST_COLLISION_AT_COORD; Position=" + staging
+                    + "; InteriorId=" + interiorId
+                    + "; OnRoad=" + stagingOnRoad
+                    + "; GroundFound=" + groundFound
+                    + "; GroundZ=" + (groundHeightFinite
+                        ? groundZ.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                    + "; GroundDelta=" + (groundHeightFinite
+                        ? Math.Abs(staging.Z - groundZ).ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                    + "; NormalZ=" + (groundNormalFinite
+                        ? groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                    + "; CollisionRequested=" + collisionRequested
+                    + "; CollisionRequest=" + (string.IsNullOrWhiteSpace(collisionRequestFailure)
+                        ? "None" : collisionRequestFailure)
+                    + "; Result=" + (collisionRequested
+                        ? "CollisionPending" : "Rejected");
+                if (collisionRequested)
+                {
+                    LogDebugTransition(
+                        "AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_PENDING",
+                        "Stage=VehicleGroundProbe;OnRoad=" + stagingOnRoad
+                            + ";GroundFound=" + groundFound
+                            + ";GroundHeightMatched=" + groundHeightMatchesStaging,
+                        "Incident=" + incidentId + "; " + reason
+                        + "; GroundConfirmation=StillRequired");
+                    return false;
+                }
+                Log("AMBIENT_WORLD_DISPATCH_VEHICLE_PLACEMENT_REJECTED",
+                    "Incident=" + incidentId + "; " + reason);
+                return false;
+            }
             float validatedGroundZ = groundFound ? groundZ : confirmedRoadNode.Z;
             if (interiorId != 0
                 || !movingRoadRouteConfirmed
                 || (!groundFound && !groundedByConfirmedRoadNode)
-                || (groundFound && (float.IsNaN(groundZ) || float.IsInfinity(groundZ)
-                    || float.IsNaN(groundNormal.Z) || float.IsInfinity(groundNormal.Z)
-                    || groundNormal.Z < 0.65f
-                    || Math.Abs(staging.Z - groundZ) > 3f))
+                || (groundFound && (!groundHeightFinite || !groundNormalFinite
+                    || confirmedSteepGround
+                    || !groundHeightMatchesStaging))
                 || (movingRoadStaging && !movingRoadPositionConfirmed))
             {
                 reason = "Stage=VehicleGroundProbe; Native=GET_INTERIOR_AT_COORDS/"
@@ -7303,7 +9452,8 @@ namespace LSImmersiveLife
             IEnumerable<Vector3> reservedPositions,
             out Vector3 safePosition,
             out string reason,
-            float minimumReservedSpacing = DispatchParticipantMinimumSpacing)
+            float minimumReservedSpacing = DispatchParticipantMinimumSpacing,
+            ISet<int> excludedPedHandles = null)
         {
             safePosition = Vector3.Zero;
             reason = "No clear walkable floor was found at the requested interior participant position.";
@@ -7378,6 +9528,8 @@ namespace LSImmersiveLife
                 int safePositionFoundCount = 0;
                 int navigationCorrectionRejectedCount = 0;
                 float largestRejectedNavigationCorrection = 0f;
+                int authoredFootprintRejectedCount = 0;
+                float largestRejectedAuthoredFootprintOffset = 0f;
                 int safeInteriorIdentityRejectedCount = 0;
                 int groundProbeCount = 0;
                 int groundResultCount = 0;
@@ -7406,7 +9558,7 @@ namespace LSImmersiveLife
                             continue;
                         safePositionFoundCount++;
                         float navigationCorrection = safe.DistanceTo(probe);
-                        if (navigationCorrection > 1.25f)
+                        if (navigationCorrection > DispatchParticipantMaximumTotalOffset)
                         {
                             navigationCorrectionRejectedCount++;
                             largestRejectedNavigationCorrection = Math.Max(
@@ -7448,13 +9600,22 @@ namespace LSImmersiveLife
                             finalInteriorIdentityRejectedCount++;
                             continue;
                         }
+                        float authoredFootprintOffset = safe.DistanceTo(preferredPosition);
+                        if (authoredFootprintOffset > DispatchParticipantMaximumTotalOffset)
+                        {
+                            authoredFootprintRejectedCount++;
+                            largestRejectedAuthoredFootprintOffset = Math.Max(
+                                largestRejectedAuthoredFootprintOffset,
+                                authoredFootprintOffset);
+                            continue;
+                        }
                         if (!IsSeparatedFromReservedPositions(
                             safe, reservedPositions, minimumReservedSpacing))
                         {
                             participantSpacingRejectedCount++;
                             continue;
                         }
-                        if (HasOverlappingPed(safe, 1.2f))
+                        if (HasOverlappingPed(safe, 1.2f, excludedPedHandles))
                         {
                             overlappingPedRejectedCount++;
                             continue;
@@ -7484,12 +9645,19 @@ namespace LSImmersiveLife
                     + "; NavigationCorrectionRejected=" + navigationCorrectionRejectedCount
                     + "; LargestRejectedNavigationCorrection="
                     + largestRejectedNavigationCorrection.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; AuthoredFootprintRejected=" + authoredFootprintRejectedCount
+                    + "; LargestRejectedAuthoredFootprintOffset="
+                    + largestRejectedAuthoredFootprintOffset.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
                     + "; FloorRejected=NormalOrHeight=" + groundNormalRejectedCount
                     + ",SafeGroundSeparation=" + safeGroundSeparationRejectedCount
                     + ",AuthoredFloorAlignment=" + authoredFloorAlignmentRejectedCount
                     + "; ClearanceRejected=Spacing=" + participantSpacingRejectedCount
                     + ",Ped=" + overlappingPedRejectedCount
                     + ",Vehicle=" + overlappingVehicleRejectedCount
+                    + "; MaximumAuthoredFootprintOffset="
+                    + DispatchParticipantMaximumTotalOffset.ToString(
+                        "0.00", CultureInfo.InvariantCulture) + "m"
                     + "; MinimumReservedSpacing=" + minimumReservedSpacing.ToString(
                         "0.00", CultureInfo.InvariantCulture) + "m";
                 if (!found)
@@ -7768,9 +9936,26 @@ namespace LSImmersiveLife
                             + "; Native=GET_INTERIOR_AT_COORDS; Result=DifferentNonzeroInterior";
                     continue;
                 }
-                // A matching interior ID does not prove that GTA streamed the
-                // room. Keep the exact candidate pending until readiness is true,
-                // even when the Player is already at its coordinates.
+                // Pinning and collision requests do not load a remote mapped
+                // room. Start the bounded GTA scene stream before validating
+                // floor, actors or the mapped physical doorway.
+                string streamingFailure;
+                if (!TryRequestDispatchInteriorStreaming(
+                    liveInteriorId,
+                    candidate.Item1.InsidePoint.Position,
+                    candidate.Item1.InsideLocation.Id,
+                    candidate.Item1.InteriorId,
+                    out streamingFailure))
+                {
+                    pendingReason = streamingFailure;
+                    continue;
+                }
+                if (streamingFailure.StartsWith("PENDING:", StringComparison.OrdinalIgnoreCase))
+                {
+                    pendingReason = streamingFailure;
+                    continue;
+                }
+
                 bool interiorReady;
                 try
                 {
@@ -7778,7 +9963,7 @@ namespace LSImmersiveLife
                 }
                 catch (Exception ex)
                 {
-                    pendingReason = "Stage=InteriorReadiness; Location="
+                    pendingReason = "PENDING:Stage=InteriorReadiness; Location="
                         + candidate.Item1.InsideLocation.Id
                         + "; CatalogInteriorId=" + candidate.Item1.InteriorId
                         + "; LiveInteriorId=" + liveInteriorId
@@ -7788,18 +9973,12 @@ namespace LSImmersiveLife
                 }
                 if (!interiorReady)
                 {
-                    string streamingFailure;
-                    if (!TryRequestDispatchInteriorStreaming(
-                        liveInteriorId,
-                        candidate.Item1.InsidePoint.Position,
-                        candidate.Item1.InsideLocation.Id,
-                        candidate.Item1.InteriorId,
-                        out streamingFailure))
-                    {
-                        pendingReason = streamingFailure;
-                        continue;
-                    }
-                    pendingReason = "PENDING:" + streamingFailure;
+                    pendingReason = "PENDING:Status=InteriorNotReady; Stage=InteriorReadiness; Location="
+                        + candidate.Item1.InsideLocation.Id
+                        + "; CatalogInteriorId=" + candidate.Item1.InteriorId
+                        + "; LiveInteriorId=" + liveInteriorId
+                        + "; Native=IS_INTERIOR_READY:false"
+                        + "; " + streamingFailure;
                     continue;
                 }
                 if (playerInteriorId != 0 && liveInteriorId != playerInteriorId)
@@ -8030,28 +10209,101 @@ namespace LSImmersiveLife
                     Game.Player.Character, out currentPlayerLiveInteriorId);
             }
             catch { }
-            bool playerInside = interiorId != 0 && playerIdentityAvailable
-                && currentPlayerLiveInteriorId == interiorId;
-            if (interiorId != 0 && !playerIdentityAvailable)
+            int playerEntityInteriorId = currentPlayerLiveInteriorId;
+            bool playerEntityInteriorAvailable = playerIdentityAvailable;
+            int playerCoordinateInteriorId = 0;
+            bool playerCoordinateInteriorAvailable = false;
+            if (interiorId != 0)
             {
                 try
                 {
-                    currentPlayerLiveInteriorId = GetInteriorAt(playerPosition);
-                    playerIdentityAvailable = true;
-                    playerInside = currentPlayerLiveInteriorId == interiorId;
+                    playerCoordinateInteriorId = GetInteriorAt(playerPosition);
+                    playerCoordinateInteriorAvailable = true;
                 }
-                catch { playerInside = false; }
+                catch { }
             }
-            if (currentPlayerLiveInteriorId != 0
-                && currentPlayerLiveInteriorId != interiorId)
+
+            bool playerInside = interiorId != 0
+                && ((playerEntityInteriorAvailable
+                        && playerEntityInteriorId == interiorId)
+                    || (playerCoordinateInteriorAvailable
+                        && playerCoordinateInteriorId == interiorId));
+            if (!playerIdentityAvailable && playerCoordinateInteriorAvailable)
+            {
+                currentPlayerLiveInteriorId = playerCoordinateInteriorId;
+                playerIdentityAvailable = true;
+            }
+
+            bool playerIdentitySourcesDisagree = playerEntityInteriorAvailable
+                && playerCoordinateInteriorAvailable
+                && playerEntityInteriorId != playerCoordinateInteriorId
+                && (playerEntityInteriorId != 0 || playerCoordinateInteriorId != 0);
+            bool playerIdentityDisagreesWithSelectedInterior =
+                playerIdentitySourcesDisagree
+                || (interiorId != 0 && !playerInside
+                    && ((playerEntityInteriorAvailable && playerEntityInteriorId != 0)
+                        || (playerCoordinateInteriorAvailable
+                            && playerCoordinateInteriorId != 0)));
+            bool selectedMappedPairCanUseThresholdEvidence = allowMappedThresholdProximity
+                && requiredPair != null
+                && HasCatalogedMappedInteriorReference(requiredPair);
+            if (_log != null)
+            {
+                if (playerIdentityDisagreesWithSelectedInterior)
+                    _log.RuntimeTransition(
+                        "AMBIENT_WORLD_DISPATCH_SELECTED_INTERIOR_IDENTITY",
+                        "Location=" + (requiredPair == null
+                                || requiredPair.InsideLocation == null
+                            ? string.Empty : requiredPair.InsideLocation.Id)
+                            + "; ExpectedLiveInteriorId=" + interiorId
+                            + "; Entity=" + (playerEntityInteriorAvailable
+                                ? playerEntityInteriorId.ToString(
+                                    CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; Coordinate=" + (playerCoordinateInteriorAvailable
+                                ? playerCoordinateInteriorId.ToString(
+                                    CultureInfo.InvariantCulture) : "Unavailable"),
+                        "Location=" + (requiredPair == null
+                                || requiredPair.InsideLocation == null
+                            ? string.Empty : requiredPair.InsideLocation.Id)
+                            + "; CatalogInteriorId=" + (requiredPair == null
+                                ? string.Empty : requiredPair.InteriorId)
+                            + "; ExpectedLiveInteriorId=" + interiorId
+                            + "; EntityInteriorId=" + (playerEntityInteriorAvailable
+                                ? playerEntityInteriorId.ToString(
+                                    CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; CoordinateInteriorId=" + (playerCoordinateInteriorAvailable
+                                ? playerCoordinateInteriorId.ToString(
+                                    CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; PlayerPosition=" + playerPosition
+                            + "; MappedPairThresholdAllowed="
+                            + selectedMappedPairCanUseThresholdEvidence
+                            + "; PlayerMatchesSelectedInterior=" + playerInside
+                            + "; Result=" + (playerInside
+                                ? "IdentityDifferenceDiagnosticOnly"
+                                : selectedMappedPairCanUseThresholdEvidence
+                                    ? "DiagnosticOnlyContinueMappedPairValidation"
+                                    : "NoSelectedInteriorIdentity"));
+                else
+                    _log.ClearRuntimeTransition(
+                        "AMBIENT_WORLD_DISPATCH_SELECTED_INTERIOR_IDENTITY");
+            }
+
+            if (playerIdentityDisagreesWithSelectedInterior
+                && !playerInside
+                && !selectedMappedPairCanUseThresholdEvidence)
             {
                 reason = "Stage=PlayerInteriorIdentity; CatalogInteriorId="
                     + (requiredPair == null ? string.Empty : requiredPair.InteriorId)
                     + "; ExpectedLiveInteriorId=" + interiorId
-                    + "; PlayerLiveInteriorId=" + currentPlayerLiveInteriorId
+                    + "; PlayerEntityInteriorId=" + (playerEntityInteriorAvailable
+                        ? playerEntityInteriorId.ToString(CultureInfo.InvariantCulture)
+                        : "Unavailable")
+                    + "; PlayerCoordinateInteriorId=" + (playerCoordinateInteriorAvailable
+                        ? playerCoordinateInteriorId.ToString(CultureInfo.InvariantCulture)
+                        : "Unavailable")
                     + "; PlayerPosition=" + playerPosition
                     + "; Native=GET_INTERIOR_FROM_ENTITY/GET_INTERIOR_AT_COORDS"
-                    + "; Result=CoordinateIdentityDifferentFromSelectedInterior";
+                    + "; Result=NoSelectedInteriorIdentity";
                 return false;
             }
             if (_locationCatalog == null || interiorId == 0
@@ -8060,6 +10312,31 @@ namespace LSImmersiveLife
             {
                 reason = "The Player is not inside the requested mapped interior.";
                 return false;
+            }
+
+            if (!playerInside && !interiorReadinessGateSatisfied
+                && requiredPair != null
+                && requiredPair.InsideLocation != null
+                && requiredPair.InsidePoint != null
+                && HasCatalogedMappedInteriorReference(requiredPair))
+            {
+                string remoteStreamingReason;
+                if (!TryRequestDispatchInteriorStreaming(
+                    interiorId,
+                    requiredPair.InsidePoint.Position,
+                    requiredPair.InsideLocation.Id,
+                    requiredPair.InteriorId,
+                    out remoteStreamingReason))
+                {
+                    reason = remoteStreamingReason;
+                    return false;
+                }
+                if (remoteStreamingReason.StartsWith(
+                    "PENDING:", StringComparison.OrdinalIgnoreCase))
+                {
+                    reason = remoteStreamingReason;
+                    return false;
+                }
             }
 
             if (!interiorReadinessGateSatisfied)
@@ -8434,9 +10711,28 @@ namespace LSImmersiveLife
                         continue;
                     }
 
+                    Vector3 measuredApproachPosition;
+                    string measuredExteriorEvidence;
+                    string measuredFootprintFailure;
+                    if (!TryValidateDispatchExteriorApproach(
+                        candidatePosition,
+                        authoredPosition,
+                        area == null ? Vector3.Zero : area.Position,
+                        minimumOpenFootprintDirections,
+                        out measuredApproachPosition,
+                        out measuredExteriorEvidence,
+                        out measuredFootprintFailure,
+                        true))
+                    {
+                        lastPlacementFailure = measuredFootprintFailure;
+                        if (string.IsNullOrWhiteSpace(firstPlacementFailure))
+                            firstPlacementFailure = measuredFootprintFailure;
+                        continue;
+                    }
+
                     safePedPosition = candidatePosition;
-                    exteriorApproachPosition = candidateApproachPosition;
-                    exteriorPlacementEvidence = candidateEvidence
+                    exteriorApproachPosition = measuredApproachPosition;
+                    exteriorPlacementEvidence = measuredExteriorEvidence
                         + "; SameLocationProbe=" + placementProbeCount;
                     exteriorPositionReady = true;
                     break;
@@ -8512,6 +10808,9 @@ namespace LSImmersiveLife
                 IsInteriorScene = false,
                 ExteriorApproachPosition = exteriorApproachPosition,
                 ExteriorPlacementEvidence = exteriorPlacementEvidence,
+                ConfirmedExteriorOpenFootprintDirections =
+                    GetConfirmedDispatchExteriorOpenFootprintDirections(
+                        exteriorPlacementEvidence),
                 CatalogInteriorId = string.Empty,
                 LiveInteriorId = 0,
                 InteriorAccessPair = null,
@@ -8731,14 +11030,16 @@ namespace LSImmersiveLife
                     Vector3 approachPosition;
                     string exteriorEvidence;
                     string placementFailure;
+                    int minimumOpenDirections =
+                        GetDispatchExteriorMinimumOpenFootprintDirections(
+                            null, incidentType, "PlayerRadiusOutdoorFoot");
                     if (!TryValidateDispatchExteriorPosition(
                         query,
                         9f,
                         MovingRoadElevationTolerance,
                         playerPosition,
                         playerPosition,
-                        GetDispatchExteriorMinimumOpenFootprintDirections(
-                            null, incidentType, "PlayerRadiusOutdoorFoot"),
+                        minimumOpenDirections,
                         null,
                         out safePosition,
                         out approachPosition,
@@ -8761,6 +11062,25 @@ namespace LSImmersiveLife
                         continue;
                     }
 
+                    Vector3 measuredApproachPosition;
+                    string measuredExteriorEvidence;
+                    string measuredFootprintFailure;
+                    if (!TryValidateDispatchExteriorApproach(
+                        safePosition,
+                        playerPosition,
+                        playerPosition,
+                        minimumOpenDirections,
+                        out measuredApproachPosition,
+                        out measuredExteriorEvidence,
+                        out measuredFootprintFailure,
+                        true))
+                    {
+                        lastFailure = measuredFootprintFailure;
+                        continue;
+                    }
+                    approachPosition = measuredApproachPosition;
+                    exteriorEvidence = measuredExteriorEvidence;
+
                     float heading = (float)(Math.Atan2(
                         playerPosition.X - safePosition.X,
                         playerPosition.Y - safePosition.Y) * 180d / Math.PI);
@@ -8777,6 +11097,10 @@ namespace LSImmersiveLife
                         AuthoredPosition = playerPosition,
                         SceneCenter = safePosition,
                         ActorPosition = safePosition,
+                        SelectionAnchorPosition = playerPosition,
+                        HasSelectionAnchor = true,
+                        MinimumPlayerDistance = minimumPlayerDistance,
+                        MaximumPlayerDistance = maximumPlayerDistance,
                         Heading = heading,
                         VehicleStagingPosition = Vector3.Zero,
                         VehicleHeading = 0f,
@@ -8788,9 +11112,12 @@ namespace LSImmersiveLife
                         IsSurveyedPoint = false,
                         MaximumSnapDistance = 0f,
                         ExteriorRoadHeightTolerance = MovingRoadElevationTolerance,
-                        MinimumExteriorOpenFootprintDirections =
-                            GetDispatchExteriorMinimumOpenFootprintDirections(
-                                runtimeArea, incidentType, "PlayerRadiusOutdoorFoot"),
+                        MinimumExteriorOpenFootprintDirections = minimumOpenDirections,
+                        ExteriorApproachPosition = approachPosition,
+                        ExteriorPlacementEvidence = exteriorEvidence,
+                        ConfirmedExteriorOpenFootprintDirections =
+                            GetConfirmedDispatchExteriorOpenFootprintDirections(
+                                exteriorEvidence),
                         IsInteriorScene = false,
                         CatalogInteriorId = string.Empty,
                         LiveInteriorId = 0,
@@ -8907,6 +11234,9 @@ namespace LSImmersiveLife
                     out minimumPlayerDistance, out maximumPlayerDistance);
             float[] fallbackRoadOffsets = BuildPlayerRadiusFallbackRoadOffsets(
                 minimumPlayerDistance, maximumPlayerDistance);
+            int minimumOpenDirections =
+                GetDispatchExteriorMinimumOpenFootprintDirections(
+                    runtimeArea, incidentType, "road_foot");
             string lastFailure = reason;
             foreach (float offset in fallbackRoadOffsets)
             {
@@ -9020,8 +11350,7 @@ namespace LSImmersiveLife
                     MovingRoadElevationTolerance,
                     playerRadiusRoadAnchor,
                     playerRadiusRoadAnchor,
-                    GetDispatchExteriorMinimumOpenFootprintDirections(
-                        null, incidentType, "road_foot"),
+                    minimumOpenDirections,
                     null,
                     out safePedPosition,
                     out approachPosition,
@@ -9051,6 +11380,25 @@ namespace LSImmersiveLife
                     continue;
                 }
 
+                Vector3 measuredApproachPosition;
+                string measuredExteriorEvidence;
+                string measuredFootprintFailure;
+                if (!TryValidateDispatchExteriorApproach(
+                    safePedPosition,
+                    playerRadiusRoadAnchor,
+                    playerRadiusRoadAnchor,
+                    minimumOpenDirections,
+                    out measuredApproachPosition,
+                    out measuredExteriorEvidence,
+                    out measuredFootprintFailure,
+                    true))
+                {
+                    lastFailure = measuredFootprintFailure;
+                    continue;
+                }
+                approachPosition = measuredApproachPosition;
+                exteriorEvidence = measuredExteriorEvidence;
+
                 scene = new AmbientDispatchSceneResolution
                 {
                     Area = runtimeArea,
@@ -9064,6 +11412,10 @@ namespace LSImmersiveLife
                     AuthoredPosition = playerPosition,
                     SceneCenter = safePedPosition,
                     ActorPosition = safePedPosition,
+                    SelectionAnchorPosition = playerPosition,
+                    HasSelectionAnchor = true,
+                    MinimumPlayerDistance = minimumPlayerDistance,
+                    MaximumPlayerDistance = maximumPlayerDistance,
                     Heading = roadHeading,
                     VehicleStagingPosition = Vector3.Zero,
                     VehicleHeading = 0f,
@@ -9075,9 +11427,12 @@ namespace LSImmersiveLife
                     IsSurveyedPoint = false,
                     MaximumSnapDistance = 0f,
                     ExteriorRoadHeightTolerance = MovingRoadElevationTolerance,
-                    MinimumExteriorOpenFootprintDirections =
-                        GetDispatchExteriorMinimumOpenFootprintDirections(
-                            runtimeArea, incidentType, "road_foot"),
+                    MinimumExteriorOpenFootprintDirections = minimumOpenDirections,
+                    ExteriorApproachPosition = approachPosition,
+                    ExteriorPlacementEvidence = exteriorEvidence,
+                    ConfirmedExteriorOpenFootprintDirections =
+                        GetConfirmedDispatchExteriorOpenFootprintDirections(
+                            exteriorEvidence),
                     IsInteriorScene = false,
                     CatalogInteriorId = string.Empty,
                     LiveInteriorId = 0,
@@ -9173,28 +11528,67 @@ namespace LSImmersiveLife
                     minimumPlayerDistance, maximumPlayerDistance);
                 string lastFailure = reason;
                 string pendingCollisionFailure = string.Empty;
+                int checkedCandidateCount = 0;
+                int pendingGroundCandidateCount = 0;
                 var roadsideCandidatesToValidate = new List<Vector3>();
                 if (fixedRoadsideCandidatePosition.HasValue)
                 {
                     roadsideCandidatesToValidate.Add(fixedRoadsideCandidatePosition.Value);
+                    // Keep the pending coordinate first so the owned remote
+                    // scene request remains anchored to the same point. Also
+                    // re-check the other bounded roadside alternatives on
+                    // every retry; otherwise the pending-coordinate path
+                    // collapses the original candidate set to one point and
+                    // can wait out the full preparation window without ever
+                    // validating a nearby usable shoulder.
                 }
-                else
+                var roadsideCandidatesByRoadOffset = new List<List<Vector3>>();
+                foreach (float offset in fallbackRoadOffsets)
                 {
-                    foreach (float offset in fallbackRoadOffsets)
+                    Vector3 query = roadReference + (forward * offset);
+                    List<Vector3> roadsideCandidates = BuildPlayerRadiusRoadsideCandidates(
+                        query, referenceHeading);
+                    if (roadsideCandidates.Count == 0)
                     {
-                        Vector3 query = roadReference + (forward * offset);
-                        List<Vector3> roadsideCandidates = BuildPlayerRadiusRoadsideCandidates(
-                            query, referenceHeading);
-                        if (roadsideCandidates.Count == 0)
-                        {
-                            lastFailure = "Stage=PlayerRadiusRoadside; Native=GET_POSITION_ON_ROADSIDE; Result=false";
-                            continue;
-                        }
-                        roadsideCandidatesToValidate.AddRange(roadsideCandidates);
+                        lastFailure = "Stage=PlayerRadiusRoadside; Native=GET_POSITION_ON_ROADSIDE; Result=false";
+                        continue;
                     }
+                    roadsideCandidatesByRoadOffset.Add(roadsideCandidates);
+                }
+
+                // Spend the four-probe budget across distinct road offsets
+                // before examining alternate lateral points from the first
+                // roadside query. Keep an exact pending point first on retry.
+                int roadOffsetCandidateIndex = 0;
+                while (roadsideCandidatesToValidate.Count
+                    < MaximumPlayerRadiusParkedVehicleStagingCandidates)
+                {
+                    bool anotherOffsetHasCandidate = false;
+                    foreach (List<Vector3> roadsideCandidates in roadsideCandidatesByRoadOffset)
+                    {
+                        if (roadOffsetCandidateIndex >= roadsideCandidates.Count)
+                            continue;
+
+                        anotherOffsetHasCandidate = true;
+                        Vector3 candidate = roadsideCandidates[roadOffsetCandidateIndex];
+                        if (roadsideCandidatesToValidate.Any(existing =>
+                            Distance2D(existing, candidate) <= 1.5f))
+                            continue;
+
+                        roadsideCandidatesToValidate.Add(candidate);
+                        if (roadsideCandidatesToValidate.Count
+                            >= MaximumPlayerRadiusParkedVehicleStagingCandidates)
+                            break;
+                    }
+                    if (!anotherOffsetHasCandidate)
+                        break;
+                    roadOffsetCandidateIndex++;
                 }
                 foreach (Vector3 roadsideCandidate in roadsideCandidatesToValidate)
                 {
+                    if (checkedCandidateCount >= MaximumPlayerRadiusParkedVehicleStagingCandidates)
+                        break;
+                    checkedCandidateCount++;
                     Vector3 roadside = roadsideCandidate;
 
                     float playerDistance = Distance2D(roadside, playerPosition);
@@ -9217,34 +11611,96 @@ namespace LSImmersiveLife
                     Vector3 groundNormal;
                     bool groundFound = World.GetGroundHeightAndNormal(
                         roadside, out groundZ, out groundNormal);
-                    if (interiorId != 0 || onRoad || !groundFound
-                        || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
-                        || groundNormal.Z < 0.65f || Math.Abs(roadside.Z - groundZ) > 3f)
+                    bool groundHeightFinite = !float.IsNaN(groundZ)
+                        && !float.IsInfinity(groundZ);
+                    bool groundNormalFinite = !float.IsNaN(groundNormal.Z)
+                        && !float.IsInfinity(groundNormal.Z);
+                    bool groundHeightMatchesCandidate = groundFound
+                        && groundHeightFinite
+                        && Math.Abs(roadside.Z - groundZ) <= 3f;
+                    bool groundProbeInconclusive = !groundFound
+                        || !groundHeightFinite || !groundNormalFinite
+                        || !groundHeightMatchesCandidate;
+                    bool confirmedSteepGround = groundFound && groundNormalFinite
+                        && groundNormal.Z < 0.65f;
+                    if (interiorId != 0 || onRoad || confirmedSteepGround)
                     {
                         lastFailure = "Stage=PlayerRadiusRoadsideGround; Native=GET_INTERIOR_AT_COORDS/"
                             + "IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD; InteriorId="
                             + interiorId + "; OnRoad=" + onRoad + "; GroundFound=" + groundFound
                             + "; Position=" + roadside
+                            + "; GroundZ=" + (groundHeightFinite
+                                ? groundZ.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; GroundDelta=" + (groundHeightFinite
+                                ? Math.Abs(roadside.Z - groundZ).ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
                             + "; NormalZ=" + (groundFound ? groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
                             + "; Result=Rejected";
-                        if (!groundFound && interiorId == 0 && !onRoad)
+                        continue;
+                    }
+                    if (groundProbeInconclusive)
+                    {
+                        string collisionRequestFailure = string.Empty;
+                        bool collisionRequested = false;
+                        try
                         {
-                            try { Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
-                                roadside.X, roadside.Y, roadside.Z); }
-                            catch { }
+                            Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                                roadside.X, roadside.Y, roadside.Z);
+                            collisionRequested = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            collisionRequestFailure = "Exception:" + ex.GetType().Name;
+                        }
+                        lastFailure = "Stage=PlayerRadiusRoadsideGround; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD"
+                            + "; Position=" + roadside
+                            + "; GroundFound=" + groundFound
+                            + "; GroundZ=" + (groundHeightFinite
+                                ? groundZ.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; GroundDelta=" + (groundHeightFinite
+                                ? Math.Abs(roadside.Z - groundZ).ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; NormalZ=" + (groundNormalFinite
+                                ? groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                            + "; Result=" + (collisionRequested
+                                ? "CollisionPending" : "CollisionRequestFailed")
+                            + (string.IsNullOrWhiteSpace(collisionRequestFailure)
+                                ? string.Empty : "; CollisionRequest=" + collisionRequestFailure);
+                        if (collisionRequested)
+                        {
                             if (string.IsNullOrWhiteSpace(pendingCollisionFailure))
                             {
+                                string remoteSceneEvidence = TryAdvanceDispatchRemoteExteriorScene(
+                                    "runtime.player-radius-vehicle-scene",
+                                    "player-radius-roadside-pending",
+                                    roadside);
                                 pendingCollisionFailure = "Stage=PlayerRadiusRoadsideGround; Native=GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD"
                                     + "; Position=" + roadside
                                     + "; InteriorId=" + interiorId
                                     + "; OnRoad=" + onRoad
-                                    + "; CollisionRequested=true; Result=CollisionPending";
+                                    + "; GroundFound=" + groundFound
+                                    + "; GroundZ=" + (groundHeightFinite
+                                        ? groundZ.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                                    + "; GroundDelta=" + (groundHeightFinite
+                                        ? Math.Abs(roadside.Z - groundZ).ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                                    + "; NormalZ=" + (groundNormalFinite
+                                        ? groundNormal.Z.ToString("0.00", CultureInfo.InvariantCulture) : "Unavailable")
+                                    + "; CandidateIndex=" + checkedCandidateCount
+                                    + "; CandidateLimit="
+                                    + MaximumPlayerRadiusParkedVehicleStagingCandidates
+                                    + "; PlayerDistance=" + playerDistance.ToString(
+                                        "0.0", CultureInfo.InvariantCulture)
+                                    + "; RoadReference=" + roadReference
+                                    + "; CollisionRequested=true; Result=CollisionPending"
+                                    + "; " + remoteSceneEvidence
+                                    + "; GroundConfirmation=StillRequired";
                                 pendingCandidatePosition = roadside;
                             }
-                            break;
+                            pendingGroundCandidateCount++;
                         }
                         continue;
                     }
+                    StopOwnedDispatchRemoteExteriorLoadSceneAtPosition(
+                        roadside,
+                        "PlayerRadiusRoadsideGroundConfirmed");
                     roadside.Z = groundZ;
 
                     Vector3 roadNode;
@@ -9311,12 +11767,23 @@ namespace LSImmersiveLife
                     actorPosition = safePedPosition;
                     vehiclePosition = roadside;
                     vehicleHeading = roadHeading;
+                    if (!string.IsNullOrWhiteSpace(pendingCollisionFailure)
+                        && _dispatchRemoteExteriorLoadSceneOwned
+                        && Distance2D(_dispatchRemoteExteriorLoadScenePosition,
+                            roadside) > 1.5f)
+                        StopOwnedDispatchRemoteExteriorLoadScene(
+                            "AlternateRoadsideCandidateValidated");
                     reason = string.Empty;
                     return true;
                 }
 
                 reason = !string.IsNullOrWhiteSpace(pendingCollisionFailure)
                     ? "PENDING:" + pendingCollisionFailure
+                        + "; CandidateChecks=" + checkedCandidateCount
+                        + "; CandidateLimit="
+                        + MaximumPlayerRadiusParkedVehicleStagingCandidates
+                        + "; GroundPendingCandidates=" + pendingGroundCandidateCount
+                        + "; LastAlternativeFailure=" + lastFailure
                         + "; RetryRequiresGroundNormalAndClearanceRevalidation=true"
                     : lastFailure;
                 return false;
@@ -9363,7 +11830,8 @@ namespace LSImmersiveLife
                     | GetSafePositionFlags.NotWater;
                 if (!World.GetSafePositionForPed(authoredPosition, out safe, flags))
                 {
-                    reason = "Stage=ExteriorNavigation; Native=GET_SAFE_COORD_FOR_PED; Result=false";
+                    reason = ClassifyExteriorNavigationFailure(
+                        authoredPosition, "ExteriorNavigation");
                     return false;
                 }
                 if (!IsDispatchExteriorNavigationSnapValid(
@@ -9599,9 +12067,62 @@ namespace LSImmersiveLife
                     .Where(value => !string.IsNullOrWhiteSpace(value))
                     .Any(value => value.IndexOf("alley", StringComparison.OrdinalIgnoreCase) >= 0
                         || value.IndexOf("road_foot", StringComparison.OrdinalIgnoreCase) >= 0
-                        || value.IndexOf("parking", StringComparison.OrdinalIgnoreCase) >= 0);
+                        || value.IndexOf("parking", StringComparison.OrdinalIgnoreCase) >= 0
+                        || value.IndexOf("playerradiusoutdoorfoot",
+                            StringComparison.OrdinalIgnoreCase) >= 0);
             return narrowOutdoorScene
                 ? 2 : DispatchExteriorMinimumOpenFootprintDirections;
+        }
+
+        private static int GetConfirmedDispatchExteriorOpenFootprintDirections(
+            string evidence)
+        {
+            const string marker = "OpenFootprintDirections=";
+            if (string.IsNullOrWhiteSpace(evidence))
+                return -1;
+
+            int markerIndex = evidence.IndexOf(marker, StringComparison.Ordinal);
+            if (markerIndex < 0)
+                return -1;
+
+            const string probeMarker = "FootprintDirectionsProbed=";
+            int probeMarkerIndex = evidence.IndexOf(
+                probeMarker, StringComparison.Ordinal);
+            if (probeMarkerIndex < 0)
+                return -1;
+            int probeValueStart = probeMarkerIndex + probeMarker.Length;
+            int probeValueEnd = evidence.IndexOf(';', probeValueStart);
+            if (probeValueEnd < 0)
+                probeValueEnd = evidence.Length;
+            string[] probeCounts = evidence.Substring(
+                    probeValueStart, probeValueEnd - probeValueStart)
+                .Split('/');
+            int directionsProbed;
+            int totalDirections;
+            if (probeCounts.Length != 2
+                || !int.TryParse(probeCounts[0], NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out directionsProbed)
+                || !int.TryParse(probeCounts[1], NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out totalDirections)
+                || directionsProbed != DispatchParticipantFallbackDirections.Length
+                || totalDirections != DispatchParticipantFallbackDirections.Length)
+                return -1;
+
+            int valueStart = markerIndex + marker.Length;
+            int valueEnd = evidence.IndexOf('/', valueStart);
+            if (valueEnd < 0)
+                valueEnd = evidence.IndexOf(';', valueStart);
+            if (valueEnd < 0)
+                valueEnd = evidence.Length;
+
+            int confirmedDirections;
+            if (!int.TryParse(evidence.Substring(valueStart, valueEnd - valueStart),
+                    NumberStyles.Integer, CultureInfo.InvariantCulture,
+                    out confirmedDirections))
+                return -1;
+            return Math.Max(0, Math.Min(
+                DispatchParticipantFallbackDirections.Length,
+                confirmedDirections));
         }
 
         private bool IsFootActivityOnlySurveyCandidate(
@@ -9617,6 +12138,23 @@ namespace LSImmersiveLife
             return _locationCatalog.TryGetLocation(locationId, out location)
                 && string.Equals(location.IntendedUse, "FootActivityCandidate",
                     StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsEligibleExternalDispatchAreaCandidate(
+            LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location,
+            bool requiresVehicle)
+        {
+            if (location == null
+                || !string.Equals(location.Category, "ExternalAreaCandidate",
+                    StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            // External area records are search anchors, not actor positions.
+            // Keep them on the foot-scene path and require their authored
+            // potential foot capability; the live scene resolver still owns
+            // ground, access, footprint, occupancy, and participant checks.
+            return !requiresVehicle
+                && location.HasCapability("SupportsFootActivity", true);
         }
 
         private bool TryValidateDispatchExteriorPosition(
@@ -9663,7 +12201,8 @@ namespace LSImmersiveLife
             int minimumOpenFootprintDirections,
             out Vector3 approachPosition,
             out string evidence,
-            out string reason)
+            out string reason,
+            bool measureCompleteFootprint = false)
         {
             approachPosition = Vector3.Zero;
             evidence = string.Empty;
@@ -9706,11 +12245,12 @@ namespace LSImmersiveLife
                 else
                     lastFootprintFailure = probeFailure;
 
-                if (clearDirections >= requiredOpenDirections)
+                if (clearDirections >= requiredOpenDirections
+                    && directionsProbed < DispatchParticipantFallbackDirections.Length)
                 {
-                    minimumSatisfiedBeforeAllDirections = directionsProbed
-                        < DispatchParticipantFallbackDirections.Length;
-                    break;
+                    minimumSatisfiedBeforeAllDirections = true;
+                    if (!measureCompleteFootprint)
+                        break;
                 }
             }
 
@@ -9841,7 +12381,8 @@ namespace LSImmersiveLife
                     | GetSafePositionFlags.NotWater;
                 if (!World.GetSafePositionForPed(requested, out safe, flags))
                 {
-                    reason = "Stage=ExteriorApproachNavigation; Native=GET_SAFE_COORD_FOR_PED; Result=false";
+                    reason = ClassifyExteriorNavigationFailure(
+                        requested, "ExteriorApproachNavigation");
                     return false;
                 }
                 int safeInteriorId = Function.Call<int>(
@@ -10078,7 +12619,10 @@ namespace LSImmersiveLife
             bool allowNativeRoadNodeWhenRoadFlagFails = false,
             int maximumNodeCandidates = 1,
             float? expectedHeading = null,
-            float expectedHeadingTolerance = 180f)
+            float expectedHeadingTolerance = 180f,
+            Vector3? localPlacementAnchor = null,
+            float minimumLocalPlacementDistance = 0f,
+            float maximumLocalPlacementDistance = float.MaxValue)
         {
             roadNode = Vector3.Zero;
             heading = 0f;
@@ -10214,6 +12758,45 @@ namespace LSImmersiveLife
                             continue;
                         }
 
+                        if (localPlacementAnchor.HasValue)
+                        {
+                            float localPlacementDistance = Distance2D(
+                                candidate, localPlacementAnchor.Value);
+                            float localPlacementElevationDelta = Math.Abs(
+                                candidate.Z - localPlacementAnchor.Value.Z);
+                            if (localPlacementDistance
+                                    < Math.Max(0f, minimumLocalPlacementDistance)
+                                || localPlacementDistance
+                                    > Math.Max(0f, maximumLocalPlacementDistance)
+                                || localPlacementElevationDelta
+                                    > MovingRoadElevationTolerance)
+                            {
+                                lastFailure = "Stage=" + stage
+                                    + "; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING"
+                                    + "; Query=" + query
+                                    + "; Candidate=" + candidate
+                                    + "; CandidateOrdinal=" + candidateOrdinal
+                                    + "; CandidateCount=" + candidateCount
+                                    + "; LocalAnchor=" + localPlacementAnchor.Value
+                                    + "; LocalShift=" + localPlacementDistance.ToString(
+                                        "0.0", CultureInfo.InvariantCulture)
+                                    + "; LocalElevationDelta="
+                                    + localPlacementElevationDelta.ToString(
+                                        "0.0", CultureInfo.InvariantCulture)
+                                    + "; MaximumLocalElevationDelta="
+                                    + MovingRoadElevationTolerance.ToString(
+                                        "0.0", CultureInfo.InvariantCulture) + "m"
+                                    + "; RequiredLocalShift="
+                                    + Math.Max(0f, minimumLocalPlacementDistance).ToString(
+                                        "0.0", CultureInfo.InvariantCulture)
+                                    + "-"
+                                    + Math.Max(0f, maximumLocalPlacementDistance).ToString(
+                                        "0.0", CultureInfo.InvariantCulture)
+                                    + "m; Result=RejectedByLocalRecoveryEnvelope";
+                                continue;
+                            }
+                        }
+
                         roadNode = candidate;
                         heading = candidateHeading;
                         snapDistance = candidateDistance;
@@ -10246,7 +12829,13 @@ namespace LSImmersiveLife
             bool allowNativeRoadNodeWhenRoadFlagFails = false,
             float minimumPlayerDistance = MovingRoadMinimumPlayerDistance,
             float maximumPlayerDistance = MovingRoadMaximumPlayerDistance,
-            float[] sceneOffsets = null)
+            float[] sceneOffsets = null,
+            Vector3? localShiftAnchor = null,
+            float minimumLocalShift = 0f,
+            float maximumLocalShift = float.MaxValue,
+            float? expectedCandidateHeading = null,
+            float maximumCandidateHeadingChange = 180f,
+            bool strictRoadNodeGroundFallback = false)
         {
             stagingPosition = Vector3.Zero;
             heading = 0f;
@@ -10262,16 +12851,6 @@ namespace LSImmersiveLife
 
             try
             {
-                int anchorInteriorId = Function.Call<int>(
-                    Hash.GET_INTERIOR_AT_COORDS,
-                    catalogAnchor.X, catalogAnchor.Y, catalogAnchor.Z);
-                if (anchorInteriorId != 0)
-                {
-                    reason = "Stage=MovingRoadCatalogAnchor; Native=GET_INTERIOR_AT_COORDS; InteriorId="
-                        + anchorInteriorId + "; Result=Rejected";
-                    return false;
-                }
-
                 Vector3 roadReference;
                 float referenceHeading;
                 float referenceSnapDistance;
@@ -10291,32 +12870,76 @@ namespace LSImmersiveLife
                     return false;
                 }
 
-                Vector3 validatedReference;
-                string validatedReferenceFailure;
-                if (!TryValidateMovingRoadPoint(
-                    roadReference, "Reference", false,
-                    out validatedReference, out validatedReferenceFailure,
-                    allowNativeRoadNodeWhenRoadFlagFails))
+                int referenceInteriorId;
+                bool referenceOnRoad;
+                try
                 {
-                    reason = validatedReferenceFailure;
+                    referenceInteriorId = Function.Call<int>(
+                        Hash.GET_INTERIOR_AT_COORDS,
+                        roadReference.X, roadReference.Y, roadReference.Z);
+                    referenceOnRoad = Function.Call<bool>(
+                        Hash.IS_POINT_ON_ROAD,
+                        roadReference.X, roadReference.Y, roadReference.Z, 0);
+                }
+                catch (Exception ex)
+                {
+                    reason = "Stage=MovingRoadReference; Native=GET_INTERIOR_AT_COORDS/IS_POINT_ON_ROAD; Result=Exception:"
+                        + ex.GetType().Name;
                     return false;
                 }
+                if (referenceInteriorId != 0
+                    || (!referenceOnRoad && !allowNativeRoadNodeWhenRoadFlagFails))
+                {
+                    reason = "Stage=MovingRoadReference; Position=" + roadReference
+                        + "; InteriorId=" + referenceInteriorId
+                        + "; OnRoad=" + referenceOnRoad
+                        + "; Result=Rejected";
+                    return false;
+                }
+                // The reference node only seeds nearby road queries; it is not
+                // a vehicle placement. Ground, slope, route and occupancy
+                // requirements remain mandatory for every committed staging
+                // and route point below.
+                Vector3 validatedReference = roadReference;
 
                 float radians = referenceHeading * (float)Math.PI / 180f;
                 Vector3 forward = new Vector3(
                     (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
-                float maximumRoadNodeProbeSnapDistance = allowNativeRoadNodeWhenRoadFlagFails
-                    ? Math.Max(18f, maximumPlayerDistance)
-                    : 18f;
+                float maximumRoadNodeProbeSnapDistance;
+                float maximumRoadNodeProbeElevationDelta;
+                if (localShiftAnchor.HasValue)
+                {
+                    float maximumSceneOffset = (sceneOffsets
+                            ?? DispatchMovingRoadSceneOffsets)
+                        .Select(offset => Math.Abs(offset))
+                        .DefaultIfEmpty(0f)
+                        .Max();
+                    float maximumLocalSearchDistance = Math.Max(2f,
+                        Math.Max(0f, maximumLocalShift) + maximumSceneOffset);
+                    maximumRoadNodeProbeSnapDistance = Math.Min(
+                        DispatchMovingRoadRecoveryMaximumNodeSearchDistance,
+                        maximumLocalSearchDistance
+                            + Distance2D(catalogAnchor, localShiftAnchor.Value));
+                    // A recovery candidate must remain on the same local road
+                    // grade. Player range is not a local road-node search radius.
+                    maximumRoadNodeProbeElevationDelta = MovingRoadElevationTolerance;
+                }
+                else
+                {
+                    maximumRoadNodeProbeSnapDistance = allowNativeRoadNodeWhenRoadFlagFails
+                        ? Math.Max(18f, maximumPlayerDistance)
+                        : 18f;
+                    maximumRoadNodeProbeElevationDelta = allowNativeRoadNodeWhenRoadFlagFails
+                        ? float.MaxValue
+                        : MovingRoadElevationTolerance;
+                }
                 // Player-radius offsets are projected from a curved/graded
                 // road reference, so their Z is not a sampled ground level.
                 // The returned node is checked against its own ground and road
                 // surface below, and its connected route segment keeps the
                 // existing elevation bound.
-                float maximumRoadNodeProbeElevationDelta = allowNativeRoadNodeWhenRoadFlagFails
-                    ? float.MaxValue
-                    : MovingRoadElevationTolerance;
                 string lastFailure = "Stage=MovingRoadNode; Native=GET_CLOSEST_VEHICLE_NODE_WITH_HEADING; Result=false";
+                string collisionPendingFailure = string.Empty;
                 foreach (float offset in sceneOffsets ?? DispatchMovingRoadSceneOffsets)
                 {
                     Vector3 query = validatedReference + (forward * offset);
@@ -10335,7 +12958,13 @@ namespace LSImmersiveLife
                         out candidateNodeFailure,
                         allowNativeRoadNodeWhenRoadFlagFails,
                         allowNativeRoadNodeWhenRoadFlagFails
-                            ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                            ? MaximumPlayerRadiusRoadNodeCandidates : 1,
+                        expectedCandidateHeading,
+                        expectedCandidateHeading.HasValue
+                            ? maximumCandidateHeadingChange : 180f,
+                        localShiftAnchor,
+                        minimumLocalShift,
+                        maximumLocalShift))
                     {
                         lastFailure = candidateNodeFailure;
                         continue;
@@ -10346,9 +12975,51 @@ namespace LSImmersiveLife
                     if (!TryValidateMovingRoadPoint(
                         candidate, "VehicleNode", true,
                         out validatedCandidate, out candidateFailure,
-                        allowNativeRoadNodeWhenRoadFlagFails))
+                        allowNativeRoadNodeWhenRoadFlagFails,
+                        strictRoadNodeGroundFallback,
+                        candidateHeading))
                     {
                         lastFailure = candidateFailure;
+                        if (candidateFailure.IndexOf("CollisionRequested=true",
+                                StringComparison.OrdinalIgnoreCase) >= 0)
+                            collisionPendingFailure = candidateFailure;
+                        continue;
+                    }
+
+                    if (localShiftAnchor.HasValue)
+                    {
+                        float localShift = Distance2D(
+                            validatedCandidate, localShiftAnchor.Value);
+                        if (localShift < minimumLocalShift
+                            || localShift > maximumLocalShift)
+                        {
+                            lastFailure = "Stage=MovingRoadLocalRecoveryRange; Position="
+                                + validatedCandidate
+                                + "; Anchor=" + localShiftAnchor.Value
+                                + "; Shift=" + localShift.ToString(
+                                    "0.00", CultureInfo.InvariantCulture)
+                                + "; Required=" + minimumLocalShift.ToString(
+                                    "0.00", CultureInfo.InvariantCulture)
+                                + "-" + maximumLocalShift.ToString(
+                                    "0.00", CultureInfo.InvariantCulture)
+                                + "m; Result=Rejected";
+                            continue;
+                        }
+                    }
+                    if (expectedCandidateHeading.HasValue
+                        && GetDispatchHeadingDifferenceDegrees(
+                            candidateHeading, expectedCandidateHeading.Value)
+                            > Math.Max(0f, maximumCandidateHeadingChange))
+                    {
+                        lastFailure = "Stage=MovingRoadLocalRecoveryHeading; Position="
+                            + validatedCandidate
+                            + "; Heading=" + candidateHeading.ToString(
+                                "0.0", CultureInfo.InvariantCulture)
+                            + "; ExpectedHeading=" + expectedCandidateHeading.Value.ToString(
+                                "0.0", CultureInfo.InvariantCulture)
+                            + "; MaximumChange=" + maximumCandidateHeadingChange.ToString(
+                                "0.0", CultureInfo.InvariantCulture)
+                            + "; Result=Rejected";
                         continue;
                     }
 
@@ -10406,9 +13077,14 @@ namespace LSImmersiveLife
                     if (!TryValidateMovingRoadPoint(
                         rawRoutePosition, "RouteNode", false,
                         out validatedRoutePosition, out routeFailure,
-                        allowNativeRoadNodeWhenRoadFlagFails))
+                        allowNativeRoadNodeWhenRoadFlagFails,
+                        strictRoadNodeGroundFallback,
+                        nextHeading))
                     {
                         lastFailure = routeFailure;
+                        if (routeFailure.IndexOf("CollisionRequested=true",
+                                StringComparison.OrdinalIgnoreCase) >= 0)
+                            collisionPendingFailure = routeFailure;
                         continue;
                     }
 
@@ -10434,7 +13110,11 @@ namespace LSImmersiveLife
                     return true;
                 }
 
-                reason = lastFailure;
+                reason = !string.IsNullOrWhiteSpace(collisionPendingFailure)
+                    ? "PENDING:Stage=VehicleGroundProbe; CandidateSearchFailure="
+                        + lastFailure + "; LastGroundPending=" + collisionPendingFailure
+                        + "; Result=CollisionPending"
+                    : lastFailure;
                 return false;
             }
             catch (Exception ex)
@@ -10453,7 +13133,9 @@ namespace LSImmersiveLife
             bool checkOccupancy,
             out Vector3 validatedPosition,
             out string reason,
-            bool allowNativeRoadNodeWhenRoadFlagFails = false)
+            bool allowNativeRoadNodeWhenRoadFlagFails = false,
+            bool strictRoadNodeGroundFallback = false,
+            float? expectedRoadNodeHeading = null)
         {
             validatedPosition = candidate;
             reason = string.Empty;
@@ -10481,20 +13163,31 @@ namespace LSImmersiveLife
                     string confirmationFailure;
                     bool nativeRoadNodeConfirmed = TryGetClosestDispatchVehicleRoadNode(
                         candidate,
-                        2f,
-                        MovingRoadElevationTolerance,
+                        strictRoadNodeGroundFallback
+                            ? DispatchVehicleGroundFallbackRoadNodeSnapDistance : 2f,
+                        strictRoadNodeGroundFallback
+                            ? DispatchVehicleGroundFallbackElevationTolerance
+                            : MovingRoadElevationTolerance,
                         "MovingRoad" + stageName + "RoadNodeConfirmation",
                         out confirmedRoadNode,
                         out confirmedHeading,
                         out confirmationDistance,
                         out confirmationFailure,
-                        true)
+                        true,
+                        MaximumPlayerRadiusRoadNodeCandidates,
+                        expectedRoadNodeHeading,
+                        strictRoadNodeGroundFallback
+                            ? DispatchVehicleGroundFallbackHeadingTolerance : 180f)
                         && confirmedRoadNode != Vector3.Zero
                         && !float.IsNaN(confirmedHeading)
                         && !float.IsInfinity(confirmedHeading)
-                        && confirmationDistance <= 2f
+                        && confirmationDistance
+                            <= (strictRoadNodeGroundFallback
+                                ? DispatchVehicleGroundFallbackRoadNodeSnapDistance : 2f)
                         && Math.Abs(confirmedRoadNode.Z - candidate.Z)
-                            <= MovingRoadElevationTolerance;
+                            <= (strictRoadNodeGroundFallback
+                                ? DispatchVehicleGroundFallbackElevationTolerance
+                                : MovingRoadElevationTolerance);
                     if (!nativeRoadNodeConfirmed)
                     {
                         reason = "Stage=MovingRoad" + stageName
@@ -10547,20 +13240,31 @@ namespace LSImmersiveLife
                 && allowNativeRoadNodeWhenRoadFlagFails
                 && TryGetClosestDispatchVehicleRoadNode(
                     candidate,
-                    2f,
-                    MovingRoadElevationTolerance,
+                    strictRoadNodeGroundFallback
+                        ? DispatchVehicleGroundFallbackRoadNodeSnapDistance : 2f,
+                    strictRoadNodeGroundFallback
+                        ? DispatchVehicleGroundFallbackElevationTolerance
+                        : MovingRoadElevationTolerance,
                     "MovingRoad" + stageName + "GroundNodeConfirmation",
                     out confirmedRoadNodeForGroundFallback,
                     out confirmedRoadHeadingForGroundFallback,
                     out confirmedRoadSnapDistanceForGroundFallback,
                     out groundFallbackFailure,
-                    true)
+                    true,
+                    MaximumPlayerRadiusRoadNodeCandidates,
+                    expectedRoadNodeHeading,
+                    strictRoadNodeGroundFallback
+                        ? DispatchVehicleGroundFallbackHeadingTolerance : 180f)
                 && confirmedRoadNodeForGroundFallback != Vector3.Zero
                 && !float.IsNaN(confirmedRoadHeadingForGroundFallback)
                 && !float.IsInfinity(confirmedRoadHeadingForGroundFallback)
-                && confirmedRoadSnapDistanceForGroundFallback <= 2f
+                && confirmedRoadSnapDistanceForGroundFallback
+                    <= (strictRoadNodeGroundFallback
+                        ? DispatchVehicleGroundFallbackRoadNodeSnapDistance : 2f)
                 && Math.Abs(confirmedRoadNodeForGroundFallback.Z - candidate.Z)
-                    <= MovingRoadElevationTolerance;
+                    <= (strictRoadNodeGroundFallback
+                        ? DispatchVehicleGroundFallbackElevationTolerance
+                        : MovingRoadElevationTolerance);
             if (!groundFound && !nativeRoadSurfaceConfirmed)
             {
                 try
@@ -10621,6 +13325,7 @@ namespace LSImmersiveLife
             AmbientDispatchSceneResolution previous,
             Vector3 playerPosition,
             bool requiresVehicle,
+            bool allowUnstagedMovingRoadRecovery,
             out AmbientDispatchSceneResolution refreshed,
             out string reason)
         {
@@ -10683,6 +13388,7 @@ namespace LSImmersiveLife
 
             Vector3 validatedVehicle = previous.VehicleStagingPosition;
             Vector3 validatedRoute = previous.VehicleRoutePosition;
+            bool usedNearbyRoadRecovery = false;
             if (string.Equals(previous.VehicleStagingMode, "moving_road",
                     StringComparison.OrdinalIgnoreCase))
             {
@@ -10692,36 +13398,107 @@ namespace LSImmersiveLife
                     return false;
                 }
                 string vehicleFailure;
-                if (!TryValidateMovingRoadPoint(
+                bool vehicleReady = TryValidateMovingRoadPoint(
                     previous.VehicleStagingPosition, "VehicleNode", false,
                     out validatedVehicle, out vehicleFailure,
-                    runtimePlayerRadiusScene))
-                {
-                    reason = vehicleFailure;
-                    return false;
-                }
-                string routeFailure;
-                if (!TryValidateMovingRoadPoint(
+                    true,
+                    true,
+                    previous.VehicleHeading);
+                string routeFailure = string.Empty;
+                bool routeReady = vehicleReady && TryValidateMovingRoadPoint(
                     previous.VehicleRoutePosition, "RouteNode", false,
                     out validatedRoute, out routeFailure,
-                    runtimePlayerRadiusScene))
-                {
-                    reason = routeFailure;
-                    return false;
-                }
+                    true,
+                    true,
+                    previous.VehicleRouteHeading);
+                if (!vehicleReady && string.IsNullOrWhiteSpace(routeFailure))
+                    routeFailure = vehicleFailure;
 
-                float routeDistance = Distance2D(validatedVehicle, validatedRoute);
-                if (routeDistance < MovingRoadMinimumRouteDistance
-                    || routeDistance > MovingRoadMaximumRouteDistance
-                    || Math.Abs(validatedRoute.Z - validatedVehicle.Z)
-                        > MovingRoadElevationTolerance)
+                float routeDistance = routeReady
+                    ? Distance2D(validatedVehicle, validatedRoute) : float.MaxValue;
+                bool routeGeometryReady = routeReady
+                    && routeDistance >= MovingRoadMinimumRouteDistance
+                    && routeDistance <= MovingRoadMaximumRouteDistance
+                    && Math.Abs(validatedRoute.Z - validatedVehicle.Z)
+                        <= MovingRoadElevationTolerance;
+                if (!vehicleReady || !routeGeometryReady)
                 {
-                    reason = "Stage=MovingRoadRevalidationRoute; RouteDistance="
-                        + routeDistance.ToString("0.0", CultureInfo.InvariantCulture)
-                        + "; ElevationDelta=" + Math.Abs(validatedRoute.Z - validatedVehicle.Z)
-                            .ToString("0.0", CultureInfo.InvariantCulture)
-                        + "; Result=Rejected";
-                    return false;
+                    string failedPlanReason = !vehicleReady
+                        ? vehicleFailure
+                        : !routeReady
+                            ? routeFailure
+                            : "Stage=MovingRoadRevalidationRoute; RouteDistance="
+                                + routeDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; ElevationDelta=" + Math.Abs(
+                                    validatedRoute.Z - validatedVehicle.Z)
+                                    .ToString("0.0", CultureInfo.InvariantCulture)
+                                + "; Result=Rejected";
+                    string recoveryFailure = failedPlanReason;
+                    if (!allowUnstagedMovingRoadRecovery
+                        || !TryResolveNearbyMovingRoadVehicleStaging(
+                            previous,
+                            previous.HasVehicleStagingRecoveryAnchor
+                                && previous.VehicleStagingRecoveryAnchorPosition != Vector3.Zero
+                                ? previous.VehicleStagingRecoveryAnchorPosition
+                                : previous.VehicleStagingPosition,
+                            previous.HasSelectionAnchor
+                                && previous.SelectionAnchorPosition != Vector3.Zero
+                                ? previous.SelectionAnchorPosition : selectionAnchor,
+                            failedPlanReason,
+                            out validatedVehicle,
+                            out float recoveredHeading,
+                            out validatedRoute,
+                            out float recoveredRouteHeading,
+                            out recoveryFailure))
+                    {
+                        string rejectedPlan = allowUnstagedMovingRoadRecovery
+                            ? recoveryFailure : failedPlanReason;
+                    string rejectionContext = "; Stage=MovingRoadRevalidation"
+                        + "; EventDefinition=" + (previous.IncidentType ?? string.Empty)
+                        + "; Location=" + (previous.LocationId ?? string.Empty)
+                        + "; Point=" + (previous.PointId ?? string.Empty)
+                        + "; SelectedPosition=" + previous.VehicleStagingPosition
+                        + "; SelectionAnchor=" + selectionAnchor
+                        + "; RecoveryAnchor=" + (previous.HasVehicleStagingRecoveryAnchor
+                            ? previous.VehicleStagingRecoveryAnchorPosition.ToString()
+                            : previous.VehicleStagingPosition.ToString())
+                        + "; RoutePosition=" + previous.VehicleRoutePosition
+                        + "; PlayerPosition=" + playerPosition
+                        + "; PlayerDistance=" + playerDistance.ToString(
+                            "0.0", CultureInfo.InvariantCulture)
+                        + "; SelectionDistance=" + selectionDistance.ToString(
+                            "0.0", CultureInfo.InvariantCulture)
+                        + "; RequiredPlayerRange=" + minimumPlayerDistance.ToString(
+                            "0.0", CultureInfo.InvariantCulture)
+                        + "-" + maximumPlayerDistance.ToString(
+                            "0.0", CultureInfo.InvariantCulture);
+                        bool groundReadinessPending =
+                            (failedPlanReason ?? string.Empty).IndexOf(
+                                "CollisionRequested=true",
+                                StringComparison.OrdinalIgnoreCase) >= 0
+                            || (rejectedPlan ?? string.Empty).IndexOf(
+                                "CollisionRequested=true",
+                                StringComparison.OrdinalIgnoreCase) >= 0;
+                        reason = groundReadinessPending
+                            ? "PENDING:Stage=VehicleGroundProbe; PrimaryFailure="
+                                + failedPlanReason
+                                + (allowUnstagedMovingRoadRecovery
+                                    ? "; NearbyRecovery=" + rejectedPlan : string.Empty)
+                                + rejectionContext
+                                + "; Result=CollisionPending"
+                            : rejectedPlan + rejectionContext;
+                        return false;
+                    }
+
+                    if (!previous.HasVehicleStagingRecoveryAnchor)
+                    {
+                        previous.VehicleStagingRecoveryAnchorPosition =
+                            previous.VehicleStagingPosition;
+                        previous.HasVehicleStagingRecoveryAnchor = true;
+                    }
+                    previous.VehicleHeading = recoveredHeading;
+                    previous.VehicleRouteHeading = recoveredRouteHeading;
+                    usedNearbyRoadRecovery = true;
                 }
             }
             else if (runtimePlayerRadiusScene)
@@ -10817,6 +13594,13 @@ namespace LSImmersiveLife
 
             previous.VehicleStagingPosition = validatedVehicle;
             previous.VehicleRoutePosition = validatedRoute;
+            if (usedNearbyRoadRecovery)
+            {
+                previous.SceneCenter = validatedVehicle;
+                previous.ActorPosition = validatedVehicle;
+                previous.Heading = previous.VehicleHeading;
+                playerDistance = Distance2D(validatedVehicle, playerPosition);
+            }
             refreshed = previous;
             reason = string.Empty;
             Log("AMBIENT_WORLD_VEHICLE_SCENE_REVALIDATED",
@@ -10826,9 +13610,201 @@ namespace LSImmersiveLife
                 + "; VehicleNode=" + validatedVehicle
                 + "; RouteNode=" + (previous.HasVehicleRoute
                     ? validatedRoute.ToString() : "NotRequired")
+                + "; LocalNearbyRecovery=" + usedNearbyRoadRecovery
                 + "; PlayerDistance=" + playerDistance.ToString("0.0", CultureInfo.InvariantCulture)
                 + "; Native=IS_POINT_ON_ROAD/GET_GROUND_Z_AND_NORMAL_FOR_3D_COORD"
                 + "; OccupancyDeferredToVehicleCreation=true");
+            return true;
+        }
+
+        private bool TryResolveNearbyMovingRoadVehicleStaging(
+            AmbientDispatchSceneResolution scene,
+            Vector3 recoveryAnchor,
+            Vector3 selectionAnchor,
+            string primaryFailure,
+            out Vector3 stagingPosition,
+            out float heading,
+            out Vector3 routePosition,
+            out float routeHeading,
+            out string reason)
+        {
+            stagingPosition = Vector3.Zero;
+            heading = 0f;
+            routePosition = Vector3.Zero;
+            routeHeading = 0f;
+            reason = "Stage=MovingRoadLocalRecovery; Result=NoSafeCandidate";
+            if (scene == null || scene.Area == null
+                || !scene.HasVehicleStagingPosition
+                || !string.Equals(scene.VehicleStagingMode, "moving_road",
+                    StringComparison.OrdinalIgnoreCase)
+                || recoveryAnchor == Vector3.Zero
+                || selectionAnchor == Vector3.Zero
+                || !scene.Area.IsEligibleFor(selectionAnchor))
+            {
+                reason = "Stage=MovingRoadLocalRecovery; Location="
+                    + (scene == null ? string.Empty : scene.LocationId)
+                    + "; Result=CommittedAreaUnavailable";
+                return false;
+            }
+
+            float minimumPlayerDistance = 0f;
+            float maximumPlayerDistance = MovingRoadMaximumPlayerDistance;
+            if (scene.HasSelectionAnchor)
+            {
+                minimumPlayerDistance = scene.MinimumPlayerDistance;
+                maximumPlayerDistance = scene.MaximumPlayerDistance;
+            }
+            else if (string.Equals(scene.LocationCategory, "PlayerRadiusRoadNode",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                GetPlayerRadiusFallbackDistanceRange(
+                    out minimumPlayerDistance, out maximumPlayerDistance);
+            }
+
+            string candidateFailure;
+            bool resolved = TryResolveMovingRoadVehicleStaging(
+                recoveryAnchor,
+                scene.Area,
+                selectionAnchor,
+                false,
+                out stagingPosition,
+                out heading,
+                out routePosition,
+                out routeHeading,
+                out candidateFailure,
+                true,
+                minimumPlayerDistance,
+                maximumPlayerDistance,
+                DispatchMovingRoadRecoveryOffsets,
+                recoveryAnchor,
+                DispatchMovingRoadRecoveryMinimumShift,
+                DispatchMovingRoadRecoveryMaximumShift,
+                scene.VehicleHeading,
+                75f,
+                true);
+            string longitudinalFailure = candidateFailure;
+            int localProbeCount = DispatchMovingRoadRecoveryOffsets.Length;
+            string recoveryPass = "Longitudinal";
+            var lateralFailures = new List<string>();
+            if (!resolved
+                && !float.IsNaN(scene.VehicleHeading)
+                && !float.IsInfinity(scene.VehicleHeading))
+            {
+                float radians = scene.VehicleHeading * (float)Math.PI / 180f;
+                Vector3 right = new Vector3(
+                    (float)Math.Cos(radians), (float)-Math.Sin(radians), 0f);
+                foreach (float lateralOffset in DispatchMovingRoadRecoveryLateralOffsets)
+                {
+                    Vector3 lateralAnchor = recoveryAnchor + (right * lateralOffset);
+                    string lateralFailure;
+                    localProbeCount += DispatchMovingRoadRecoveryLateralSceneOffsets.Length;
+                    if (TryResolveMovingRoadVehicleStaging(
+                        lateralAnchor,
+                        scene.Area,
+                        selectionAnchor,
+                        false,
+                        out stagingPosition,
+                        out heading,
+                        out routePosition,
+                        out routeHeading,
+                        out lateralFailure,
+                        true,
+                        minimumPlayerDistance,
+                        maximumPlayerDistance,
+                        DispatchMovingRoadRecoveryLateralSceneOffsets,
+                        recoveryAnchor,
+                        DispatchMovingRoadRecoveryMinimumShift,
+                        DispatchMovingRoadRecoveryMaximumShift,
+                        scene.VehicleHeading,
+                        75f,
+                        true))
+                    {
+                        resolved = true;
+                        recoveryPass = "Lateral"
+                            + (lateralOffset > 0f ? "+" : string.Empty)
+                            + lateralOffset.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "m";
+                        break;
+                    }
+
+                    lateralFailures.Add("Offset="
+                        + lateralOffset.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "m; Reason=" + (lateralFailure ?? string.Empty));
+                }
+            }
+            else if (!resolved)
+                lateralFailures.Add(
+                    "Stage=MovingRoadLocalRecoveryLateral; Result=InvalidCommittedHeading");
+
+            if (!resolved)
+            {
+                bool collisionStillPending = (primaryFailure ?? string.Empty).IndexOf(
+                        "CollisionRequested=true", StringComparison.OrdinalIgnoreCase) >= 0
+                    || (candidateFailure ?? string.Empty).IndexOf(
+                        "CollisionRequested=true", StringComparison.OrdinalIgnoreCase) >= 0
+                    || lateralFailures.Any(value => value.IndexOf(
+                        "CollisionRequested=true", StringComparison.OrdinalIgnoreCase) >= 0);
+                string boundedRecoveryFailure = "LongitudinalFailure="
+                    + (longitudinalFailure ?? string.Empty)
+                    + "; LateralFailures=" + (lateralFailures.Count == 0
+                        ? "None" : string.Join(" || ", lateralFailures));
+                reason = collisionStillPending
+                    ? "PENDING:Stage=VehicleGroundProbe; PrimaryFailure="
+                        + (primaryFailure ?? string.Empty)
+                        + "; LocalCandidateCount=" + localProbeCount
+                        + "; MaximumLocalShift="
+                        + DispatchMovingRoadRecoveryMaximumShift.ToString(
+                            "0.0", CultureInfo.InvariantCulture) + "m"
+                        + "; LocalRecoveryFailure=" + boundedRecoveryFailure
+                        + "; Result=CollisionPending"
+                    : "Stage=MovingRoadLocalRecovery; PrimaryFailure="
+                        + (primaryFailure ?? string.Empty)
+                        + "; LocalCandidateCount=" + localProbeCount
+                        + "; MaximumLocalShift="
+                        + DispatchMovingRoadRecoveryMaximumShift.ToString(
+                            "0.0", CultureInfo.InvariantCulture) + "m"
+                        + "; LocalRecoveryFailure=" + boundedRecoveryFailure
+                        + "; Result=Rejected";
+                return false;
+            }
+
+            float localShift = Distance2D(
+                stagingPosition, recoveryAnchor);
+            if (localShift < DispatchMovingRoadRecoveryMinimumShift
+                || localShift > DispatchMovingRoadRecoveryMaximumShift)
+            {
+                reason = "Stage=MovingRoadLocalRecoveryRange; Original="
+                    + recoveryAnchor + "; Resolved=" + stagingPosition
+                    + "; Shift=" + localShift.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; Maximum=" + DispatchMovingRoadRecoveryMaximumShift.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "m; Result=Rejected";
+                return false;
+            }
+
+            Log("AMBIENT_WORLD_DISPATCH_VEHICLE_STAGING_RECOVERED",
+                "OccurrencePlanLocation=" + (scene.LocationId ?? string.Empty)
+                + "; Point=" + (scene.PointId ?? string.Empty)
+                + "; OriginalVehicleNode=" + recoveryAnchor
+                + "; RecoveredVehicleNode=" + stagingPosition
+                + "; Shift=" + localShift.ToString("0.00", CultureInfo.InvariantCulture)
+                + "; Heading=" + heading.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; RouteNode=" + routePosition
+                + "; RecoveryPass=" + recoveryPass
+                + "; LocalProbeCount=" + localProbeCount
+                + "; LongitudinalFailure=" + (longitudinalFailure ?? string.Empty)
+                + "; PriorLateralFailures=" + (lateralFailures.Count == 0
+                    ? "None" : string.Join(" || ", lateralFailures))
+                + "; PlayerDistance=" + Distance2D(
+                    stagingPosition, selectionAnchor).ToString(
+                        "0.0", CultureInfo.InvariantCulture)
+                + "; SelectionRange="
+                + minimumPlayerDistance.ToString("0.0", CultureInfo.InvariantCulture)
+                + "-" + maximumPlayerDistance.ToString(
+                    "0.0", CultureInfo.InvariantCulture) + "m"
+                + "; GroundRoadExteriorNavigationAndOccupancyValidated=true"
+                + "; SameLocationIdentityRetained=true");
+            reason = string.Empty;
             return true;
         }
 
@@ -10901,6 +13877,93 @@ namespace LSImmersiveLife
             return false;
         }
 
+        internal bool TryValidateDispatchAdditionalMovingRoadVehiclePosition(
+            AmbientDispatchSceneResolution scene,
+            Vector3 plannedPosition,
+            Vector3 actualPosition,
+            out Vector3 validatedPosition,
+            out string evidence,
+            out string reason)
+        {
+            validatedPosition = Vector3.Zero;
+            evidence = string.Empty;
+            reason = string.Empty;
+            if (scene == null || !scene.HasVehicleStagingPosition
+                || !string.Equals(scene.VehicleStagingMode, "moving_road",
+                    StringComparison.OrdinalIgnoreCase)
+                || plannedPosition == Vector3.Zero || actualPosition == Vector3.Zero)
+            {
+                reason = "Stage=AdditionalVehicleSceneIdentity; Result=MissingMovingRoadPlan";
+                return false;
+            }
+
+            float plannedSeparation = Distance2D(
+                plannedPosition, scene.VehicleStagingPosition);
+            float actualSeparation = Distance2D(
+                actualPosition, scene.VehicleStagingPosition);
+            float placementDrift = Distance2D(actualPosition, plannedPosition);
+            if (float.IsNaN(plannedSeparation) || float.IsInfinity(plannedSeparation)
+                || float.IsNaN(actualSeparation) || float.IsInfinity(actualSeparation)
+                || float.IsNaN(placementDrift) || float.IsInfinity(placementDrift)
+                || plannedSeparation < 18f || plannedSeparation > 60f
+                || actualSeparation < 18f || actualSeparation > 60f
+                || placementDrift > 6f)
+            {
+                reason = "Stage=AdditionalVehicleSceneRange; PlannedSeparation="
+                    + plannedSeparation.ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; ActualSeparation=" + actualSeparation.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; PlacementDrift=" + placementDrift.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; RequiredSeparation=18-60m; MaximumPlacementDrift=6m"
+                    + "; Result=Rejected";
+                return false;
+            }
+
+            Vector3 roadPosition;
+            string roadFailure;
+            bool allowNativeRoadNodeWhenRoadFlagFails = string.Equals(
+                scene.LocationCategory, "PlayerRadiusRoadNode",
+                StringComparison.OrdinalIgnoreCase);
+            if (!TryValidateMovingRoadPoint(
+                actualPosition,
+                "AdditionalVehicleRevalidation",
+                false,
+                out roadPosition,
+                out roadFailure,
+                allowNativeRoadNodeWhenRoadFlagFails))
+            {
+                reason = roadFailure;
+                return false;
+            }
+
+            if (Math.Abs(roadPosition.Z - scene.VehicleStagingPosition.Z)
+                > MovingRoadElevationTolerance)
+            {
+                reason = "Stage=AdditionalVehicleSceneElevation; Primary="
+                    + scene.VehicleStagingPosition
+                    + "; Secondary=" + roadPosition
+                    + "; ElevationDelta=" + Math.Abs(
+                        roadPosition.Z - scene.VehicleStagingPosition.Z).ToString(
+                            "0.00", CultureInfo.InvariantCulture)
+                    + "; Maximum=" + MovingRoadElevationTolerance.ToString(
+                        "0.00", CultureInfo.InvariantCulture)
+                    + "; Result=Rejected";
+                return false;
+            }
+
+            validatedPosition = roadPosition;
+            evidence = "PlannedPosition=" + plannedPosition
+                + "; ActualPosition=" + actualPosition
+                + "; ValidatedRoadPosition=" + roadPosition
+                + "; PrimaryVehicleNode=" + scene.VehicleStagingPosition
+                + "; Separation=" + actualSeparation.ToString(
+                    "0.00", CultureInfo.InvariantCulture)
+                + "; SameMovingRoadSurface=true"
+                + "; GroundSlopeAndInteriorRevalidated=true";
+            return true;
+        }
+
         private bool TryResolveAdditionalMovingRoadVehicleStaging(
             AmbientDispatchSceneResolution scene,
             out Vector3 stagingPosition,
@@ -10921,6 +13984,7 @@ namespace LSImmersiveLife
                 (float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
             float[] offsets = { 30f, -30f, 45f, -45f };
             string lastFailure = reason;
+            string collisionPendingFailure = string.Empty;
             for (int index = 0; index < offsets.Length; index++)
             {
                 Vector3 query = scene.VehicleStagingPosition + (forward * offsets[index]);
@@ -10937,9 +14001,8 @@ namespace LSImmersiveLife
                     out candidateHeading,
                     out snapDistance,
                     out candidateNodeFailure,
-                    allowNativeRoadNodeWhenRoadFlagFails,
-                    allowNativeRoadNodeWhenRoadFlagFails
-                        ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                    true,
+                    MaximumPlayerRadiusRoadNodeCandidates))
                 {
                     lastFailure = candidateNodeFailure;
                     continue;
@@ -10949,9 +14012,14 @@ namespace LSImmersiveLife
                 string candidateFailure;
                 if (!TryValidateMovingRoadPoint(rawCandidate, "AdditionalVehicleNode",
                     true, out candidate, out candidateFailure,
-                    allowNativeRoadNodeWhenRoadFlagFails))
+                    true,
+                    true,
+                    candidateHeading))
                 {
                     lastFailure = candidateFailure;
+                    if (candidateFailure.IndexOf("CollisionRequested=true",
+                            StringComparison.OrdinalIgnoreCase) >= 0)
+                        collisionPendingFailure = candidateFailure;
                     continue;
                 }
                 float vehicleSeparation = Distance2D(
@@ -10991,9 +14059,10 @@ namespace LSImmersiveLife
                     out routeHeading,
                     out routeSnapDistance,
                     out routeNodeFailure,
-                    allowNativeRoadNodeWhenRoadFlagFails,
-                    allowNativeRoadNodeWhenRoadFlagFails
-                        ? MaximumPlayerRadiusRoadNodeCandidates : 1))
+                    true,
+                    MaximumPlayerRadiusRoadNodeCandidates,
+                    candidateHeading,
+                    DispatchVehicleGroundFallbackHeadingTolerance))
                 {
                     lastFailure = routeNodeFailure;
                     continue;
@@ -11002,9 +14071,14 @@ namespace LSImmersiveLife
                 string routeFailure;
                 if (!TryValidateMovingRoadPoint(rawRoute, "AdditionalVehicleRouteNode",
                     false, out validatedRoute, out routeFailure,
-                    allowNativeRoadNodeWhenRoadFlagFails))
+                    true,
+                    true,
+                    routeHeading))
                 {
                     lastFailure = routeFailure;
+                    if (routeFailure.IndexOf("CollisionRequested=true",
+                            StringComparison.OrdinalIgnoreCase) >= 0)
+                        collisionPendingFailure = routeFailure;
                     continue;
                 }
                 float routeDistance = Distance2D(candidate, validatedRoute);
@@ -11026,7 +14100,11 @@ namespace LSImmersiveLife
                 return true;
             }
 
-            reason = lastFailure;
+            reason = !string.IsNullOrWhiteSpace(collisionPendingFailure)
+                ? "PENDING:Status=CollisionPending; Stage=MovingRoadAdditionalVehicleRevalidation; CandidateOffsets="
+                    + offsets.Length + "; LastFailure=" + lastFailure
+                    + "; LastGroundPending=" + collisionPendingFailure
+                : lastFailure;
             return false;
         }
 
@@ -11550,6 +14628,8 @@ namespace LSImmersiveLife
             LSImmersiveLocationCatalog.LSImmersiveLocationInteriorAccessPair pair,
             Vector3 playerPosition,
             int playerInteriorId,
+            float minimumPlayerDistance,
+            float maximumPlayerDistance,
             out int mappedLiveInteriorId,
             out string nativeResult)
         {
@@ -11564,11 +14644,15 @@ namespace LSImmersiveLife
                     pair, playerInteriorId, playerPosition,
                     out mappedLiveInteriorId, out nativeResult);
 
-            float distance = Math.Min(
-                Distance2D(pair.OutsidePoint.Position, playerPosition),
-                Distance2D(pair.InsidePoint.Position, playerPosition));
-            return distance
-                <= LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance;
+            // Match the scene resolver's outside-side selection anchor and
+            // authored event distance window. Eligibility must not advertise
+            // an interior that resolution will later reject at another radius.
+            float distance = Distance2D(pair.OutsidePoint.Position, playerPosition);
+            float minimum = Math.Max(0f, minimumPlayerDistance);
+            float maximum = Math.Max(minimum, maximumPlayerDistance);
+            return distance >= minimum
+                && distance <= maximum
+                && distance <= LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance;
         }
 
         private bool TryFindInsideOnlyInteriorPoint(
@@ -12102,13 +15186,40 @@ namespace LSImmersiveLife
                 excludedLocationIds);
         }
 
+        internal bool HasAuthoredCompatibleMappedInteriorDispatchCatalogLocation(
+            LSPDDispatchEventDefinition definition,
+            out string reason,
+            ISet<string> excludedLocationIds = null)
+        {
+            if (definition == null
+                || (!definition.RequiresMappedInterior
+                    && string.IsNullOrWhiteSpace(definition.InteriorLocationId)))
+            {
+                reason = "Stage=CatalogAvailability; FirstRejectedGate=NotMappedInteriorDefinition";
+                return false;
+            }
+
+            // Candidate discovery may inspect compatible authored interior
+            // access records anywhere in the catalog. The selected candidate
+            // still passes through the nearby resolver and physical preflight.
+            return HasNearbyCompatibleDispatchCatalogLocation(
+                definition,
+                Vector3.Zero,
+                0,
+                false,
+                out reason,
+                excludedLocationIds,
+                requirePlayerRange: false);
+        }
+
         internal bool HasNearbyCompatibleDispatchCatalogLocation(
             LSPDDispatchEventDefinition definition,
             Vector3 playerPosition,
             int playerInteriorId,
             bool playerInteriorIdAvailable,
             out string reason,
-            ISet<string> excludedLocationIds = null)
+            ISet<string> excludedLocationIds = null,
+            bool requirePlayerRange = true)
         {
             reason = string.Empty;
             if (definition == null
@@ -12120,7 +15231,7 @@ namespace LSImmersiveLife
 
             bool interiorDefinition = definition.RequiresMappedInterior
                 || !string.IsNullOrWhiteSpace(definition.InteriorLocationId);
-            if (interiorDefinition && !playerInteriorIdAvailable)
+            if (interiorDefinition && requirePlayerRange && !playerInteriorIdAvailable)
             {
                 reason = "Stage=PlayerInteriorIdentity; FirstRejectedGate=PlayerInteriorNativeUnavailable";
                 return false;
@@ -12175,12 +15286,15 @@ namespace LSImmersiveLife
                         continue;
                     catalogIdentityEligiblePairCount++;
 
-                    int mappedLiveInteriorId;
-                    string nativeResult;
-                    bool pairEligible = IsDispatchInteriorPairWithinPlayerRange(
-                        pair, playerPosition, playerInteriorId,
-                        out mappedLiveInteriorId, out nativeResult);
-                    if (playerInteriorId != 0)
+                    int mappedLiveInteriorId = 0;
+                    string nativeResult = "CatalogOnlyRangeCheckSkipped";
+                    bool pairEligible = !requirePlayerRange
+                        || IsDispatchInteriorPairWithinPlayerRange(
+                            pair, playerPosition, playerInteriorId,
+                            definition.MinimumPlayerDistance,
+                            definition.MaximumPlayerDistance,
+                            out mappedLiveInteriorId, out nativeResult);
+                    if (requirePlayerRange && playerInteriorId != 0)
                     {
                         liveInteriorIdentityChecks++;
                         if (firstMappedInsideLiveId == int.MinValue)
@@ -12195,7 +15309,7 @@ namespace LSImmersiveLife
                         return true;
                 }
 
-                if (playerInteriorId != 0
+                if (requirePlayerRange && playerInteriorId != 0
                     && !definition.RequiresVehicle
                     && !definition.VehicleStagingRequired)
                 {
@@ -12240,13 +15354,15 @@ namespace LSImmersiveLife
                             ? "RequiredPhysicalType"
                             : incidentEligiblePairCount == 0
                                 ? "IncidentCompatibility"
-                                : contextEligiblePairCount == 0
+                    : contextEligiblePairCount == 0
                                     ? "LocationContext"
                                     : catalogIdentityEligiblePairCount == 0
                                             ? "CatalogInteriorReference"
-                                        : playerInteriorId != 0
+                                        : requirePlayerRange && playerInteriorId != 0
                                             ? "LiveInteriorIdentity"
-                                            : "PlayerDistance";
+                                            : requirePlayerRange
+                                                ? "PlayerDistance"
+                                                : "NoCompatibleAuthoredPair";
                 reason = "Stage=CatalogEligibility; FirstRejectedGate=" + firstRejectedGate
                     + "; Location=" + definition.InteriorLocationId
                     + "; RequiredPhysicalType=" + (definition.RequiredPhysicalType ?? string.Empty)
@@ -12321,12 +15437,15 @@ namespace LSImmersiveLife
                     contextEligiblePairCount++;
                     catalogIdentityEligiblePairCount++;
 
-                    int mappedLiveInteriorId;
-                    string nativeResult;
-                    bool pairEligible = IsDispatchInteriorPairWithinPlayerRange(
-                        pair, playerPosition, playerInteriorId,
-                        out mappedLiveInteriorId, out nativeResult);
-                    if (playerInteriorId != 0)
+                    int mappedLiveInteriorId = 0;
+                    string nativeResult = "CatalogOnlyRangeCheckSkipped";
+                    bool pairEligible = !requirePlayerRange
+                        || IsDispatchInteriorPairWithinPlayerRange(
+                            pair, playerPosition, playerInteriorId,
+                            definition.MinimumPlayerDistance,
+                            definition.MaximumPlayerDistance,
+                            out mappedLiveInteriorId, out nativeResult);
+                    if (requirePlayerRange && playerInteriorId != 0)
                     {
                         liveInteriorIdentityChecks++;
                         if (firstMappedInsideLiveId == int.MinValue)
@@ -12341,7 +15460,7 @@ namespace LSImmersiveLife
                         return true;
                 }
 
-                if (playerInteriorId != 0
+                if (requirePlayerRange && playerInteriorId != 0
                     && !definition.RequiresVehicle
                     && !definition.VehicleStagingRequired)
                 {
@@ -12388,9 +15507,11 @@ namespace LSImmersiveLife
                                 ? "IncidentCompatibility"
                                 : contextEligiblePairCount == 0
                             ? "LocationContext"
-                            : playerInteriorId != 0
+                            : requirePlayerRange && playerInteriorId != 0
                                 ? "LiveInteriorIdentity"
-                                : "PlayerDistance";
+                                : requirePlayerRange
+                                    ? "PlayerDistance"
+                                    : "NoCompatibleAuthoredPair";
                 reason = "Stage=CatalogEligibility; FirstRejectedGate=" + firstRejectedGate
                     + "; RequiredPhysicalType=" + (definition.RequiredPhysicalType ?? string.Empty)
                     + "; RequiredContext=" + (definition.LocationContext ?? string.Empty)
@@ -12415,7 +15536,8 @@ namespace LSImmersiveLife
 
             IEnumerable<LSImmersiveLocationCatalog.LSImmersiveLocationDefinition> locations =
                 _locationCatalog.FindByCategory("SurveyedCandidate").Concat(
-                    _locationCatalog.FindByCategory("AreaCandidate"));
+                    _locationCatalog.FindByCategory("AreaCandidate")).Concat(
+                    _locationCatalog.FindByCategory("ExternalAreaCandidate"));
             bool requiresVehicleScene = definition.RequiresVehicle
                 || definition.VehicleStagingRequired;
             foreach (LSImmersiveLocationCatalog.LSImmersiveLocationDefinition location in locations)
@@ -12423,6 +15545,8 @@ namespace LSImmersiveLife
                 if ((excludedLocationIds != null
                         && excludedLocationIds.Contains(location.Id))
                     || IsRejectedSurveyRecord(location)
+                    || !IsEligibleExternalDispatchAreaCandidate(
+                        location, requiresVehicleScene)
                     || !IsCompatibleWithIncident(location, definition.IncidentType)
                     || (requiresVehicleScene
                         && string.Equals(location.Category, "SurveyedCandidate",
@@ -12440,9 +15564,11 @@ namespace LSImmersiveLife
                 foreach (LSImmersiveLocationCatalog.LSImmersiveLocationPoint point
                     in location.FindPoints(pointRole, false))
                 {
+                    float playerPointDistance = Distance2D(point.Position, playerPosition);
                     if (HasObservedNonZeroInterior(point.InteriorId)
-                        || Distance2D(point.Position, playerPosition)
-                            > LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance)
+                        || playerPointDistance < definition.MinimumPlayerDistance
+                        || playerPointDistance > Math.Min(definition.MaximumPlayerDistance,
+                            LSPDDispatchLocationDefinition.NearbyCatalogFallbackMaximumDistance))
                         continue;
                     return true;
                 }
@@ -12824,18 +15950,34 @@ namespace LSImmersiveLife
                 Vector3 placed = suspect.Position;
                 float horizontalDrift = Distance2D(placed, preferredPosition);
                 float verticalDrift = Math.Abs(placed.Z - preferredPosition.Z);
-                int entityInteriorId = Function.Call<int>(Hash.GET_INTERIOR_FROM_ENTITY, suspect);
+                int entityInteriorId = 0;
+                bool entityInteriorAvailable = false;
+                try
+                {
+                    entityInteriorId = Function.Call<int>(
+                        Hash.GET_INTERIOR_FROM_ENTITY, suspect);
+                    entityInteriorAvailable = true;
+                }
+                catch
+                {
+                    // A coordinate-verified actor is retained for AmbientWorld's
+                    // bounded entity-registration preflight when this native is
+                    // temporarily unavailable.
+                }
                 int placedInteriorId = Function.Call<int>(Hash.GET_INTERIOR_AT_COORDS,
                     placed.X, placed.Y, placed.Z);
                 if (horizontalDrift > 0.75f || verticalDrift > 1.0f
-                    || entityInteriorId != expectedInteriorId
+                    || (entityInteriorAvailable && entityInteriorId != 0
+                        && entityInteriorId != expectedInteriorId)
                     || placedInteriorId != expectedInteriorId)
                 {
                     reason = "Stage=SuspectPlacementRevalidation; Preferred=" + preferredPosition
                         + "; Placed=" + placed
                         + "; HorizontalDrift=" + horizontalDrift.ToString("0.00", CultureInfo.InvariantCulture)
                         + "; VerticalDrift=" + verticalDrift.ToString("0.00", CultureInfo.InvariantCulture)
-                        + "; EntityInteriorId=" + entityInteriorId
+                        + "; EntityInteriorId=" + (entityInteriorAvailable
+                            ? entityInteriorId.ToString(CultureInfo.InvariantCulture)
+                            : "Unavailable")
                         + "; CoordinateInteriorId=" + placedInteriorId
                         + "; ExpectedLiveInteriorId=" + expectedInteriorId + "; Result=Rejected";
                     suspect.Delete();
@@ -12848,11 +15990,36 @@ namespace LSImmersiveLife
                 suspect.IsPersistent = true;
                 suspect.BlockPermanentEvents = true;
                 suspect.IsPositionFrozen = true;
+                int roomKey = 0;
+                bool roomKeyAvailable = false;
+                try
+                {
+                    roomKey = Function.Call<int>(Hash.GET_ROOM_KEY_FROM_ENTITY, suspect);
+                    roomKeyAvailable = true;
+                }
+                catch
+                {
+                    // The final AmbientWorld preflight keeps unavailable room
+                    // registration pending and does not infer it from coordinates.
+                }
                 Log("AMBIENT_WORLD_DISPATCH_SCENE_SUSPECT_CREATED",
                     "Incident=" + incidentId + "; Ped=" + suspect.Handle
                     + "; Model=" + model.Hash + "; Position=" + suspect.Position
                     + "; CatalogInteriorId=" + scene.CatalogInteriorId
                     + "; LiveInteriorId=" + expectedInteriorId
+                    + "; EntityInteriorId=" + (entityInteriorAvailable
+                        ? entityInteriorId.ToString(CultureInfo.InvariantCulture)
+                        : "Unavailable")
+                    + "; CoordinateInteriorId=" + placedInteriorId
+                    + "; RoomKey=" + (roomKeyAvailable
+                        ? roomKey.ToString(CultureInfo.InvariantCulture) : "Unavailable")
+                    + "; ActorInteriorRegistration="
+                    + (!scene.IsInteriorScene
+                        ? "NotApplicable"
+                        : entityInteriorAvailable
+                            && entityInteriorId == expectedInteriorId
+                            && roomKeyAvailable && roomKey != 0
+                                ? "Resolved" : "PendingFinalAmbientWorldValidation")
                     + "; HiddenUntilAcceptance=true; Owner=AmbientWorldStaging");
                 reason = string.Empty;
                 return true;
@@ -12888,16 +16055,89 @@ namespace LSImmersiveLife
         {
             if (incident == null || string.IsNullOrEmpty(incident.PreparedActivity)) return true;
             string action = incident.PreparedActivity;
-            if ((action == "ramming" || action == "driver_assault") && !PrepareDispatchRammingTarget(incident)) return false;
+            if (!PrepareDispatchCivilianActivityResources(incident)) return false;
+            if (action == "ramming" && !PrepareDispatchRammingTarget(incident)) return false;
+            if (action == "driver_assault" && !PrepareDispatchRammingTarget(incident)) return false;
             if ((action == "exchange" || action == "theft") && !PrepareDispatchExchangeProp(incident)) return false;
+            if (action == "gathering"
+                && string.Equals(incident.SceneBehavior, "paired_meeting",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                List<Ped> meetingSuspects = (incident.Suspects ?? new List<Ped>())
+                    .Concat(new[] { incident.Suspect })
+                    .Where(value => value != null && value.Exists()
+                        && !value.IsDead && value.Health > 0)
+                    .GroupBy(value => value.Handle)
+                    .Select(group => group.First())
+                    .Take(2)
+                    .ToList();
+                if (meetingSuspects.Count < 2) return false;
+                string meetingReason;
+                return TryPrepareDispatchPairAnimation(
+                    incident, meetingSuspects[0], meetingSuspects[1], out meetingReason)
+                    == AmbientDispatchAnimationStartResult.Started;
+            }
             if (action == "exchange")
                 return LSImmersiveDictionaryAnimation.RequestDispatchAction("exchange_giver")
                     & LSImmersiveDictionaryAnimation.RequestDispatchAction("exchange_receiver");
             if (action == "theft") return LSImmersiveDictionaryAnimation.RequestDispatchAction("exchange_giver");
             if (new[] { "camera", "intoxicated", "lying" }.Contains(action))
                 return LSImmersiveDictionaryAnimation.RequestDispatchAction(action);
-            return LSImmersiveDictionaryAnimation.RequestDispatchAction("conversation")
-                & LSImmersiveDictionaryAnimation.RequestDispatchAction("cower");
+
+            bool nativeActivity = action == "driving_fast" || action == "driving_slow"
+                || action == "ramming" || action == "driver_assault"
+                || action == "murder" || action == "threat"
+                || action == "assault" || action == "shooting"
+                || action == "stalking";
+            if (!nativeActivity)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_ACTIVITY_UNMAPPED",
+                    "Occurrence=" + incident.Id + "; Activity=" + action
+                    + "; Stage=PreparedActivityResources; GenericFallback=false"
+                    + "; Owner=AmbientWorld");
+                return false;
+            }
+
+            bool cowerRoleRequired = incident.MinimumVictims > 0
+                || incident.MinimumSceneParticipants > 0;
+            if (cowerRoleRequired && (action == "driving_fast"
+                || action == "driving_slow" || action == "ramming"
+                || action == "driver_assault" || action == "threat"
+                || action == "assault" || action == "shooting"))
+                return LSImmersiveDictionaryAnimation.RequestDispatchAction("cower");
+            return true;
+        }
+
+        private static bool PrepareDispatchCivilianActivityResources(
+            LSPDDispatchEvent incident)
+        {
+            if (incident == null)
+                return true;
+
+            int stagedCivilianCount = (incident.Victim != null ? 1 : 0)
+                + (incident.AdditionalParticipants == null
+                    ? 0 : incident.AdditionalParticipants.Count);
+            int requiredCivilianCount = Math.Max(
+                0, incident.MinimumVictims + incident.MinimumSceneParticipants);
+            int roleCount = Math.Max(stagedCivilianCount, requiredCivilianCount);
+            bool needsHandsUp = false;
+            bool needsCower = false;
+            for (int index = 0; index < roleCount; index++)
+            {
+                string role = CivilianActivityRole(incident, index);
+                needsHandsUp |= string.Equals(
+                    role, "hands_up", StringComparison.OrdinalIgnoreCase);
+                needsCower |= string.Equals(
+                    role, "cower", StringComparison.OrdinalIgnoreCase);
+            }
+
+            if (needsCower
+                && !LSImmersiveDictionaryAnimation.RequestDispatchAction("cower"))
+                return false;
+            if (needsHandsUp
+                && !LSImmersiveDictionaryAnimation.RequestDispatchAction("surrender"))
+                return false;
+            return true;
         }
 
         internal bool MaintainPreparedDispatchActivity(LSPDDispatchEvent incident, DateTime now, out string reason)
@@ -12943,6 +16183,13 @@ namespace LSImmersiveLife
             if (incident == null || string.IsNullOrEmpty(incident.PreparedActivity)) return true;
             if (!incident.OwnedByDispatch || incident.HasConvoyCustodyHandoff) return true;
             bool acceptedOccurrence = IsAcceptedDispatchActivity(incident);
+            if (incident.PreparedActivityRecoveryExhausted && !acceptedOccurrence)
+            {
+                reason = "FAILED:Scene activity did not receive physical confirmation "
+                    + "after bounded recovery.";
+                return false;
+            }
+            bool allowTaskRecovery = !incident.PreparedActivityRecoveryExhausted;
             if (now < incident.PreparedActivityNextSampleAt) return incident.PreparedActivityConfirmed;
             incident.PreparedActivityNextSampleAt = now.AddMilliseconds(750);
             List<Ped> suspects = incident.Suspects.Where(p => p != null && p.Exists())
@@ -12960,6 +16207,10 @@ namespace LSImmersiveLife
             }
             bool encountered = incident.PlayerEncounterResponseStarted || incident.SuspectResponses.Count > 0
                 || incident.SurrenderRequested || incident.PlayerHandcuffInProgress;
+            bool perDriverVehicleActivity =
+                incident.PreparedActivity.StartsWith("driving_", StringComparison.Ordinal)
+                || string.Equals(incident.PreparedActivity, "ramming",
+                    StringComparison.OrdinalIgnoreCase);
             bool allActive = suspects.Count == incident.SuspectCount - incident.ResolvedSuspectHandles.Count;
             var civilians = incident.AdditionalParticipants.Where(p => p != null && p.Exists()).ToList();
             if (incident.Victim != null && incident.Victim.Exists()) civilians.Insert(0, incident.Victim);
@@ -12973,13 +16224,28 @@ namespace LSImmersiveLife
                 Ped civilian = civilians[i];
                 if (civilian.IsDead) { allActive &= incident.PreparedActivityConfirmed || (incident.VictimStartsDead && (civilian == incident.Victim
                     || incident.AdditionalParticipants.IndexOf(civilian) < incident.AdditionalDeadVictims)); continue; }
+                // Dispatch owns a victim's task once its authored encounter
+                // response has actually been assigned. Continuing to reapply
+                // the pre-arrival fear posture here would overwrite that task.
+                if (incident.Victim != null && incident.Victim.Exists()
+                    && civilian.Handle == incident.Victim.Handle
+                    && (!string.IsNullOrWhiteSpace(incident.VictimEncounterResponse)
+                        || incident.VehicleVictimHandsUpIssued))
+                    continue;
                 string role = CivilianActivityRole(incident, i);
-                allActive &= MaintainDispatchRole(incident, civilian, role, suspects.FirstOrDefault(), now);
+                allActive &= MaintainDispatchRole(incident, civilian, role,
+                    suspects.FirstOrDefault(), now, allowTaskRecovery);
             }
             for (int i = 0; i < suspects.Count; i++)
             {
                 Ped actor = suspects[i];
-                if (encountered || incident.ConvoyCustodySuspectHandles.Contains(actor.Handle) || incident.ArrestedSuspects.Any(p => p != null && p.Handle == actor.Handle)
+                bool actorEncountered = perDriverVehicleActivity
+                    ? incident.SuspectResponses.ContainsKey(actor.Handle)
+                        || incident.ConvoyCustodySuspectHandles.Contains(actor.Handle)
+                        || incident.ArrestedSuspects.Any(p => p != null
+                            && p.Handle == actor.Handle)
+                    : encountered;
+                if (actorEncountered || incident.ConvoyCustodySuspectHandles.Contains(actor.Handle) || incident.ArrestedSuspects.Any(p => p != null && p.Handle == actor.Handle)
                     || incident.CompliantSuspects.Any(p => p != null && p.Handle == actor.Handle)
                     || actor.IsDead || actor.Health < actor.MaxHealth - 15
                     || Function.Call<bool>(Hash.IS_PED_RAGDOLL, actor))
@@ -12990,7 +16256,8 @@ namespace LSImmersiveLife
                     && (role == "assault" || role == "shooting" || role == "driver_assault")) role = "lookout";
                 allActive &= MaintainDispatchRole(incident, actor, role,
                     role == "exchange_giver" ? suspects.ElementAtOrDefault(1)
-                    : role == "exchange_receiver" ? suspects[0] : incident.Victim, now);
+                    : role == "exchange_receiver" ? suspects[0] : incident.Victim,
+                    now, allowTaskRecovery);
             }
             if (encountered) return incident.PreparedActivityConfirmed;
             incident.PreparedActivitySamples++;
@@ -13008,7 +16275,7 @@ namespace LSImmersiveLife
             // Only bounded, targeted recovery. Never repeatedly reset progressing tasks.
             if (!encountered && now > incident.PreparedActivityStartedAt.AddSeconds(12))
             {
-                if (incident.PreparedActivityRecoveryCount < 2 || acceptedOccurrence)
+                if (incident.PreparedActivityRecoveryCount < 2)
                 {
                     if (incident.PreparedActivityRecoveryCount < int.MaxValue)
                         incident.PreparedActivityRecoveryCount++;
@@ -13028,10 +16295,25 @@ namespace LSImmersiveLife
                         + "; Attempt=" + incident.PreparedActivityRecoveryCount
                         + "; AcceptedOccurrenceRetained=" + acceptedOccurrence + "; " + reason);
                 }
-                else
+                else if (!incident.PreparedActivityRecoveryExhausted)
                 {
                     incident.PreparedActivityConfirmed = false;
-                    reason = "FAILED:" + reason;
+                    incident.PreparedActivityRecoveryExhausted = true;
+                    reason = (acceptedOccurrence ? "UNCONFIRMED:" : "FAILED:") + reason
+                        + "; Activity=" + (incident.PreparedActivity ?? string.Empty)
+                        + "; RecoveryAttempts=" + incident.PreparedActivityRecoveryCount
+                        + "; EvidenceHandles=" + string.Join(",",
+                            incident.ActivityEvidenceHandles.OrderBy(handle => handle));
+                    Log(acceptedOccurrence
+                            ? "AMBIENT_WORLD_DISPATCH_ACTIVITY_UNCONFIRMED_RETAINED"
+                            : "AMBIENT_WORLD_DISPATCH_ACTIVITY_FAILED",
+                        "Occurrence=" + incident.Id
+                        + "; Activity=" + (incident.PreparedActivity ?? string.Empty)
+                        + "; AcceptedOccurrenceRetained=" + acceptedOccurrence
+                        + "; RecoveryAttempts=" + incident.PreparedActivityRecoveryCount
+                        + "; EvidenceHandles=" + string.Join(",",
+                            incident.ActivityEvidenceHandles.OrderBy(handle => handle))
+                        + "; Reason=" + reason);
                 }
             }
             return incident.PreparedActivityConfirmed;
@@ -13039,60 +16321,393 @@ namespace LSImmersiveLife
 
         private static string SuspectActivityRole(LSPDDispatchEvent incident, int index)
         {
-            string action = incident.PreparedActivity;
+            string preArrival = (incident.PreArrivalActivity ?? string.Empty).Trim();
+            if (string.Equals(preArrival, "murder_scene", StringComparison.OrdinalIgnoreCase))
+                return "murder_scene";
+            if (string.Equals(preArrival, "victim_threat", StringComparison.OrdinalIgnoreCase))
+                return "threat";
+            if (string.Equals(preArrival, "victim_attack", StringComparison.OrdinalIgnoreCase))
+                return "assault";
+            if (string.Equals(preArrival, "active_shooter", StringComparison.OrdinalIgnoreCase))
+                return "shooting";
+            if (string.Equals(preArrival, "group_shootout", StringComparison.OrdinalIgnoreCase))
+                return index == 0 ? "shooting" : "armed_cover";
+
+            string action = (incident.PreparedActivity ?? string.Empty).Trim();
             if (action.StartsWith("driving_") || action == "ramming") return action;
             if (action == "exchange") return index == 0 ? "exchange_giver" : index == 1
-                ? "exchange_receiver" : index % 2 == 0 ? "lookout" : "conversation";
-            if (action == "gathering") return index % 3 == 0 ? "conversation" : "lookout";
-            if (action == "murder") return index % 2 == 0 ? "lookout" : "conversation";
-            if (index > 1) return index % 2 == 0 ? "lookout" : "conversation";
+                ? "exchange_receiver" : "lookout";
+            if (action == "gathering"
+                && string.Equals(incident.SceneBehavior, "paired_meeting",
+                    StringComparison.OrdinalIgnoreCase))
+                return index == 0 ? "paired_meeting_primary"
+                    : index == 1 ? "paired_meeting_secondary" : "lookout";
+            if (action == "gathering") return "unmapped_activity";
+            if (action == "murder") return "murder_scene";
+            if (action == "threat") return "threat";
+            if (action == "assault") return "assault";
+            if (action == "shooting") return "shooting";
+            if (index > 1) return "lookout";
             if (index == 1 && action != "assault" && action != "shooting") return "lookout";
             return action;
         }
 
         private static string CivilianActivityRole(LSPDDispatchEvent incident, int index)
         {
-            string action = incident.PreparedActivity;
-            if (index == 0 && (action == "stalking" || action == "theft")) return "walk";
-            if (action.StartsWith("driving_") || action == "ramming") return "witness";
-            if (action == "gathering" || action == "exchange" || action == "intoxicated" || action == "lying")
-                return index % 2 == 0 ? "witness" : "walk";
-            return index % 3 == 0 ? "cower" : index % 3 == 1 ? "witness" : "retreat";
+            string preArrival = (incident.PreArrivalActivity ?? string.Empty).Trim();
+            bool interior = incident.SceneResolution != null
+                && incident.SceneResolution.IsInteriorScene;
+            bool primaryVictim = index == 0;
+
+            if (string.Equals(preArrival, "victim_threat", StringComparison.OrdinalIgnoreCase))
+                return primaryVictim ? "hands_up" : "cower";
+            if (string.Equals(preArrival, "victim_attack", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(preArrival, "active_shooter", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(preArrival, "group_shootout", StringComparison.OrdinalIgnoreCase))
+                return primaryVictim || interior ? "cower" : "retreat";
+            if (string.Equals(preArrival, "victim_snatch", StringComparison.OrdinalIgnoreCase))
+                return primaryVictim ? "hands_up" : "cower";
+            if (string.Equals(preArrival, "murder_scene", StringComparison.OrdinalIgnoreCase))
+                return interior ? "cower" : "retreat";
+
+            string action = (incident.PreparedActivity ?? string.Empty).Trim();
+            if (primaryVictim && (action == "stalking" || action == "theft")) return "walk";
+            if (primaryVictim && action == "lying") return "lying";
+            if (action == "threat") return primaryVictim ? "hands_up" : "cower";
+            if (action == "assault" || action == "shooting")
+                return primaryVictim || interior ? "cower" : "retreat";
+            if (action == "exchange" || action == "gathering") return "retreat";
+            if (!primaryVictim && (action == "stalking" || action == "theft"
+                || action == "lying" || action == "intoxicated"))
+                return "retreat";
+            if (action.StartsWith("driving_", StringComparison.OrdinalIgnoreCase)
+                || action == "ramming")
+                return primaryVictim || interior ? "cower" : "retreat";
+            if (action == "intoxicated") return primaryVictim ? "walk" : "retreat";
+            if (action == "camera") return "retreat";
+            return "unmapped_activity";
         }
 
-        private bool MaintainDispatchRole(LSPDDispatchEvent incident, Ped actor, string role, Ped target, DateTime now)
+        private static bool TryEnsureAssignedDispatchWeapon(
+            LSPDDispatchEvent incident,
+            Ped actor,
+            out int weaponHash)
+        {
+            weaponHash = 0;
+            if (incident == null || actor == null || !actor.Exists()
+                || incident.AssignedWeaponHashBySuspectHandle == null
+                || !incident.AssignedWeaponHashBySuspectHandle.TryGetValue(
+                    actor.Handle, out weaponHash)
+                || weaponHash == 0
+                || !Function.Call<bool>(Hash.HAS_PED_GOT_WEAPON,
+                    actor, weaponHash, false))
+                return false;
+
+            int selectedWeapon = Function.Call<int>(Hash.GET_SELECTED_PED_WEAPON, actor);
+            if (selectedWeapon != weaponHash)
+            {
+                Function.Call(Hash.SET_CURRENT_PED_WEAPON, actor, weaponHash, true);
+                selectedWeapon = Function.Call<int>(Hash.GET_SELECTED_PED_WEAPON, actor);
+            }
+            return selectedWeapon == weaponHash;
+        }
+
+        private static bool TryGetDispatchWeaponGroup(
+            int weaponHash,
+            out WeaponGroup group)
+        {
+            group = default(WeaponGroup);
+            if (weaponHash == 0)
+                return false;
+            try
+            {
+                group = Function.Call<WeaponGroup>(
+                    Hash.GET_WEAPONTYPE_GROUP, unchecked((uint)weaponHash));
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsDispatchFearPostureRole(string role)
+        {
+            return string.Equals(role, "hands_up", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(role, "cower", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool MaintainDispatchRole(
+            LSPDDispatchEvent incident,
+            Ped actor,
+            string role,
+            Ped target,
+            DateTime now,
+            bool allowTaskRecovery = true)
         {
             if (actor == null || !actor.Exists() || actor.IsDead) return false;
+            if (string.IsNullOrWhiteSpace(role) || role == "unmapped_activity")
+            {
+                string previousUnmappedRole;
+                if (!incident.ActivityRoles.TryGetValue(actor.Handle, out previousUnmappedRole)
+                    || !string.Equals(previousUnmappedRole, "unmapped_activity",
+                        StringComparison.Ordinal))
+                {
+                    bool isVictim = incident.Victim != null && incident.Victim.Exists()
+                        && incident.Victim.Handle == actor.Handle;
+                    Log("AMBIENT_WORLD_DISPATCH_ACTOR_ACTIVITY_UNMAPPED",
+                        "Occurrence=" + incident.Id + "; Actor=" + actor.Handle
+                        + "; ActorRole=" + (isVictim ? "Victim" : "SceneParticipant")
+                        + "; PreparedActivity=" + (incident.PreparedActivity ?? string.Empty)
+                        + "; PreArrivalActivity=" + (incident.PreArrivalActivity ?? string.Empty)
+                        + "; GenericFallback=false; OfferReadiness=false; Owner=AmbientWorld");
+                    incident.ActivityRoles[actor.Handle] = "unmapped_activity";
+                }
+                return false;
+            }
+            bool isCivilianRoleActor = incident.Victim != null
+                    && incident.Victim.Exists()
+                    && incident.Victim.Handle == actor.Handle
+                || incident.AdditionalParticipants != null
+                    && incident.AdditionalParticipants.Any(value => value != null
+                        && value.Exists() && value.Handle == actor.Handle);
+            string alreadyAssignedRole;
+            if (isCivilianRoleActor
+                && incident.ActivityRoles.TryGetValue(actor.Handle, out alreadyAssignedRole)
+                && IsDispatchFearPostureRole(alreadyAssignedRole)
+                && IsDispatchFearPostureRole(role)
+                && !string.Equals(alreadyAssignedRole, role, StringComparison.Ordinal))
+            {
+                // A second scene-start or response helper must not alternate a
+                // civilian between hands-up and cower. Keep the first authored
+                // posture until Dispatch explicitly takes over the victim task.
+                role = alreadyAssignedRole;
+            }
             actor.IsPositionFrozen = false;
             string previousRole;
             DateTime issuedAt;
             bool issued = incident.ActivityTaskIssuedAt.TryGetValue(actor.Handle, out issuedAt)
                 && incident.ActivityRoles.TryGetValue(actor.Handle, out previousRole) && previousRole == role;
+            string priorActivityRole;
+            bool activityRoleChanged = !incident.ActivityRoles.TryGetValue(
+                    actor.Handle, out priorActivityRole)
+                || !string.Equals(priorActivityRole, role, StringComparison.Ordinal);
             Vector3 previous;
             bool moved = incident.ActivitySamplePositions.TryGetValue(actor.Handle, out previous)
                 && actor.Position.DistanceTo(previous) > 0.25f;
             incident.ActivitySamplePositions[actor.Handle] = actor.Position;
             bool active = false;
+            int assignedWeaponHash = 0;
             if (role.StartsWith("driving_") || role == "ramming")
                 active = MaintainDispatchDriving(incident, actor, role, issued, moved);
-            else if ((role == "threat" || role == "carjacking") && incident.Armed
+            else if (role == "murder_scene" && target != null && target.Exists())
+            {
+                active = moved && actor.Position.DistanceTo(target.Position) <= 15f;
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(7)))
+                {
+                    Vector3 position = target.Position;
+                    Function.Call(Hash.TASK_WANDER_IN_AREA,
+                        actor, position.X, position.Y, position.Z, 2.25f, 3, 6);
+                    issuedAt = now;
+                }
+            }
+            else if (role == "hands_up")
+            {
+                active = issued && LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(
+                    actor, "surrender");
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(6)))
+                {
+                    bool recovering = issued;
+                    if (!LSImmersiveDictionaryAnimation.TryPlayDispatchAction(
+                        actor, "surrender", true)) return false;
+                    issuedAt = now;
+                    active = LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(
+                        actor, "surrender");
+                    Log(recovering
+                            ? "AMBIENT_WORLD_DISPATCH_ROLE_TASK_RECOVERED"
+                            : "AMBIENT_WORLD_DISPATCH_ROLE_TASK_ISSUED",
+                        "Occurrence=" + incident.Id
+                        + "; Actor=" + actor.Handle
+                        + "; Role=" + role
+                        + "; Task=TASK_PLAY_ANIM; Action=surrender"
+                        + "; Target=" + (target == null || !target.Exists()
+                            ? 0 : target.Handle)
+                        + "; Recovery=" + recovering);
+                }
+            }
+            else if (role == "cower")
+            {
+                active = issued && LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(
+                    actor, "cower");
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(6)))
+                {
+                    bool recovering = issued;
+                    if (!LSImmersiveDictionaryAnimation.TryPlayDispatchAction(
+                        actor, "cower", true)) return false;
+                    issuedAt = now;
+                    active = LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(
+                        actor, "cower");
+                    Log(recovering
+                            ? "AMBIENT_WORLD_DISPATCH_ROLE_TASK_RECOVERED"
+                            : "AMBIENT_WORLD_DISPATCH_ROLE_TASK_ISSUED",
+                        "Occurrence=" + incident.Id
+                        + "; Actor=" + actor.Handle
+                        + "; Role=" + role
+                        + "; Task=TASK_PLAY_ANIM; Action=cower"
+                        + "; Target=" + (target == null || !target.Exists()
+                            ? 0 : target.Handle)
+                        + "; Recovery=" + recovering);
+                }
+            }
+            else if (role == "threat"
                 && target != null && target.Exists() && !target.IsDead)
             {
-                // Script-task hashes are joaat(SCRIPT_TASK_*), not native hashes.
-                int status = Function.Call<int>(Hash.GET_SCRIPT_TASK_STATUS, actor, 0x6134071B);
-                active = issued && (status == 0 || status == 1)
-                    && Function.Call<bool>(Hash.IS_PED_ARMED, actor, 4);
-                if (!issued || (!active && now > issuedAt.AddSeconds(6)))
+                bool weaponReady = !incident.Armed || TryEnsureAssignedDispatchWeapon(
+                    incident, actor, out assignedWeaponHash);
+                if (!weaponReady) return false;
+
+                WeaponGroup weaponGroup = WeaponGroup.Unarmed;
+                if (incident.Armed && !TryGetDispatchWeaponGroup(
+                    assignedWeaponHash, out weaponGroup))
+                    return false;
+
+                bool meleeThreat = weaponGroup == WeaponGroup.Melee
+                    || weaponGroup == WeaponGroup.Unarmed;
+                if (meleeThreat)
+                {
+                    float targetDistance = actor.Position.DistanceTo(target.Position);
+                    float previousTargetDistance = previous.DistanceTo(target.Position);
+                    bool closingOnExactTarget = moved
+                        && previousTargetDistance - targetDistance >= 0.1f;
+                    bool inExactTargetCombat = actor.IsInCombatAgainst(target);
+                    active = issued && inExactTargetCombat
+                        && (closingOnExactTarget || targetDistance <= 2.5f);
+                    if (!issued || (allowTaskRecovery && !active && !closingOnExactTarget
+                        && now > issuedAt.AddSeconds(6)))
+                    {
+                        actor.Task.Combat(target);
+                        Log("AMBIENT_WORLD_DISPATCH_ROLE_TASK_ISSUED",
+                            "Occurrence=" + incident.Id
+                            + "; Actor=" + actor.Handle
+                            + "; Role=" + role
+                            + "; Activity=" + (incident.PreparedActivity ?? string.Empty)
+                            + "; Task=TASK_COMBAT_PED"
+                            + "; Target=" + target.Handle
+                            + "; WeaponGroup=" + weaponGroup
+                            + "; AssignedWeaponHash=" + assignedWeaponHash);
+                        issuedAt = now;
+                        active = actor.IsInCombatAgainst(target)
+                            && (closingOnExactTarget || targetDistance <= 2.5f);
+                    }
+                }
+                else
+                {
+                    bool aiming = actor.IsAiming;
+                    int aimedTarget = Function.Call<int>(
+                        Hash.GET_PED_TARGET_FROM_COMBAT_PED, actor, true);
+                    bool facingAssignedTarget = aiming && Function.Call<bool>(
+                        Hash.IS_PED_FACING_PED, actor, target, 35f);
+                    active = issued && aiming
+                        && (aimedTarget == target.Handle || facingAssignedTarget);
+                    if (active && aimedTarget != target.Handle && facingAssignedTarget
+                        && !incident.ActivityEvidenceHandles.Contains(actor.Handle))
+                        Log("AMBIENT_WORLD_DISPATCH_AIM_ACTIVITY_CONFIRMED",
+                            "Occurrence=" + incident.Id
+                            + "; Actor=" + actor.Handle
+                            + "; Role=" + role
+                            + "; Target=" + target.Handle
+                            + "; Evidence=ActiveWeaponAimFacingAssignedTarget"
+                            + "; TargetFromCombat=" + aimedTarget);
+                    if (!issued || (allowTaskRecovery && !active
+                        && now > issuedAt.AddSeconds(6)))
+                    {
+                        Function.Call(Hash.TASK_AIM_GUN_AT_ENTITY, actor, target, -1, true);
+                        Log("AMBIENT_WORLD_DISPATCH_ROLE_TASK_ISSUED",
+                            "Occurrence=" + incident.Id
+                            + "; Actor=" + actor.Handle
+                            + "; Role=" + role
+                            + "; Activity=" + (incident.PreparedActivity ?? string.Empty)
+                            + "; Task=TASK_AIM_GUN_AT_ENTITY"
+                            + "; Target=" + target.Handle
+                            + "; WeaponGroup=" + weaponGroup
+                            + "; AssignedWeaponHash=" + assignedWeaponHash);
+                        issuedAt = now;
+                    }
+                }
+            }
+            else if ((role == "armed_cover" || role == "carjacking")
+                && incident.Armed
+                && target != null && target.Exists() && !target.IsDead)
+            {
+                bool weaponReady = TryEnsureAssignedDispatchWeapon(
+                    incident, actor, out assignedWeaponHash);
+                bool aiming = actor.IsAiming;
+                int aimedTarget = Function.Call<int>(
+                    Hash.GET_PED_TARGET_FROM_COMBAT_PED, actor, true);
+                bool facingAssignedTarget = aiming && Function.Call<bool>(
+                    Hash.IS_PED_FACING_PED, actor, target, 35f);
+                active = issued && weaponReady && aiming
+                    && (aimedTarget == target.Handle || facingAssignedTarget);
+                if (!weaponReady) return false;
+                if (active && aimedTarget != target.Handle && facingAssignedTarget
+                    && !incident.ActivityEvidenceHandles.Contains(actor.Handle))
+                    Log("AMBIENT_WORLD_DISPATCH_AIM_ACTIVITY_CONFIRMED",
+                        "Occurrence=" + incident.Id
+                        + "; Actor=" + actor.Handle
+                        + "; Role=" + role
+                        + "; Target=" + target.Handle
+                        + "; Evidence=ActiveWeaponAimFacingAssignedTarget"
+                        + "; TargetFromCombat=" + aimedTarget);
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(6)))
                 {
                     Function.Call(Hash.TASK_AIM_GUN_AT_ENTITY, actor, target, -1, true);
                     issuedAt = now;
+                }
+            }
+            else if ((role == "paired_meeting_primary"
+                    || role == "paired_meeting_secondary")
+                && incident.Suspects != null)
+            {
+                List<Ped> meetingSuspects = incident.Suspects
+                    .Concat(new[] { incident.Suspect })
+                    .Where(value => value != null && value.Exists()
+                        && !value.IsDead && value.Health > 0)
+                    .GroupBy(value => value.Handle)
+                    .Select(group => group.First())
+                    .Take(2)
+                    .ToList();
+                if (meetingSuspects.Count < 2) return false;
+                string clip = role == "paired_meeting_primary"
+                    ? incident.SceneAnimationPrimaryClip
+                    : incident.SceneAnimationSecondaryClip;
+                active = issued && !string.IsNullOrWhiteSpace(
+                        incident.SceneAnimationDictionary)
+                    && !string.IsNullOrWhiteSpace(clip)
+                    && LSImmersiveDictionaryAnimation.IsPlaying(
+                        actor, incident.SceneAnimationDictionary, clip);
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(6)))
+                {
+                    string pairReason;
+                    if (TryStartDispatchPairAnimation(incident,
+                            meetingSuspects[0], meetingSuspects[1], out pairReason)
+                        != AmbientDispatchAnimationStartResult.Started)
+                        return false;
+                    issuedAt = now;
+                    active = LSImmersiveDictionaryAnimation.IsPlaying(
+                        actor, incident.SceneAnimationDictionary, clip);
                 }
             }
             else if (role == "driver_assault" && target != null && target.Exists()
                 && incident.VictimVehicle != null && incident.VictimVehicle.Exists()
                 && target.Position.DistanceTo(incident.VictimVehicle.Position) > 5f)
             {
-                if (!issued || (!moved && now > issuedAt.AddSeconds(7)))
+                if (!issued || (allowTaskRecovery && !moved
+                    && now > issuedAt.AddSeconds(7)))
                 {
                     Function.Call(Hash.TASK_GO_TO_ENTITY, target, incident.VictimVehicle, -1, 3f, 1f, 0f, 0);
                     Function.Call(Hash.TASK_FOLLOW_TO_OFFSET_OF_ENTITY, actor, target, 0f, -1f, 0f, 1.4f, -1, 1f, true);
@@ -13103,10 +16718,23 @@ namespace LSImmersiveLife
             else if (role == "assault" || role == "driver_assault" || role == "shooting")
             {
                 if (target == null || !target.Exists() || target.IsDead) return false;
+                if (role == "shooting" && !incident.Armed) return false;
+                bool weaponReady = true;
+                if ((role == "shooting" || role == "assault") && incident.Armed)
+                {
+                    weaponReady = TryEnsureAssignedDispatchWeapon(
+                        incident, actor, out assignedWeaponHash);
+                }
                 bool inCombat = actor.IsInCombatAgainst(target);
-                active = inCombat && (role != "shooting" || actor.IsShooting
-                    || incident.ActivityEvidenceHandles.Contains(actor.Handle));
-                if (!issued || (!active && now > issuedAt.AddSeconds(6)))
+                bool actualShot = role == "shooting"
+                    && weaponReady
+                    && Function.Call<bool>(Hash.IS_PED_SHOOTING, actor);
+                active = role == "shooting"
+                    ? actualShot && inCombat
+                    : weaponReady && inCombat;
+                if (!weaponReady) return false;
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(6)))
                 {
                     actor.Task.Combat(target);
                     if (issued && !active)
@@ -13161,7 +16789,8 @@ namespace LSImmersiveLife
             else if (role == "walk" || role == "lookout" || role == "retreat")
             {
                 active = moved;
-                if (!issued || (!moved && now > issuedAt.AddSeconds(7)))
+                if (!issued || (allowTaskRecovery && !moved
+                    && now > issuedAt.AddSeconds(7)))
                 {
                     Vector3 point = incident.Origin;
                     if (role == "retreat" && target != null && target.Exists()
@@ -13173,11 +16802,12 @@ namespace LSImmersiveLife
             }
             else
             {
-                string action = role == "witness" ? "conversation" : role == "carjacking" ? "threat" : role;
+                string action = role;
                 active = LSImmersiveDictionaryAnimation.IsDispatchActionPlaying(actor, action);
                 // Exchange clips alternate naturally with watch/conversation time.
                 bool shortClip = action.StartsWith("exchange_");
-                if (!issued || (!active && now > issuedAt.AddSeconds(shortClip ? 4 : 6)))
+                if (!issued || (allowTaskRecovery && !active
+                    && now > issuedAt.AddSeconds(shortClip ? 4 : 6)))
                 {
                     if (target != null && target.Exists()) actor.Task.LookAt(target, 3000);
                     if (action == "camera" && !EnsureDispatchCamera(incident, actor)) return false;
@@ -13188,6 +16818,41 @@ namespace LSImmersiveLife
             if (!issued) issuedAt = now;
             incident.ActivityTaskIssuedAt[actor.Handle] = issuedAt;
             incident.ActivityRoles[actor.Handle] = role;
+            if (activityRoleChanged)
+            {
+                bool isVictim = incident.Victim != null && incident.Victim.Exists()
+                    && incident.Victim.Handle == actor.Handle;
+                bool isSuspect = incident.Suspects != null
+                    && incident.Suspects.Any(value => value != null && value.Exists()
+                        && value.Handle == actor.Handle);
+                bool isAdditionalParticipant = incident.AdditionalParticipants != null
+                    && incident.AdditionalParticipants.Any(value => value != null && value.Exists()
+                        && value.Handle == actor.Handle);
+                string actorRole = isVictim ? "Victim" : isSuspect ? "Suspect"
+                    : isAdditionalParticipant ? "SceneParticipant" : "DispatchActor";
+                string actorPool = isVictim ? incident.VictimPoolId
+                    : isAdditionalParticipant ? incident.SceneParticipantPoolId
+                    : incident.CriminalProfileId;
+                int targetHandle = target == null || !target.Exists() ? 0 : target.Handle;
+                int selectedWeaponForLog = incident.AssignedWeaponHashBySuspectHandle != null
+                    && incident.AssignedWeaponHashBySuspectHandle.TryGetValue(
+                        actor.Handle, out assignedWeaponHash)
+                            ? Function.Call<int>(Hash.GET_SELECTED_PED_WEAPON, actor) : 0;
+                Log("AMBIENT_WORLD_DISPATCH_ACTOR_ACTIVITY_ASSIGNED",
+                    "Occurrence=" + incident.Id
+                    + "; Actor=" + actor.Handle
+                    + "; ActorRole=" + actorRole
+                    + "; ProfileOrPool=" + (actorPool ?? string.Empty)
+                    + "; Activity=" + role
+                    + "; PreparedActivity=" + (incident.PreparedActivity ?? string.Empty)
+                    + "; PreArrivalActivity=" + (incident.PreArrivalActivity ?? string.Empty)
+                    + "; SceneBehavior=" + (incident.SceneBehavior ?? string.Empty)
+                    + "; Target=" + targetHandle
+                    + "; AssignedWeaponHash=" + (incident.AssignedWeaponHashBySuspectHandle != null
+                        && incident.AssignedWeaponHashBySuspectHandle.TryGetValue(
+                            actor.Handle, out assignedWeaponHash) ? assignedWeaponHash : 0)
+                    + "; SelectedWeaponHash=" + selectedWeaponForLog);
+            }
             if (active)
             {
                 incident.ActivityEvidenceHandles.Add(actor.Handle);
@@ -13202,18 +16867,11 @@ namespace LSImmersiveLife
         {
             Vehicle vehicle = incident.VehicleForSuspect(actor);
             if (vehicle == null || !vehicle.Exists() || !actor.IsInVehicle(vehicle)) return false;
-            if (role == "ramming" && incident.VictimVehicle != null && incident.VictimVehicle.Exists()
-                && !incident.RammingImpactConfirmed
-                && vehicle.Position.DistanceTo(incident.VictimVehicle.Position) < 10f
-                && Function.Call<bool>(Hash.HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY, incident.VictimVehicle, vehicle, true))
-            {
-                incident.RammingImpactConfirmed = true;
-                Log("AMBIENT_WORLD_DISPATCH_RAMMING_IMPACT_CONFIRMED", "Occurrence=" + incident.Id
-                    + "; Vehicle=" + vehicle.Handle + "; Target=" + incident.VictimVehicle.Handle
-                    + "; Native=HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY; TaskAssignmentAlone=false");
-            }
+            if (role == "ramming" && !incident.RammingImpactConfirmed)
+                TryConfirmDispatchRammingImpact(incident, vehicle);
             if (role == "ramming" && incident.RammingImpactConfirmed)
             {
+                MaintainDispatchRammingImpactVehicleHold(incident, actor, vehicle);
                 if (!Function.Call<bool>(Hash.IS_VEHICLE_DRIVEABLE, vehicle, false)) actor.Task.LeaveVehicle();
                 return true;
             }
@@ -13230,19 +16888,208 @@ namespace LSImmersiveLife
                 Function.Call(Hash.SET_VEHICLE_HANDBRAKE, vehicle, false);
                 Function.Call(Hash.SET_VEHICLE_BRAKE, vehicle, false);
                 float speed = role == "driving_slow" ? 3.5f : 28f;
-                if (role == "ramming" && incident.VictimVehicle != null && incident.VictimVehicle.Exists())
-                    Function.Call(Hash.TASK_VEHICLE_MISSION, actor, vehicle, incident.VictimVehicle,
-                        2, 20f, 786468, 2f, 1f, true); // MISSION_RAM targets an actual catalog vehicle.
-                else Function.Call(Hash.TASK_VEHICLE_DRIVE_WANDER, actor, vehicle, speed,
-                    role == "driving_slow" ? 786603 : 786468);
+                if (role == "ramming")
+                {
+                    if (string.Equals(incident.RammingTargetType, "pedestrian",
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        Ped targetPed = incident.Victim;
+                        if (targetPed == null || !targetPed.Exists()
+                            || targetPed.IsDead || targetPed.Health <= 0
+                            || targetPed.IsInVehicle())
+                            return false;
+                        Function.Call(Hash.TASK_VEHICLE_MISSION_PED_TARGET,
+                            actor, vehicle, targetPed, 2, 20f, 786468, 2f, 1f, false);
+                        Log("AMBIENT_WORLD_DISPATCH_RAMMING_TARGET_TASK_ISSUED",
+                            "Occurrence=" + incident.Id
+                            + "; Suspect=" + actor.Handle
+                            + "; SuspectVehicle=" + vehicle.Handle
+                            + "; TargetType=pedestrian; TargetPed=" + targetPed.Handle
+                            + "; MissionType=2(Ram); Task=TASK_VEHICLE_MISSION_PED_TARGET"
+                            + "; SceneParticipantsRemainIndependent=true; Teleport=false");
+                    }
+                    else if (string.Equals(incident.RammingTargetType, "vehicle",
+                                 StringComparison.OrdinalIgnoreCase)
+                        && incident.VictimVehicle != null && incident.VictimVehicle.Exists()
+                        && incident.VictimVehicle.Handle != vehicle.Handle)
+                    {
+                        Function.Call(Hash.TASK_VEHICLE_MISSION,
+                            actor, vehicle, incident.VictimVehicle,
+                            2, 20f, 786468, 2f, 1f, true);
+                        Log("AMBIENT_WORLD_DISPATCH_RAMMING_TARGET_TASK_ISSUED",
+                            "Occurrence=" + incident.Id
+                            + "; Suspect=" + actor.Handle
+                            + "; SuspectVehicle=" + vehicle.Handle
+                            + "; TargetType=vehicle; TargetVehicle=" + incident.VictimVehicle.Handle
+                            + "; MissionType=2(Ram); Task=TASK_VEHICLE_MISSION"
+                            + "; SceneParticipantsRemainIndependent=true; Teleport=false");
+                    }
+                    else
+                        return false;
+                }
+                else
+                    Function.Call(Hash.TASK_VEHICLE_DRIVE_WANDER, actor, vehicle, speed,
+                        role == "driving_slow" ? 786603 : 786468);
             }
             // A task assignment or a running engine is never movement evidence.
             return role != "ramming" && moved && vehicle.Speed > (role == "driving_slow" ? 0.8f : 5f);
         }
 
+        private bool TryConfirmDispatchRammingImpact(
+            LSPDDispatchEvent incident,
+            Vehicle suspectVehicle)
+        {
+            if (incident == null || suspectVehicle == null || !suspectVehicle.Exists())
+                return false;
+
+            if (string.Equals(incident.RammingTargetType, "pedestrian",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Ped targetPed = incident.Victim;
+                if (targetPed == null || !targetPed.Exists()
+                    || suspectVehicle.Position.DistanceTo(targetPed.Position) >= 10f)
+                    return false;
+                bool damagedByAssignedVehicle = Function.Call<bool>(
+                    Hash.HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY,
+                    targetPed, suspectVehicle, true);
+                bool healthReduced = targetPed.Health < incident.RammingTargetInitialHealth;
+                if (!damagedByAssignedVehicle || !healthReduced)
+                    return false;
+
+                incident.RammingImpactConfirmed = true;
+                Log("AMBIENT_WORLD_DISPATCH_RAMMING_IMPACT_CONFIRMED",
+                    "Occurrence=" + incident.Id
+                    + "; SuspectVehicle=" + suspectVehicle.Handle
+                    + "; TargetType=pedestrian; TargetPed=" + targetPed.Handle
+                    + "; TargetHealthBefore=" + incident.RammingTargetInitialHealth
+                    + "; TargetHealthAfter=" + targetPed.Health
+                    + "; TargetDistance=" + suspectVehicle.Position.DistanceTo(targetPed.Position)
+                        .ToString("0.00", CultureInfo.InvariantCulture)
+                    + "; Native=HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY"
+                    + "; HealthReductionConfirmed=true; TaskAssignmentAlone=false");
+                return true;
+            }
+
+            Vehicle targetVehicle = incident.VictimVehicle;
+            if (!string.Equals(incident.RammingTargetType, "vehicle",
+                    StringComparison.OrdinalIgnoreCase)
+                || targetVehicle == null || !targetVehicle.Exists()
+                || targetVehicle.Handle == suspectVehicle.Handle
+                || suspectVehicle.Position.DistanceTo(targetVehicle.Position) >= 10f
+                || !Function.Call<bool>(Hash.HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY,
+                    targetVehicle, suspectVehicle, true))
+                return false;
+
+            incident.RammingImpactConfirmed = true;
+            Log("AMBIENT_WORLD_DISPATCH_RAMMING_IMPACT_CONFIRMED",
+                "Occurrence=" + incident.Id
+                + "; SuspectVehicle=" + suspectVehicle.Handle
+                + "; TargetType=vehicle; TargetVehicle=" + targetVehicle.Handle
+                + "; TargetHealthBefore=" + incident.RammingTargetInitialHealth
+                + "; TargetHealthAfter=" + targetVehicle.Health
+                + "; TargetDistance=" + suspectVehicle.Position.DistanceTo(targetVehicle.Position)
+                    .ToString("0.00", CultureInfo.InvariantCulture)
+                + "; Native=HAS_ENTITY_BEEN_DAMAGED_BY_ENTITY"
+                + "; TaskAssignmentAlone=false");
+            return true;
+        }
+
+        private void MaintainDispatchRammingImpactVehicleHold(
+            LSPDDispatchEvent incident,
+            Ped driver,
+            Vehicle vehicle)
+        {
+            if (incident == null || driver == null || !driver.Exists()
+                || vehicle == null || !vehicle.Exists()
+                || incident.RammingImpactStopTaskIssued
+                || incident.RammingImpactStopTaskAttempts >= 2)
+                return;
+
+            incident.RammingImpactStopTaskAttempts++;
+            try
+            {
+                Function.Call(Hash.CLEAR_PED_TASKS, driver);
+                Function.Call(Hash.TASK_VEHICLE_TEMP_ACTION,
+                    driver, vehicle, 19, -1);
+                Function.Call(Hash.SET_PED_KEEP_TASK, driver, true);
+                incident.RammingImpactStopTaskIssued = true;
+                Log("AMBIENT_WORLD_DISPATCH_RAMMING_IMPACT_HOLD_STARTED",
+                    "Occurrence=" + incident.Id
+                    + "; Suspect=" + driver.Handle
+                    + "; SuspectVehicle=" + vehicle.Handle
+                    + "; TargetType=" + incident.RammingTargetType
+                    + "; Attempt=" + incident.RammingImpactStopTaskAttempts
+                    + "; TaskCancellation=CLEAR_PED_TASKS"
+                    + "; Task=TASK_VEHICLE_TEMP_ACTION; Action=19(StrongBrake); Duration=-1"
+                    + "; Frozen=false; Teleport=false; ResponseBranchStillDormant=true");
+            }
+            catch (Exception ex)
+            {
+                Log("AMBIENT_WORLD_DISPATCH_RAMMING_IMPACT_HOLD_FAILED",
+                    "Occurrence=" + incident.Id
+                    + "; Suspect=" + driver.Handle
+                    + "; SuspectVehicle=" + vehicle.Handle
+                    + "; TargetType=" + incident.RammingTargetType
+                    + "; Attempt=" + incident.RammingImpactStopTaskAttempts
+                    + "; MaximumAttempts=2; Exception=" + ex.GetType().Name);
+            }
+        }
+
         private bool PrepareDispatchRammingTarget(LSPDDispatchEvent incident)
         {
-            if (incident.VictimVehicle != null && incident.VictimVehicle.Exists()) return true;
+            if (incident == null)
+                return false;
+
+            if (string.Equals(incident.PreparedActivity, "ramming",
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(incident.RammingTargetType, "pedestrian",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                Ped targetPed = incident.Victim;
+                bool validPedestrianTarget = targetPed != null && targetPed.Exists()
+                    && !targetPed.IsDead && targetPed.Health > 0 && !targetPed.IsInVehicle()
+                    && incident.VictimWasExistingAmbient
+                    && !incident.Suspects.Any(value => value != null
+                        && value.Handle == targetPed.Handle);
+                if (!validPedestrianTarget)
+                {
+                    Log("AMBIENT_WORLD_DISPATCH_RAMMING_PEDESTRIAN_TARGET_REJECTED",
+                        "Occurrence=" + incident.Id
+                        + "; TargetPed=" + (targetPed == null ? 0 : targetPed.Handle)
+                        + "; ExistingAmbientClaim=" + incident.VictimWasExistingAmbient
+                        + "; InVehicle=" + (targetPed != null
+                            && targetPed.Exists() && targetPed.IsInVehicle())
+                        + "; Result=ExactLivingAmbientVictimUnavailable");
+                    return false;
+                }
+
+                incident.RammingTargetInitialHealth = targetPed.Health;
+                Log("AMBIENT_WORLD_DISPATCH_RAMMING_TARGET_PREPARED",
+                    "Occurrence=" + incident.Id
+                    + "; TargetType=pedestrian; TargetPed=" + targetPed.Handle
+                    + "; Pool=" + incident.VictimPoolId
+                    + "; ExistingAmbientClaim=true; InitialHealth=" + targetPed.Health
+                    + "; SceneParticipantsValidatedSeparately=true");
+                return true;
+            }
+
+            bool targetVehicleRequired = !string.Equals(
+                incident.PreparedActivity, "ramming", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(incident.RammingTargetType, "vehicle",
+                    StringComparison.OrdinalIgnoreCase);
+            if (!targetVehicleRequired)
+                return false;
+
+            if (incident.VictimVehicle != null && incident.VictimVehicle.Exists())
+            {
+                bool distinctFromSuspectVehicle = incident.SuspectVehicle == null
+                    || !incident.SuspectVehicle.Exists()
+                    || incident.VictimVehicle.Handle != incident.SuspectVehicle.Handle;
+                if (!distinctFromSuspectVehicle)
+                    return false;
+                incident.RammingTargetInitialHealth = incident.VictimVehicle.Health;
+                return true;
+            }
             Vector3 position;
             float heading;
             string reason;
@@ -13260,6 +17107,15 @@ namespace LSImmersiveLife
             target.IsPersistent = true;
             target.IsPositionFrozen = false;
             incident.VictimVehicle = target;
+            incident.RammingTargetInitialHealth = target.Health;
+            Log("AMBIENT_WORLD_DISPATCH_RAMMING_TARGET_PREPARED",
+                "Occurrence=" + incident.Id
+                + "; TargetType=vehicle; SuspectVehicle=" + (incident.SuspectVehicle == null
+                    ? 0 : incident.SuspectVehicle.Handle)
+                + "; TargetVehicle=" + target.Handle
+                + "; Position=" + target.Position
+                + "; InitialHealth=" + target.Health
+                + "; SceneParticipantsValidatedSeparately=true");
             return true;
         }
 
@@ -13447,16 +17303,46 @@ namespace LSImmersiveLife
                     }
                     suspect.BlockPermanentEvents = true;
                     victim.BlockPermanentEvents = true;
+                    bool seatedCarjackingVictim =
+                        string.Equals(incident.VehicleActivity, "carjacking",
+                            StringComparison.OrdinalIgnoreCase)
+                        && incident.HasVictimVehicleSeat
+                        && victim.IsInVehicle()
+                        && victim.CurrentVehicle != null
+                        && victim.CurrentVehicle.Exists()
+                        && incident.VictimVehicle != null
+                        && incident.VictimVehicle.Exists()
+                        && victim.CurrentVehicle.Handle == incident.VictimVehicle.Handle;
                     if (!incident.PreArrivalVictimThreatStarted)
                     {
-                        victim.Task.HandsUp(60000);
+                        if (!seatedCarjackingVictim)
+                        {
+                            string victimRole = CivilianActivityRole(incident, 0);
+                            // The authored role maintainer is the sole owner of
+                            // the victim's looped posture. A separate timed
+                            // HandsUp task here competed with its persistent
+                            // surrender/cower animation and caused visible pose
+                            // switching as each task replaced the other.
+                            MaintainDispatchRole(incident, victim, victimRole,
+                                suspect, DateTime.UtcNow, false);
+                        }
                         incident.PreArrivalVictimThreatStarted = true;
                     }
                     Function.Call(Hash.TASK_AIM_GUN_AT_ENTITY, suspect, victim, -1, true);
                     Log("AMBIENT_WORLD_DISPATCH_PREARRIVAL_ACTIVITY_STARTED",
                         "Occurrence=" + incident.Id + "; Activity=victim_threat; Suspect="
                         + suspect.Handle + "; Victim=" + victim.Handle
-                        + "; Tasks=TASK_HANDS_UP+TASK_AIM_GUN_AT_ENTITY; Owner=AmbientWorld");
+                        + "; Vehicle=" + (incident.VictimVehicle == null
+                            || !incident.VictimVehicle.Exists()
+                                ? 0 : incident.VictimVehicle.Handle)
+                        + "; VictimSeatedInAssignedVehicle=" + seatedCarjackingVictim
+                        + "; VictimHandsUp=" + !seatedCarjackingVictim
+                        + "; VictimHandsUpDeferredUntilPhysicalExit="
+                            + seatedCarjackingVictim
+                        + "; Tasks=" + (seatedCarjackingVictim
+                            ? "TASK_AIM_GUN_AT_ENTITY"
+                            : "RoleManagedVictimPosture+TASK_AIM_GUN_AT_ENTITY")
+                        + "; Owner=AmbientWorld");
                     return true;
                 }
                 if (normalized == "victim_attack")
@@ -13497,7 +17383,7 @@ namespace LSImmersiveLife
                     suspect.BlockPermanentEvents = true;
                     if (incident.SceneResolution != null
                         && (incident.SceneResolution.IsInteriorScene
-                            || (string.Equals(incident.Id, "disturbance",
+                            || (string.Equals(incident.EventDefinitionId, "disturbance",
                                     StringComparison.OrdinalIgnoreCase)
                                 && string.Equals(incident.CriminalDisposition, "reluctant",
                                     StringComparison.OrdinalIgnoreCase))))
@@ -13590,7 +17476,7 @@ namespace LSImmersiveLife
                     "Occurrence=" + incident.Id + "; Suspects=" + string.Join(",",
                         suspects.Select(value => value.Handle.ToString(CultureInfo.InvariantCulture)))
                     + "; Shooter=" + suspects[0].Handle + "; Victim=" + victim.Handle
-                    + "; VictimTask=TASK_COWER; OtherSuspectTask=TASK_AIM_GUN_AT_ENTITY"
+                    + "; VictimTask=TASK_PLAY_ANIM(cower); OtherSuspectTask=TASK_AIM_GUN_AT_ENTITY"
                     + "; ShooterActivity=RealFirearm; Confirmation=IS_PED_SHOOTING"
                     + "; SeparateAudioClip=false; Owner=AmbientWorld; TerminalOutcome=false");
                 return true;
@@ -13613,29 +17499,38 @@ namespace LSImmersiveLife
             victim.BlockPermanentEvents = true;
             try
             {
-                Function.Call((Hash)0x3EB1FE9E8E908E15UL, victim, -1);
-                Log("AMBIENT_WORLD_DISPATCH_VICTIM_COWER_STARTED",
-                    "Occurrence=" + incident.Id + "; Role=Victim; Victim=" + victim.Handle
-                    + "; Native=TASK_COWER; Duration=-1; Owner=AmbientWorld");
-                return true;
+                Ped suspect = (incident.Suspects ?? new List<Ped>())
+                    .Concat(new[] { incident.Suspect })
+                    .FirstOrDefault(actor => actor != null && actor.Exists()
+                        && !actor.IsDead && actor.Health > 0);
+                string victimRole = CivilianActivityRole(incident, 0);
+                bool started = MaintainDispatchRole(
+                    incident, victim, victimRole, suspect, DateTime.UtcNow, false);
+                if (!started)
+                    Log("AMBIENT_WORLD_DISPATCH_VICTIM_COWER_PENDING",
+                        "Occurrence=" + incident.Id + "; Role=Victim; Activity="
+                        + victimRole + "; Victim=" + victim.Handle
+                        + "; Task=LoopedRoleAnimation"
+                        + "; Result=AwaitingAnimationEvidence; Owner=AmbientWorld");
+                return started;
             }
             catch (Exception ex)
             {
-                try { victim.Task.HandsUp(60000); } catch { }
-                Log("AMBIENT_WORLD_DISPATCH_VICTIM_COWER_FALLBACK",
+                Log("AMBIENT_WORLD_DISPATCH_VICTIM_COWER_FAILED",
                     "Occurrence=" + incident.Id + "; Victim=" + victim.Handle
-                    + "; Native=TASK_COWER; Result=Failed; Fallback=HandsUp"
-                    + "; Exception=" + ex.GetType().Name + "; Owner=AmbientWorld");
+                    + "; Task=LoopedRoleAnimation; Exception=" + ex.GetType().Name
+                    + "; Owner=AmbientWorld");
                 return false;
             }
         }
 
-        internal bool TryApplyDispatchParticipantThreatPose(
+        internal bool TryApplyDispatchParticipantSceneActivity(
             LSPDDispatchEvent incident,
             Ped participant,
-            int durationMilliseconds,
+            out string activity,
             out string reason)
         {
+            activity = string.Empty;
             reason = string.Empty;
             if (incident == null || !incident.OwnedByDispatch
                 || participant == null || !participant.Exists()
@@ -13644,23 +17539,53 @@ namespace LSImmersiveLife
                 reason = "The Dispatch participant is unavailable.";
                 return false;
             }
+
+            int participantIndex = incident.AdditionalParticipants == null
+                ? -1 : incident.AdditionalParticipants.FindIndex(value => value != null
+                    && value.Exists() && value.Handle == participant.Handle);
+            if (participantIndex < 0)
+            {
+                reason = "The Ped is not an occurrence-owned scene participant.";
+                return false;
+            }
+
             try
             {
+                int civilianIndex = (incident.Victim != null && incident.Victim.Exists()
+                    ? 1 : 0) + participantIndex;
+                activity = CivilianActivityRole(incident, civilianIndex);
+                Ped target = (incident.Suspects ?? new List<Ped>())
+                    .Concat(new[] { incident.Suspect })
+                    .FirstOrDefault(value => value != null && value.Exists()
+                        && !value.IsDead && value.Health > 0);
                 participant.BlockPermanentEvents = true;
-                participant.Task.HandsUp(Math.Max(1000, durationMilliseconds));
+                MaintainDispatchRole(incident, participant, activity, target,
+                    DateTime.UtcNow);
+
+                string assignedRole;
+                DateTime taskIssuedAt;
+                if (!incident.ActivityRoles.TryGetValue(
+                        participant.Handle, out assignedRole)
+                    || !string.Equals(assignedRole, activity, StringComparison.Ordinal)
+                    || !incident.ActivityTaskIssuedAt.TryGetValue(
+                        participant.Handle, out taskIssuedAt))
+                {
+                    reason = "The authored participant activity could not be assigned: "
+                        + activity;
+                    return false;
+                }
+
                 if (incident.SceneParticipantBehaviorInitializedHandles != null)
                     incident.SceneParticipantBehaviorInitializedHandles.Add(participant.Handle);
-                Log("AMBIENT_WORLD_DISPATCH_PARTICIPANT_THREAT_POSE_STARTED",
-                    "Occurrence=" + incident.Id + "; Handle=" + participant.Handle
-                    + "; Task=TASK_HANDS_UP; Owner=AmbientWorld");
                 return true;
             }
             catch (Exception ex)
             {
                 reason = ex.GetType().Name;
-                Log("AMBIENT_WORLD_DISPATCH_PARTICIPANT_THREAT_POSE_FAILED",
+                Log("AMBIENT_WORLD_DISPATCH_PARTICIPANT_ACTIVITY_FAILED",
                     "Occurrence=" + incident.Id + "; Handle=" + participant.Handle
-                    + "; Reason=" + reason + "; Owner=AmbientWorld");
+                    + "; Activity=" + activity + "; Reason=" + reason
+                    + "; Owner=AmbientWorld");
                 return false;
             }
         }
@@ -13675,22 +17600,38 @@ namespace LSImmersiveLife
                 return;
             try
             {
-                Ped player = Game.Player == null ? null : Game.Player.Character;
-                if (player != null && player.Exists() && !player.IsDead)
-                    victim.Task.LookAt(player, 3000);
                 string type = incident.IncidentType ?? string.Empty;
-                if (string.Equals(type, "carjacking", StringComparison.OrdinalIgnoreCase)
+                bool initialHandsUpType = string.Equals(type, "carjacking", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(type, "bank_robbery", StringComparison.OrdinalIgnoreCase)
                     || string.Equals(type, "store_robbery", StringComparison.OrdinalIgnoreCase)
-                    || string.Equals(type, "kidnapping", StringComparison.OrdinalIgnoreCase))
-                    victim.Task.HandsUp(8000);
+                    || string.Equals(type, "kidnapping", StringComparison.OrdinalIgnoreCase);
+                string reaction = CivilianActivityRole(incident, 0);
+                Ped suspect = (incident.Suspects ?? new List<Ped>())
+                    .Concat(new[] { incident.Suspect })
+                    .FirstOrDefault(actor => actor != null && actor.Exists()
+                        && !actor.IsDead && actor.Health > 0);
+                bool rolePosture = string.Equals(reaction, "hands_up", StringComparison.Ordinal)
+                    || string.Equals(reaction, "cower", StringComparison.Ordinal);
+                if (initialHandsUpType && rolePosture)
+                {
+                    // Use the same persistent, verifiable role task that later
+                    // maintenance observes. Do not seed a short HandsUp task
+                    // that the ongoing role animation immediately replaces.
+                    MaintainDispatchRole(incident, victim, reaction,
+                        suspect, DateTime.UtcNow, false);
+                }
+                else
+                {
+                    Ped player = Game.Player == null ? null : Game.Player.Character;
+                    if (player != null && player.Exists() && !player.IsDead)
+                        victim.Task.LookAt(player, 3000);
+                }
                 Log("AMBIENT_WORLD_DISPATCH_VICTIM_INITIAL_ACTIVITY_STARTED",
                     "Occurrence=" + incident.Id + "; Victim=" + victim.Handle
-                    + "; IncidentType=" + type + "; HandsUp="
-                    + (string.Equals(type, "carjacking", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(type, "bank_robbery", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(type, "store_robbery", StringComparison.OrdinalIgnoreCase)
-                        || string.Equals(type, "kidnapping", StringComparison.OrdinalIgnoreCase))
+                    + "; IncidentType=" + type + "; InitialHandsUpType="
+                    + initialHandsUpType + "; Role=" + reaction
+                    + "; TaskOwner=" + (initialHandsUpType && rolePosture
+                        ? "DispatchRoleMaintainer" : "AmbientWorldLookAt")
                     + "; Owner=AmbientWorld");
             }
             catch (Exception ex)
@@ -14701,12 +18642,19 @@ namespace LSImmersiveLife
                 }
                 catch { }
                 incident.DisturbanceNextTaskAt = now.AddSeconds(1);
-                if (selected && clearLineOfSight)
+                string victimRole = CivilianActivityRole(incident, 0);
+                bool supportedVictimPosture = string.Equals(victimRole, "hands_up",
+                        StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(victimRole, "cower",
+                        StringComparison.OrdinalIgnoreCase);
+                bool victimReactionReady = supportedVictimPosture
+                    && MaintainDispatchRole(incident, victim, victimRole,
+                        suspect, now);
+                if (selected && clearLineOfSight && victimReactionReady)
                 {
                     incident.DisturbanceWeaponStageConfirmed = true;
                     incident.DisturbancePresentationReady = true;
                     incident.DisturbanceNextTaskAt = DateTime.MaxValue;
-                    try { victim.Task.HandsUp(60000); } catch { }
                     Log("AMBIENT_WORLD_DISPATCH_DISTURBANCE_PRESENTATION_CONFIRMED",
                         "Occurrence=" + incident.Id + "; Variant=" + incident.DisturbanceVariant
                         + "; Suspect=" + suspect.Handle + "; Victim=" + victim.Handle
@@ -14715,7 +18663,8 @@ namespace LSImmersiveLife
                         + "; Task=" + (string.Equals(incident.DisturbanceVariant,
                             "knife_threat", StringComparison.OrdinalIgnoreCase)
                             ? "TASK_TURN_PED_TO_FACE_ENTITY" : "TASK_AIM_GUN_AT_ENTITY")
-                        + "; VictimHandsUpTaskIssued=true"
+                        + "; VictimReaction=" + victimRole
+                        + "; VictimReactionTask=RoleManagedLoop"
                         + "; VisibleWeaponAndLineOfSightConfirmed=true");
                 }
                 else
@@ -14723,6 +18672,8 @@ namespace LSImmersiveLife
                         "Occurrence=" + incident.Id + "; Suspect=" + suspect.Handle
                         + "; Victim=" + victim.Handle + "; SelectedWeapon=" + selected
                         + "; TargetClearLineOfSight=" + clearLineOfSight
+                        + "; VictimReaction=" + victimRole
+                        + "; VictimReactionReady=" + victimReactionReady
                         + "; Task=" + (string.Equals(incident.DisturbanceVariant,
                             "knife_threat", StringComparison.OrdinalIgnoreCase)
                             ? "TASK_TURN_PED_TO_FACE_ENTITY" : "TASK_AIM_GUN_AT_ENTITY")
@@ -15783,6 +19734,8 @@ namespace LSImmersiveLife
         internal float MaximumPlayerDistance { get; set; }
         internal float Heading { get; set; }
         internal Vector3 VehicleStagingPosition { get; set; }
+        internal Vector3 VehicleStagingRecoveryAnchorPosition { get; set; }
+        internal bool HasVehicleStagingRecoveryAnchor { get; set; }
         internal float VehicleHeading { get; set; }
         internal Vector3 VehicleRoutePosition { get; set; }
         internal float VehicleRouteHeading { get; set; }
@@ -15793,6 +19746,7 @@ namespace LSImmersiveLife
         internal float MaximumSnapDistance { get; set; }
         internal float ExteriorRoadHeightTolerance { get; set; }
         internal int MinimumExteriorOpenFootprintDirections { get; set; }
+        internal int ConfirmedExteriorOpenFootprintDirections { get; set; }
         internal Vector3 ExteriorApproachPosition { get; set; }
         internal string ExteriorPlacementEvidence { get; set; }
         internal bool IsInteriorScene { get; set; }
@@ -15811,5 +19765,18 @@ namespace LSImmersiveLife
         internal bool DoorwayStreamingRequestIssued { get; set; }
         internal string DoorwayStreamingRequestOccurrenceId { get; set; }
         internal bool DoorwayStreamingResolutionLogged { get; set; }
+        internal bool DoorwayStreamingLoadCompleted { get; set; }
+        internal int DoorwayPostStreamLookupAttempts { get; set; }
+        internal DateTime DoorwayNextPostStreamLookupAtUtc { get; set; }
+        internal string DoorwayLastPostStreamLookupFailure { get; set; }
+        internal bool InteriorFloorSupportFallbackValidated { get; set; }
+        internal int InteriorFloorSupportFallbackLiveInteriorId { get; set; }
+        internal Vector3 InteriorFloorSupportFallbackSceneCenter { get; set; }
+        internal Vector3 InteriorFloorSupportFallbackPosition { get; set; }
+        internal DateTime InteriorFloorSupportFallbackValidUntilUtc { get; set; }
+        internal bool InteriorFloorSupportFallbackTransitionLogged { get; set; }
+        internal DateTime InteriorFloorSupportFallbackNextProbeUtc { get; set; }
+        internal string InteriorFloorSupportFallbackLastFailure { get; set; }
+        internal Dictionary<int, DateTime> InteriorRegistrationRefreshNextAttemptAtUtcByHandle { get; set; }
     }
 }

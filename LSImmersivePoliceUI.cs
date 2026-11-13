@@ -23,7 +23,6 @@ namespace LSImmersiveLife
         private readonly LSPDStation _station = new LSPDStation();
         private readonly LSPDCitizenRecordPanel _citizenRecordPanel = new LSPDCitizenRecordPanel();
         private readonly List<NativeMenu> _menus = new List<NativeMenu>();
-        private string _dispatchResponsePromptText = string.Empty;
         private string _dispatchResponsePromptIncidentId = string.Empty;
         private string _dispatchResponsePromptTitle = string.Empty;
         private string _dispatchResponsePromptBriefing = string.Empty;
@@ -31,6 +30,8 @@ namespace LSImmersiveLife
         private string _dispatchResponsePromptAcceptKey = string.Empty;
         private string _dispatchResponsePromptRejectKey = string.Empty;
         private bool _dispatchResponsePromptIsOffer;
+        private readonly DispatchResponsePromptPanel _dispatchResponsePromptPanel =
+            new DispatchResponsePromptPanel();
         private readonly DispatchSuspectLocatorPanel _dispatchSuspectLocatorPanel =
             new DispatchSuspectLocatorPanel();
         private bool _stationAlmanacReturnKeyDown;
@@ -90,6 +91,10 @@ namespace LSImmersiveLife
         private NativeItem _continueTransport;
         private NativeItem _finishCustody;
         private NativeItem _recoverPersonalUtility;
+        private NativeItem _personalUtilityStatus;
+        private string _personalUtilityStatusDetail = string.Empty;
+        private string _lastPersonalUtilityStatus = string.Empty;
+        private DateTime _personalUtilityStatusDetailUntilUtc = DateTime.MinValue;
         private NativeItem _cancelActiveDispatch;
         private NativeItem _resetPoliceRuntime;
         private NativeMenu _crimeActivitiesMenu;
@@ -711,6 +716,27 @@ namespace LSImmersiveLife
                         && _core.Dispatch.IsEnabled;
                 if (_recoverPersonalUtility != null)
                     _recoverPersonalUtility.Enabled = _core.CanRecoverPersonalUtility;
+                if (_personalUtilityStatus != null)
+                {
+                    string status = _core.PersonalUtilityStatusText;
+                    if (!string.Equals(status, _lastPersonalUtilityStatus,
+                        StringComparison.Ordinal)
+                        || (_personalUtilityStatusDetailUntilUtc != DateTime.MinValue
+                            && DateTime.UtcNow >= _personalUtilityStatusDetailUntilUtc))
+                    {
+                        _lastPersonalUtilityStatus = status;
+                        _personalUtilityStatusDetailUntilUtc = DateTime.MinValue;
+                        _personalUtilityStatusDetail = status == "Utility: Ready"
+                            ? "The saved Police Utility is available."
+                            : status == "Utility: Placement deferred"
+                                ? "Move to clear ground and choose Fetch again. See LSDebug.log for placement details."
+                                : status == "Utility: Not placed"
+                                    ? "Choose Fetch when the saved Utility is needed."
+                                    : "The saved Utility is loading or settling.";
+                    }
+                    _personalUtilityStatus.Title = status;
+                    _personalUtilityStatus.Description = _personalUtilityStatusDetail;
+                }
                 RefreshBackupResponseMenu();
             };
             dispatch.Opening += delegate { _refreshOffer(); };
@@ -746,7 +772,9 @@ namespace LSImmersiveLife
             _finishCustody = new NativeItem("Complete the Transport");
             _recoverPersonalUtility = new NativeItem(
                 "Spawn the Personal Utility",
-                "Recover the same managed Utility to safe nearby ground. You stay in place; if nearby parking cannot be confirmed, the Utility remains at its current safe location. Enter that vehicle before pressing P to start Patrol.");
+                "Fetch the saved Utility to checked nearby ground. Detailed placement results are in LSDebug.log.");
+            _personalUtilityStatus = new NativeItem("Utility: Not placed");
+            _personalUtilityStatus.Enabled = false;
             _investigateDispatch.Activated += delegate { RunCoreCommand(_core.InvestigateDispatch); };
             _secureDispatch.Activated += delegate { RunCoreCommand(_core.SecureDispatchSuspect); };
             _arrestDispatch.Activated += delegate { RunCoreCommand(_core.ArrestDispatchSuspect); };
@@ -765,7 +793,7 @@ namespace LSImmersiveLife
             _releaseDispatchSuspect.Activated += delegate { RunCoreCommand(_core.ReleaseDispatchSuspect); };
             _approveTransport.Activated += delegate { RunCoreCommand(_core.ApproveDispatchTransportAction); };
             _finishCustody.Activated += delegate { RunCoreCommand(_core.CompletePrisonerTransport); };
-            _recoverPersonalUtility.Activated += delegate { RunCoreCommand(_core.RecoverPersonalUtility); };
+            _recoverPersonalUtility.Activated += delegate { RunUtilityFetch(); };
             dispatch.Add(_investigateDispatch);
             dispatch.Add(_secureDispatch);
             dispatch.Add(_arrestDispatch);
@@ -775,6 +803,7 @@ namespace LSImmersiveLife
             dispatch.Add(_approveTransport);
             dispatch.Add(_finishCustody);
             dispatch.Add(_recoverPersonalUtility);
+            dispatch.Add(_personalUtilityStatus);
             dispatch.Add(_releaseDispatchSuspect);
             _refreshOffer();
         }
@@ -1853,6 +1882,23 @@ namespace LSImmersiveLife
             RefreshAllMenus();
         }
 
+        private void RunUtilityFetch()
+        {
+            string message = _core.RecoverPersonalUtility();
+            if (!string.IsNullOrWhiteSpace(message))
+            {
+                if (_policeResponseDispatchMenu != null
+                    && _policeResponseDispatchMenu.Visible)
+                {
+                    _personalUtilityStatusDetail = message;
+                    _personalUtilityStatusDetailUntilUtc = DateTime.UtcNow.AddSeconds(5);
+                }
+                else
+                    Notification.PostTicker(message, false, false);
+            }
+            RefreshAllMenus();
+        }
+
         private void RunNpcCommand(Func<string> command)
         {
             // NPCResponse owns the visible interaction-stage notification. The
@@ -2008,6 +2054,11 @@ namespace LSImmersiveLife
             Menu.Visible = false;
         }
 
+        internal string ResetPoliceRuntime()
+        {
+            return _core.ResetPoliceRuntime();
+        }
+
         internal void SetRoleActive(bool active)
         {
             _core.SetRoleActive(active);
@@ -2073,10 +2124,13 @@ namespace LSImmersiveLife
                 _core.NpcResponse.ActiveSubjectVehicle,
                 _core.NpcResponse.StatusText,
                 paused || !citizenFrameworkVisible);
-            // An incident can arrive while Dispatch is already visible. Refresh
-            // only changed availability, without rebuilding menus or reattaching
-            // handlers on each tick, so controls cannot remain stale until reopen.
-            if (_refreshOffer != null) _refreshOffer();
+            // Availability only needs to be polled while this submenu is visible.
+            // Its Opening handler refreshes it before the Player can use any
+            // command, while an already-open submenu still tracks live changes.
+            if (_policeResponseDispatchMenu != null
+                && _policeResponseDispatchMenu.Visible
+                && _refreshOffer != null)
+                _refreshOffer();
             RefreshConvoyMenu();
             DrawDispatchResponsePrompt(
                 menuVisible || citizenRecordVisible || !allowStationSetupEntry
@@ -2117,11 +2171,14 @@ namespace LSImmersiveLife
                 return;
             }
 
-            // The legacy GTA help display has a fixed native position. Keep it
-            // out of the way while one of the Police frameworks is open, then
-            // restore the same call as soon as that framework closes.
+            // Keep the active call in an owned HUD panel. The one-frame GTA
+            // help-text slot is shared with mapped-door and other script prompts
+            // and can overwrite or briefly hide this multi-line dispatch text.
             if (frameworkVisible)
+            {
+                _dispatchResponsePromptPanel.Hide();
                 return;
+            }
 
             LSPDControlBindings controls = _core.PoliceControls;
             string acceptKey = controls == null
@@ -2134,9 +2191,9 @@ namespace LSImmersiveLife
             string briefing = string.IsNullOrWhiteSpace(incident.Briefing)
                 ? "Dispatch details are not available." : incident.Briefing;
             string action = hasOffer
-                ? "~c~RESPOND?~s~  ~g~" + acceptKey
-                    + " / Circle ACCEPT~s~  ~r~" + rejectKey + " / X DECLINE~s~"
-                : "~c~STATUS:~s~ " + DispatchResponseStateLabel(incident.State);
+                ? "RESPOND?  " + acceptKey
+                    + " / O ACCEPT  " + rejectKey + " / X DECLINE"
+                : "STATUS: " + DispatchResponseStateLabel(incident.State);
 
             bool changed = !string.Equals(_dispatchResponsePromptIncidentId,
                     incident.Id ?? string.Empty, StringComparison.Ordinal)
@@ -2160,21 +2217,15 @@ namespace LSImmersiveLife
                 _dispatchResponsePromptAcceptKey = acceptKey;
                 _dispatchResponsePromptRejectKey = rejectKey;
                 _dispatchResponsePromptIsOffer = hasOffer;
-
-                _dispatchResponsePromptText = (hasOffer
-                    ? "~b~911 DISPATCH~s~\n"
-                    : "~b~POLICE DISPATCH~s~\n")
-                    + "~y~CALL:~s~ " + title + "\n"
-                    + "~c~REPORT:~s~ " + briefing + "\n"
-                    + action;
             }
 
-            GTA.UI.Screen.ShowHelpTextThisFrame(_dispatchResponsePromptText, false);
+            _dispatchResponsePromptPanel.Draw(
+                hasOffer, title, briefing, action, acceptKey, rejectKey);
         }
 
         private void ClearDispatchResponsePrompt()
         {
-            _dispatchResponsePromptText = string.Empty;
+            _dispatchResponsePromptPanel.Hide();
             _dispatchResponsePromptIncidentId = string.Empty;
             _dispatchResponsePromptTitle = string.Empty;
             _dispatchResponsePromptBriefing = string.Empty;
@@ -2499,6 +2550,295 @@ namespace LSImmersiveLife
         }
 
         /// <summary>
+        /// Draws the live Dispatch message in an owned HUD region. This avoids
+        /// competing for GTA's one-frame help-text slot with doorway prompts.
+        /// </summary>
+        private sealed class DispatchResponsePromptPanel
+        {
+            private const float ReferenceAspect = 16f / 9f;
+            private const float ReferenceScreenHeight = 1080f;
+            private const float ReferenceWidth = 0.260f;
+            private float _left = 0.014f;
+            private float _top = 0.020f;
+            private float _width = ReferenceWidth;
+            private float _height = 0.180f;
+            private float _safeZoneSize = 1f;
+            private float _aspectRatio = ReferenceAspect;
+            private DateTime _geometryRefreshAtUtc = DateTime.MinValue;
+            private bool _visible;
+            private bool _hasOffer;
+            private string _lastTitle = string.Empty;
+            private string _lastBriefing = string.Empty;
+            private string _lastAction = string.Empty;
+            private string _headerText = string.Empty;
+            private string _callLabelText = string.Empty;
+            private string _acceptText = string.Empty;
+            private string _declineText = string.Empty;
+            private string _callValueText = string.Empty;
+            private string _reportLabelText = string.Empty;
+            private string _reportValueText = string.Empty;
+            private string _respondText = string.Empty;
+            private string _statusText = string.Empty;
+            private ScaledRectangle _background;
+            private ScaledText _header;
+            private ScaledText _callLabel;
+            private ScaledText _callValue;
+            private ScaledText _reportLabel;
+            private ScaledText _reportValue;
+            private ScaledText _respond;
+            private ScaledText _accept;
+            private ScaledText _decline;
+            private ScaledText _status;
+
+            internal void Draw(
+                bool hasOffer,
+                string title,
+                string briefing,
+                string action,
+                string acceptKey,
+                string rejectKey)
+            {
+                bool geometryChanged = RefreshGeometry();
+                bool contentChanged = !_visible || _hasOffer != hasOffer
+                    || !string.Equals(_lastTitle, title, StringComparison.Ordinal)
+                    || !string.Equals(_lastBriefing, briefing, StringComparison.Ordinal)
+                    || !string.Equals(_lastAction, action, StringComparison.Ordinal);
+                if (!geometryChanged && !contentChanged)
+                {
+                    DrawElements();
+                    return;
+                }
+
+                _visible = true;
+                _hasOffer = hasOffer;
+                _lastTitle = title ?? string.Empty;
+                _lastBriefing = briefing ?? string.Empty;
+                _lastAction = action ?? string.Empty;
+                string header = hasOffer ? "911 DISPATCH" : "POLICE DISPATCH";
+                string accept = hasOffer
+                    ? Normalize(acceptKey) + " / \u25CB ACCEPT" : string.Empty;
+                string decline = hasOffer
+                    ? Normalize(rejectKey) + " / X DECLINE" : string.Empty;
+                _headerText = header;
+                _callLabelText = "CALL:";
+                _acceptText = accept;
+                _declineText = decline;
+                _callValueText = Normalize(title);
+                _reportLabelText = "REPORT:";
+                _reportValueText = Normalize(briefing);
+                _respondText = hasOffer ? "RESPOND?" : string.Empty;
+                _statusText = hasOffer ? string.Empty : Normalize(action);
+                SetText(ref _header, _left + 0.012f, _top + 0.008f,
+                    _headerText, 0.30f, Color.FromArgb(255, 82, 196, 255));
+                float contentWidth = _width - 0.024f;
+                SetText(ref _callLabel, _left + 0.012f, 0f,
+                    _callLabelText, 0.30f, Color.FromArgb(255, 255, 214, 52));
+                SetText(ref _callValue, _left + 0.052f, 0f,
+                    _callValueText, 0.30f, Color.White);
+                SetText(ref _reportLabel, _left + 0.012f, 0f,
+                    _reportLabelText, 0.28f, Color.FromArgb(255, 190, 195, 202));
+                SetText(ref _reportValue, _left + 0.065f, 0f,
+                    _reportValueText, 0.30f, Color.White);
+                SetText(ref _respond, _left + 0.012f, 0f,
+                    _respondText, 0.28f, Color.White);
+                float actionColumnWidth = (contentWidth - 0.010f) * 0.5f;
+                SetText(ref _accept, _left + 0.012f, 0f,
+                    _acceptText, 0.28f, Color.FromArgb(255, 67, 255, 97));
+                SetText(ref _decline,
+                    _left + 0.012f + actionColumnWidth + 0.010f, 0f,
+                    _declineText, 0.28f, Color.FromArgb(255, 255, 72, 65));
+                SetText(ref _status, _left + 0.012f, 0f,
+                    _statusText, 0.30f, Color.White);
+
+                float textWidth = ScaledWidth(contentWidth);
+                float callValueWidth = Math.Max(0.12f, contentWidth - 0.040f);
+                float reportValueWidth = Math.Max(0.12f, contentWidth - 0.053f);
+                _callValue.WordWrap = ScaledWidth(callValueWidth);
+                _reportValue.WordWrap = ScaledWidth(reportValueWidth);
+                _accept.WordWrap = ScaledWidth(actionColumnWidth);
+                _decline.WordWrap = ScaledWidth(actionColumnWidth);
+                _status.WordWrap = textWidth;
+
+                float callTop = _top + 0.039f;
+                SetPosition(_callLabel, _left + 0.012f, callTop);
+                SetPosition(_callValue, _left + 0.052f, callTop);
+                float callHeight = MeasuredHeight(_callValue, 0.028f, 0.004f);
+                float reportTop = callTop + callHeight + 0.004f;
+                SetPosition(_reportLabel, _left + 0.012f, reportTop);
+                SetPosition(_reportValue, _left + 0.065f, reportTop);
+                float reportHeight = MeasuredHeight(_reportValue, 0.028f, 0.004f);
+                float contentBottom = reportTop + reportHeight;
+                if (hasOffer)
+                {
+                    float respondTop = contentBottom + 0.006f;
+                    SetPosition(_respond, _left + 0.012f, respondTop);
+                    float respondHeight = MeasuredHeight(_respond, 0.026f, 0.004f);
+                    float actionTop = respondTop + respondHeight + 0.004f;
+                    SetPosition(_accept, _left + 0.012f, actionTop);
+                    SetPosition(_decline,
+                        _left + 0.012f + actionColumnWidth + 0.010f, actionTop);
+                    float actionHeight = Math.Max(
+                        MeasuredHeight(_accept, 0.026f, 0.004f),
+                        MeasuredHeight(_decline, 0.026f, 0.004f));
+                    contentBottom = actionTop + actionHeight;
+                }
+                else
+                {
+                    float statusTop = contentBottom + 0.006f;
+                    float statusHeight = MeasuredHeight(_status, 0.026f, 0.004f);
+                    SetPosition(_status, _left + 0.012f, statusTop);
+                    contentBottom = statusTop + statusHeight;
+                }
+                _height = Math.Max(0.180f, contentBottom - _top + 0.014f);
+
+                SetRectangle(ref _background,
+                    _left, _top, _width, _height,
+                    Color.FromArgb(205, 0, 0, 0));
+                DrawElements();
+            }
+
+            internal void Hide()
+            {
+                _visible = false;
+            }
+
+            private void DrawElements()
+            {
+                _background.Draw();
+                _header.Draw();
+                _callLabel.Draw();
+                _callValue.Draw();
+                _reportLabel.Draw();
+                _reportValue.Draw();
+                _respond.Draw();
+                _accept.Draw();
+                _decline.Draw();
+                _status.Draw();
+            }
+
+            private bool RefreshGeometry()
+            {
+                DateTime now = DateTime.UtcNow;
+                if (now < _geometryRefreshAtUtc)
+                    return false;
+
+                _geometryRefreshAtUtc = now.AddMilliseconds(500);
+                float previousLeft = _left;
+                float previousTop = _top;
+                float previousWidth = _width;
+                try
+                {
+                    float safeZone = Function.Call<float>((Hash)0xBAF107B6BB2C97F0);
+                    if (!float.IsNaN(safeZone) && !float.IsInfinity(safeZone))
+                        _safeZoneSize = Math.Max(0.8f, Math.Min(1f, safeZone));
+                }
+                catch { _safeZoneSize = 1f; }
+
+                try
+                {
+                    Size resolution = GTA.UI.Screen.Resolution;
+                    float aspect = resolution.Height > 0
+                        ? resolution.Width / (float)resolution.Height
+                        : GTA.UI.Screen.AspectRatio;
+                    if (!float.IsNaN(aspect) && !float.IsInfinity(aspect)
+                        && aspect > 0.5f)
+                        _aspectRatio = aspect;
+                }
+                catch
+                {
+                    try { _aspectRatio = GTA.UI.Screen.AspectRatio; }
+                    catch { _aspectRatio = ReferenceAspect; }
+                }
+
+                float aspectScale = Math.Max(0.72f,
+                    Math.Min(1.15f, ReferenceAspect / _aspectRatio));
+                float safeInset = (1f - _safeZoneSize) * 0.5f;
+                _left = (safeInset + 0.014f) * aspectScale;
+                _top = safeInset + 0.020f;
+                _width = ReferenceWidth * aspectScale;
+                float rightLimit = 1f - safeInset - 0.012f;
+                _width = Math.Max(0.19f, Math.Min(_width, rightLimit - _left));
+                return Math.Abs(previousLeft - _left) > 0.001f
+                    || Math.Abs(previousTop - _top) > 0.001f
+                    || Math.Abs(previousWidth - _width) > 0.001f;
+            }
+
+            private static float MeasuredHeight(
+                ScaledText text,
+                float minimum,
+                float padding)
+            {
+                int lines = text == null ? 1 : Math.Max(1, text.LineCount);
+                float lineHeight = text == null ? 0f
+                    : text.LineHeight / ReferenceScreenHeight;
+                return Math.Max(minimum, lines * lineHeight + padding);
+            }
+
+            private static string Normalize(string value)
+            {
+                return string.IsNullOrWhiteSpace(value)
+                    ? string.Empty
+                    : value.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            }
+
+            private static float ScaledWidth(float width)
+            {
+                return width.ToXScaled();
+            }
+
+            private static void SetRectangle(
+                ref ScaledRectangle rectangle,
+                float x,
+                float y,
+                float width,
+                float height,
+                Color color)
+            {
+                if (rectangle == null)
+                {
+                    rectangle = new ScaledRectangle(
+                        new PointF(x, y).ToScaled(),
+                        new SizeF(width, height).ToScaled());
+                }
+                else
+                {
+                    rectangle.Position = new PointF(x, y).ToScaled();
+                    rectangle.Size = new SizeF(width, height).ToScaled();
+                }
+                rectangle.Color = color;
+            }
+
+            private static void SetText(
+                ref ScaledText text,
+                float x,
+                float y,
+                string value,
+                float scale,
+                Color color)
+            {
+                if (text == null)
+                {
+                    text = new ScaledText(new PointF(x, y).ToScaled(), value,
+                        scale, GTA.UI.Font.ChaletLondon);
+                    text.Shadow = true;
+                }
+                else
+                {
+                    text.Position = new PointF(x, y).ToScaled();
+                    text.Text = value;
+                    text.Scale = scale;
+                }
+                text.Color = color;
+            }
+
+            private static void SetPosition(ScaledText text, float x, float y)
+            {
+                if (text != null)
+                    text.Position = new PointF(x, y).ToScaled();
+            }
+        }
+
+        /// <summary>
         /// Draws live Dispatch suspect locations beside the minimap. Dispatch
         /// supplies the current positions; this panel only formats and draws them.
         /// </summary>
@@ -2556,8 +2896,10 @@ namespace LSImmersiveLife
                     incident == null ? string.Empty : incident.Title,
                     Math.Max(24, (int)(38f * _width / ReferenceWidth)));
                 LSPDControlBindings controls = core.PoliceControls;
-                _footer.Text = (controls == null ? "I" : controls.InvestigateKey.ToString())
-                    + "  HIDE";
+                _footer.Text = core.Dispatch.HasPendingVictimInvestigation
+                    ? "MURDER INVESTIGATION ACTIVE"
+                    : (controls == null ? "I" : controls.InvestigateKey.ToString())
+                        + "  HIDE";
 
                 _background.Draw();
                 _accent.Draw();

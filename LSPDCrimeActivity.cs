@@ -690,11 +690,26 @@ namespace LSImmersiveLife
 
         internal void Reset()
         {
+            ResetRuntime(false);
+        }
+
+        internal void ResetPreservingActors()
+        {
+            ResetRuntime(true);
+        }
+
+        private void ResetRuntime(bool preserveActors)
+        {
             CloseActiveAudio();
-            foreach (DeferredCleanup item in _deferredCleanup.ToArray())
-                DeleteDeferred(item);
-            _deferredCleanup.Clear();
-            DeleteOwnedSceneImmediately();
+            if (preserveActors)
+                QueueOwnedSceneForCleanup(DateTime.UtcNow, true);
+            else
+            {
+                foreach (DeferredCleanup item in _deferredCleanup.ToArray())
+                    DeleteDeferred(item);
+                _deferredCleanup.Clear();
+                DeleteOwnedSceneImmediately();
+            }
             CleanupSceneBlip();
             ReleaseSceneModelRequests();
             _availableIntel = null;
@@ -1492,16 +1507,42 @@ namespace LSImmersiveLife
                 _locationCooldowns.Remove(id);
         }
 
-        private void QueueOwnedSceneForCleanup(DateTime now)
+        private void QueueOwnedSceneForCleanup(
+            DateTime now,
+            bool preservePlayerOccupiedVehicle = false)
         {
+            Vehicle playerVehicle = null;
+            if (preservePlayerOccupiedVehicle)
+                try
+                {
+                    Ped player = Game.Player.Character;
+                    if (player != null && player.Exists())
+                        playerVehicle = player.CurrentVehicle;
+                }
+                catch { }
             foreach (Ped criminal in _sceneCriminals.Where(ped => ped != null && ped.Exists()))
+            {
+                try
+                {
+                    Vehicle criminalVehicle = criminal.CurrentVehicle;
+                    if (playerVehicle != null && playerVehicle.Exists()
+                        && criminalVehicle != null && criminalVehicle.Exists()
+                        && criminalVehicle.Handle == playerVehicle.Handle)
+                        continue;
+                }
+                catch { }
                 _deferredCleanup.Add(new DeferredCleanup
                 {
                     Ped = criminal,
                     Earliest = now.AddSeconds(_cleanupSettings.CompletedSceneGraceSeconds),
                     Expires = now.AddSeconds(_cleanupSettings.HardCleanupSeconds)
                 });
-            foreach (Vehicle vehicle in _sceneVehicles.Where(vehicle => vehicle != null && vehicle.Exists()))
+            }
+            foreach (Vehicle vehicle in _sceneVehicles.Where(vehicle => vehicle != null
+                && vehicle.Exists()
+                && (!preservePlayerOccupiedVehicle
+                    || playerVehicle == null || !playerVehicle.Exists()
+                    || vehicle.Handle != playerVehicle.Handle)))
                 _deferredCleanup.Add(new DeferredCleanup
                 {
                     Vehicle = vehicle,

@@ -4332,23 +4332,122 @@ namespace LSImmersiveLife
 
         internal void Reset()
         {
+            ResetRuntime(false);
+        }
+
+        internal void ResetPreservingActors()
+        {
+            ResetRuntime(true);
+        }
+
+        private void ResetRuntime(bool preserveActors)
+        {
             CloseActiveAudio();
             ReleasePendingModelRequests();
-            foreach (DeferredCleanup item in _deferredCleanup.ToArray())
-                DeleteDeferred(item);
-            _deferredCleanup.Clear();
+            if (preserveActors)
+                QueueRuntimeRecoveryCleanup();
+            else
+            {
+                foreach (DeferredCleanup item in _deferredCleanup.ToArray())
+                    DeleteDeferred(item);
+                _deferredCleanup.Clear();
+            }
             RestoreAllConvoyInjuryStates("ConvoyReset");
-            RestoreDispatchCustodyMovementStyles();
-            CleanupImmediate();
-            CleanupWaypoint();
+            HashSet<int> preserveActorHandles = preserveActors
+                ? new HashSet<int>(_prisoners
+                    .Where(prisoner => prisoner != null && prisoner.Exists())
+                    .Select(prisoner => prisoner.Handle))
+                : null;
+            if (preserveActors)
+            {
+                CleanupCustodyBlips();
+                CleanupWaypoint();
+                RestoreAllCustodyInvincibility(preserveActorHandles);
+                _transport = null;
+                _transportDriver = null;
+                _sceneEscortOfficers.Clear();
+                _stationHandoffOfficers.Clear();
+                _prisonHandoffOfficers.Clear();
+                _routeThreatPeds.Clear();
+                _routeThreatVehicle = null;
+            }
+            else
+            {
+                RestoreDispatchCustodyMovementStyles();
+                CleanupImmediate();
+                CleanupWaypoint();
+            }
             _prisoners.Clear();
-            _sceneEscortOfficers.Clear();
-            _stationHandoffOfficers.Clear();
-            _prisonHandoffOfficers.Clear();
-            _routeThreatPeds.Clear();
-            ResetOperationFields();
+            if (!preserveActors)
+            {
+                _sceneEscortOfficers.Clear();
+                _stationHandoffOfficers.Clear();
+                _prisonHandoffOfficers.Clear();
+                _routeThreatPeds.Clear();
+            }
+            ResetOperationFields(preserveActorHandles, preserveActors);
             _state = LSPDDispatchState.None;
             _phase = CustodyPhase.None;
+        }
+
+        private void QueueRuntimeRecoveryCleanup()
+        {
+            DateTime now = DateTime.UtcNow;
+            Ped player = null;
+            Vehicle playerVehicle = null;
+            try
+            {
+                player = Game.Player.Character;
+                if (player != null && player.Exists())
+                    playerVehicle = player.CurrentVehicle;
+            }
+            catch { }
+            IEnumerable<Ped> actors = _prisoners
+                .Concat(_sceneEscortOfficers)
+                .Concat(_stationHandoffOfficers)
+                .Concat(_prisonHandoffOfficers)
+                .Concat(new[] { _transportDriver })
+                .Concat(_routeThreatPeds)
+                .Where(ped => ped != null && ped.Exists())
+                .GroupBy(ped => ped.Handle)
+                .Select(group => group.First());
+            foreach (Ped actor in actors)
+            {
+                try
+                {
+                    Vehicle actorVehicle = actor.CurrentVehicle;
+                    if (playerVehicle != null && playerVehicle.Exists()
+                        && actorVehicle != null && actorVehicle.Exists()
+                        && actorVehicle.Handle == playerVehicle.Handle)
+                        continue;
+                }
+                catch { }
+                bool alreadyQueued = _deferredCleanup.Any(item => item != null
+                    && item.Ped != null && item.Ped.Exists()
+                    && item.Ped.Handle == actor.Handle);
+                if (!alreadyQueued)
+                    QueueCleanup(actor, null, now);
+            }
+
+            if (_transport != null && _transport.Exists() && !_playerOwnedTransport)
+            {
+                bool alreadyQueued = _deferredCleanup.Any(item => item != null
+                    && item.Vehicle != null && item.Vehicle.Exists()
+                    && item.Vehicle.Handle == _transport.Handle);
+                if (!alreadyQueued)
+                    QueueCleanup(null, _transport, now);
+            }
+
+            if (_routeThreatVehicle != null && _routeThreatVehicle.Exists())
+            {
+                bool alreadyQueued = _deferredCleanup.Any(item => item != null
+                    && item.Vehicle != null && item.Vehicle.Exists()
+                    && item.Vehicle.Handle == _routeThreatVehicle.Handle);
+                if (!alreadyQueued
+                    && (playerVehicle == null || !playerVehicle.Exists()
+                        || _routeThreatVehicle.Handle != playerVehicle.Handle))
+                    QueueCleanup(null, _routeThreatVehicle, now);
+            }
         }
 
         internal LSPDAudioResult ReportConfirmed(
@@ -14326,12 +14425,16 @@ namespace LSImmersiveLife
             ResetOperationFields(preserveDispatchCustodyHandles);
         }
 
-        private void ResetOperationFields(ISet<int> preserveDispatchCustodyHandles = null)
+        private void ResetOperationFields(
+            ISet<int> preserveDispatchCustodyHandles = null,
+            bool preserveActorTasks = false)
         {
-            ReleaseDispatchCommandArrestAssignments("ConvoyOperationReset");
+            if (!preserveActorTasks)
+                ReleaseDispatchCommandArrestAssignments("ConvoyOperationReset");
             _dispatchCommandDriverReturnHandles.Clear();
             _dispatchCommandDriverReturnTaskAt.Clear();
-            ReleaseBackupCustodyAssignments();
+            if (!preserveActorTasks)
+                ReleaseBackupCustodyAssignments();
             if (preserveDispatchCustodyHandles == null)
                 RestoreDispatchCustodyMovementStyles();
             ClearDispatchPickupPlan();

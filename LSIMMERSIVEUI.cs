@@ -75,7 +75,8 @@ namespace LSImmersiveLife
                 _log);
             _developer = new LSImmersiveDeveloper(
                 _paths,
-                _log);
+                _log,
+                delegate { return _authority.ResetSelectedRoleRuntime(); });
 
             BuildMenus();
 

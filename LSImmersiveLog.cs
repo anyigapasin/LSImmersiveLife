@@ -35,7 +35,7 @@ namespace LSImmersiveLife
 
         private bool _sessionStarted;
         private bool _sessionEnded;
-        private bool _runtimeEnabled = true;
+        private volatile bool _runtimeEnabled = true;
         private bool _debugEnabled = true;
         private bool _verboseDiagnostics;
         private int _runtimeEntryCount;
@@ -73,6 +73,16 @@ namespace LSImmersiveLife
         internal string SessionId
         {
             get { return _sessionId; }
+        }
+
+        /// <summary>
+        /// Lets hot polling owners skip diagnostic formatting when Runtime
+        /// output is disabled. The flag is volatile so this read does not need
+        /// to acquire the file writer lock.
+        /// </summary>
+        internal bool RuntimeLoggingEnabled
+        {
+            get { return _runtimeEnabled; }
         }
 
         internal LSImmersiveLog(string lsImmersiveDirectory, bool backgroundWrites = false)

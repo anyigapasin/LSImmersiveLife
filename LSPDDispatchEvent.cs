@@ -1010,6 +1010,7 @@ namespace LSImmersiveLife
         internal string SceneAnimationPrimaryClip { get; private set; }
         internal string SceneAnimationSecondaryClip { get; private set; }
         internal string PreparedActivity { get; private set; }
+        internal List<string> RammingTargetTypes { get; private set; }
         internal string PreArrivalActivity { get; private set; }
         internal List<string> SuspectResponseBranches { get; private set; }
         internal List<string> VictimResponseBranches { get; private set; }
@@ -1017,6 +1018,9 @@ namespace LSImmersiveLife
         internal bool RequiresVehicle { get; private set; }
         internal bool VehicleStagingRequired { get; private set; }
         internal string VehicleActivity { get; private set; }
+        internal int VictimVehicleSeat { get; private set; }
+        internal bool HasVictimVehicleSeat { get; private set; }
+        internal string VehicleVictimExitBehavior { get; private set; }
         internal List<string> VehicleAssetTypes { get; private set; }
         internal bool Mobile { get; private set; }
         internal bool StartPursuitOnAccept { get; private set; }
@@ -1125,6 +1129,26 @@ namespace LSImmersiveLife
                     StringComparison.OrdinalIgnoreCase)
                 && string.Equals(Required(node, "type"), "violent_disturbance",
                     StringComparison.OrdinalIgnoreCase);
+            bool mappedRetailGathering = (string.Equals(requiredPhysicalType, "Store",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(requiredPhysicalType, "Storefront",
+                    StringComparison.OrdinalIgnoreCase)
+                || IsMappedRetailParticipantType(requiredPhysicalType))
+                && Bool(node, "requiresMappedInterior", false)
+                && !Bool(node, "requiresExteriorScene", false)
+                && !Bool(node, "requiresVehicle", false)
+                && !Bool(node, "vehicleStagingRequired", false)
+                && string.Equals(locationContext, "commercial", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(Required(node, "type"), "criminal_gathering",
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(sceneBehavior, "paired_meeting",
+                    StringComparison.OrdinalIgnoreCase)
+                && string.Equals(Optional(node, "preparedActivity", string.Empty), "gathering",
+                    StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(Optional(node, "sceneParticipantPool", string.Empty))
+                && Integer(node, "minimumSceneParticipants", 0) >= 2
+                && Math.Max(1, Integer(node, "minimumSuspects",
+                    Integer(node, "suspectCount", 1))) >= 2;
             bool requiresBarberInterior = string.Equals(
                 requiredPhysicalType, "BarberShop", StringComparison.OrdinalIgnoreCase);
             if (requiresBarberInterior
@@ -1138,6 +1162,7 @@ namespace LSImmersiveLife
                 && !mappedRetailSnatch
                 && !mappedRetailMurder
                 && !mappedRetailAttack
+                && !mappedRetailGathering
                 && !string.Equals(sceneBehavior, "interior_activity", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException(
                     "A required physical store or bank type can only be used by a matching robbery or supported mapped retail scene.");
@@ -1258,6 +1283,16 @@ namespace LSImmersiveLife
             if (preparedActivity.StartsWith("driving_", StringComparison.OrdinalIgnoreCase) || preparedActivity == "ramming")
                 if (!Bool(node, "requiresVehicle", false) || !Bool(node, "mobile", false))
                     throw new InvalidDataException("A driving activity requires mobile vehicles.");
+            List<string> rammingTargetTypes = IdList(node, "rammingTargetTypes");
+            string[] supportedRammingTargetTypes = { "pedestrian", "vehicle" };
+            if ((string.Equals(preparedActivity, "ramming", StringComparison.OrdinalIgnoreCase)
+                    && (rammingTargetTypes.Count == 0
+                        || rammingTargetTypes.Any(value => !supportedRammingTargetTypes.Contains(
+                            value, StringComparer.OrdinalIgnoreCase))))
+                || (!string.Equals(preparedActivity, "ramming", StringComparison.OrdinalIgnoreCase)
+                    && rammingTargetTypes.Count > 0))
+                throw new InvalidDataException(
+                    "A ramming activity requires an authored pedestrian and/or vehicle target type; other activities cannot configure ramming targets.");
             string preArrivalActivity = Optional(node, "preArrivalActivity", "none");
             if (!new[] { "none", "guard", "disturbance", "murder_scene", "victim_threat", "victim_attack", "victim_snatch", "group_shootout", "active_shooter" }
                 .Contains(preArrivalActivity, StringComparer.OrdinalIgnoreCase))
@@ -1413,6 +1448,11 @@ namespace LSImmersiveLife
             bool vehicleStagingRequired = Bool(node, "vehicleStagingRequired", false);
             bool requiresVehicle = Bool(node, "requiresVehicle", false);
             string vehicleActivity = Optional(node, "vehicleActivity", "none").Trim().ToLowerInvariant();
+            int victimVehicleSeat = IntegerInRange(
+                node, "victimVehicleSeat", -1, -1, 15);
+            bool hasVictimVehicleSeat = node.Attribute("victimVehicleSeat") != null;
+            string vehicleVictimExitBehavior = Optional(
+                node, "vehicleVictimExitBehavior", "none").Trim().ToLowerInvariant();
             List<string> vehicleAssetTypes = IdList(node, "vehicleAssetTypes");
             if (!new[] { "none", "carjacking", "parked_theft", "moving_road" }
                 .Contains(vehicleActivity, StringComparer.OrdinalIgnoreCase))
@@ -1436,6 +1476,31 @@ namespace LSImmersiveLife
                         Required(node, "type"), StringComparer.OrdinalIgnoreCase)))
                 throw new InvalidDataException(
                     "Vehicle activity must match its criminal Dispatch event type.");
+            bool vehicleEntryVictim = vehicleActivity == "carjacking"
+                || vehicleActivity == "parked_theft";
+            if ((vehicleEntryVictim && !hasVictimVehicleSeat)
+                || (hasVictimVehicleSeat
+                    && (!vehicleEntryVictim
+                        || minimumVictims != 1
+                        || maximumVictims != 1
+                        || victimStartsDead
+                        || string.IsNullOrWhiteSpace(victimPoolId))))
+                throw new InvalidDataException(
+                    "A parked theft or carjacking requires exactly one living victim in an authored vehicle seat and victim pool.");
+            if (!new[] { "none", "threatened_exit", "forced_carjack" }
+                    .Contains(vehicleVictimExitBehavior, StringComparer.OrdinalIgnoreCase)
+                || (vehicleVictimExitBehavior != "none"
+                    && vehicleActivity != "carjacking")
+                || (vehicleActivity == "carjacking"
+                    && (!hasVictimVehicleSeat
+                        || vehicleVictimExitBehavior == "none"
+                        || !Bool(node, "armed", false)))
+                || (vehicleVictimExitBehavior == "threatened_exit"
+                    && victimVehicleSeat < 0)
+                || (vehicleVictimExitBehavior == "forced_carjack"
+                    && victimVehicleSeat != -1))
+                throw new InvalidDataException(
+                    "A carjacking must author either a threatened passenger exit or a forced driver-seat carjack with an armed suspect.");
             int minimumSuspectVehicles = IntegerInRange(
                 node, "minimumSuspectVehicles", requiresVehicle ? 1 : 0, 0, 2);
             int maximumSuspectVehicles = IntegerInRange(
@@ -1502,7 +1567,8 @@ namespace LSImmersiveLife
                 || mappedInteriorAttackAttempt
                 || mappedInteriorClerkAssault
                 || mappedInteriorClerkSnatch
-                || mappedInteriorMurderScene;
+                || mappedInteriorMurderScene
+                || mappedRetailGathering;
             bool requiresMappedInterior = Bool(
                 node, "requiresMappedInterior", inferredMappedInterior);
             bool requiresExteriorScene = Bool(node, "requiresExteriorScene", false);
@@ -1511,7 +1577,7 @@ namespace LSImmersiveLife
                 throw new InvalidDataException("An exterior-only Dispatch event cannot require an interior.");
             if (requiresMappedInterior != inferredMappedInterior)
                 throw new InvalidDataException(
-                    "requiresMappedInterior must match a mapped interior robbery, attack, assault, snatch, or murder scene behavior.");
+                    "requiresMappedInterior must match a mapped interior robbery, attack, assault, snatch, murder, or supported retail gathering scene behavior.");
             if (interiorStoreCustody
                 && (!string.Equals(Required(node, "type"), "store_robbery", StringComparison.OrdinalIgnoreCase)
                     || string.IsNullOrWhiteSpace(interiorLocationId)
@@ -1675,6 +1741,7 @@ namespace LSImmersiveLife
                 SceneAnimationPrimaryClip = sceneAnimationPrimaryClip,
                 SceneAnimationSecondaryClip = sceneAnimationSecondaryClip,
                 PreparedActivity = preparedActivity,
+                RammingTargetTypes = rammingTargetTypes,
                 PreArrivalActivity = preArrivalActivity,
                 SuspectResponseBranches = suspectResponseBranches,
                 VictimResponseBranches = victimResponseBranches,
@@ -1684,6 +1751,9 @@ namespace LSImmersiveLife
                 RequiresVehicle = requiresVehicle,
                 VehicleStagingRequired = vehicleStagingRequired,
                 VehicleActivity = vehicleActivity,
+                VictimVehicleSeat = victimVehicleSeat,
+                HasVictimVehicleSeat = hasVictimVehicleSeat,
+                VehicleVictimExitBehavior = vehicleVictimExitBehavior,
                 VehicleAssetTypes = vehicleAssetTypes,
                 Mobile = Bool(node, "mobile", false),
                 StartPursuitOnAccept = Bool(node, "startPursuitOnAccept", false),
@@ -1714,9 +1784,23 @@ namespace LSImmersiveLife
 
         internal int ChooseSuspectCount(Random random, int maximumAllowed)
         {
-            int maximum = Math.Min(MaximumSuspects, Math.Max(1, Math.Min(5, maximumAllowed)));
-            if (MinimumSuspects > maximum)
+            return ChooseSuspectCount(random, maximumAllowed, MaximumSuspects);
+        }
+
+        internal int ChooseSuspectCount(
+            Random random,
+            int maximumAllowed,
+            int preferredMaximum)
+        {
+            int configuredMaximum = Math.Min(
+                MaximumSuspects, Math.Max(1, Math.Min(5, maximumAllowed)));
+            if (MinimumSuspects > configuredMaximum)
                 return 0;
+
+            // Scene capacity is a preference for optional members, never a
+            // reason to remove an authored required suspect from an event.
+            int maximum = Math.Min(
+                configuredMaximum, Math.Max(MinimumSuspects, preferredMaximum));
             return MinimumSuspects >= maximum || random == null
                 ? MinimumSuspects
                 : random.Next(MinimumSuspects, maximum + 1);
@@ -1724,9 +1808,16 @@ namespace LSImmersiveLife
 
         internal int ChooseVictimCount(Random random)
         {
-            if (MaximumVictims <= MinimumVictims || random == null)
+            return ChooseVictimCount(random, MaximumVictims);
+        }
+
+        internal int ChooseVictimCount(Random random, int preferredMaximum)
+        {
+            int maximum = Math.Min(
+                MaximumVictims, Math.Max(MinimumVictims, preferredMaximum));
+            if (maximum <= MinimumVictims || random == null)
                 return MinimumVictims;
-            return random.Next(MinimumVictims, MaximumVictims + 1);
+            return random.Next(MinimumVictims, maximum + 1);
         }
 
         internal string ChooseDisturbanceActivity(Random random)
@@ -1739,9 +1830,17 @@ namespace LSImmersiveLife
 
         internal int ChooseSceneParticipantCount(Random random)
         {
-            if (MaximumSceneParticipants <= MinimumSceneParticipants || random == null)
+            return ChooseSceneParticipantCount(random, MaximumSceneParticipants);
+        }
+
+        internal int ChooseSceneParticipantCount(Random random, int preferredMaximum)
+        {
+            int maximum = Math.Min(
+                MaximumSceneParticipants,
+                Math.Max(MinimumSceneParticipants, preferredMaximum));
+            if (maximum <= MinimumSceneParticipants || random == null)
                 return MinimumSceneParticipants;
-            return random.Next(MinimumSceneParticipants, MaximumSceneParticipants + 1);
+            return random.Next(MinimumSceneParticipants, maximum + 1);
         }
 
         private static bool IsMappedRetailParticipantType(string physicalType)
@@ -1964,6 +2063,7 @@ namespace LSImmersiveLife
     internal sealed class LSPDDispatchEvent
     {
         internal string Id { get; set; }
+        internal string EventDefinitionId { get; set; }
         internal string Title { get; set; }
         internal string Briefing { get; set; }
         internal string IncidentType { get; set; }
@@ -1979,6 +2079,7 @@ namespace LSImmersiveLife
         internal string PreparedActivity { get; set; }
         internal bool PreparedActivityStarted { get; set; }
         internal bool PreparedActivityConfirmed { get; set; }
+        internal bool PreparedActivityRecoveryExhausted { get; set; }
         internal bool PreparedActivityAudioReported { get; set; }
         internal bool ContinueAmbientSceneAfterDecline { get; set; }
         internal bool DeclinedSceneActivityFailed { get; set; }
@@ -1990,6 +2091,11 @@ namespace LSImmersiveLife
         internal DateTime PreparedActivityNextSampleAt { get; set; }
         internal int PreparedActivitySamples { get; set; }
         internal bool RammingImpactConfirmed { get; set; }
+        internal List<string> RammingTargetTypes { get; set; }
+        internal string RammingTargetType { get; set; }
+        internal float RammingTargetInitialHealth { get; set; }
+        internal int RammingImpactStopTaskAttempts { get; set; }
+        internal bool RammingImpactStopTaskIssued { get; set; }
         internal Dictionary<int, int> ActivityStages { get; private set; } = new Dictionary<int, int>();
         internal int PreparedActivityRecoveryCount { get; set; }
         internal Dictionary<int, Vector3> ActivitySamplePositions { get; private set; } = new Dictionary<int, Vector3>();
@@ -2011,6 +2117,9 @@ namespace LSImmersiveLife
         internal bool RequiresVehicle { get; set; }
         internal bool VehicleStagingRequired { get; set; }
         internal string VehicleActivity { get; set; }
+        internal int VictimVehicleSeat { get; set; }
+        internal bool HasVictimVehicleSeat { get; set; }
+        internal string VehicleVictimExitBehavior { get; set; }
         internal bool Mobile { get; set; }
         internal bool StartPursuitOnAccept { get; set; }
         internal bool Armed { get; set; }
@@ -2098,6 +2207,18 @@ namespace LSImmersiveLife
         internal Vector3 CleanupSceneOrigin { get; private set; }
         internal bool HasCleanupSceneOrigin { get; private set; }
         internal AmbientDispatchSceneResolution SceneResolution { get; set; }
+        internal string DispatchSearchId { get; set; }
+        internal int DispatchCandidateAttempt { get; set; }
+        internal bool HiddenPreparationUntilOffered { get; set; }
+        internal bool HiddenPreparationReleasedAtOffer { get; set; }
+        internal bool DispatchAmbientClaimsReleased { get; set; }
+        internal DateTime LastAcceptedInteriorVisibilityCheckAt { get; set; }
+        internal bool AcceptedInteriorPlayerWasInside { get; set; }
+        internal int AcceptedInteriorVisibilityEntryCount { get; set; }
+        internal HashSet<int> AcceptedInteriorVisibilityRecoveryHandles { get; private set; } =
+            new HashSet<int>();
+        internal string DeveloperLastPreparationPendingReason { get; set; }
+        internal bool DeveloperInspectionActiveLastUpdate { get; set; }
         // Navigation-validated ground points used for generated actors. These
         // are placement evidence, not proof of the actor's physical readiness.
         internal Dictionary<int, Vector3> ExteriorActorPlacementPlans { get; private set; } =
@@ -2139,6 +2260,35 @@ namespace LSImmersiveLife
         internal HashSet<int> PursuitContainedSuspectHandles { get; private set; } =
             new HashSet<int>();
         internal Dictionary<int, string> SuspectResponses { get; private set; } = new Dictionary<int, string>();
+        // Vehicle response selections are immutable for this occurrence and
+        // remain paired with the exact assigned driver vehicle. SuspectResponses
+        // may later advance from flee/resist to a physical stop/compliance state.
+        internal Dictionary<int, string> VehicleSuspectResponseByPedHandle { get; private set; } =
+            new Dictionary<int, string>();
+        internal Dictionary<int, int> VehicleEncounterAssignedVehicleBySuspectHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal HashSet<int> VehicleResponseMissingAssignedVehicleHandles { get; private set; } =
+            new HashSet<int>();
+        internal Dictionary<int, int> VehicleResponseLostVehicleExitAttemptsByPedHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal Dictionary<int, string> AssignedWeaponNameBySuspectHandle { get; private set; } =
+            new Dictionary<int, string>();
+        internal Dictionary<int, int> AssignedWeaponHashBySuspectHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal Dictionary<int, DateTime> VehicleResponseNextTaskAt { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal Dictionary<int, DateTime> VehicleResponseNoShotSinceAt { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal Dictionary<int, DateTime> VehicleResponseStartedAt { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal Dictionary<int, int> VehicleResponseTargetIndexByPedHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal HashSet<long> VehicleResponseConfirmedShotPairs { get; private set; } =
+            new HashSet<long>();
+        internal HashSet<int> VehicleResponseStopRequestedHandles { get; private set; } =
+            new HashSet<int>();
+        internal Dictionary<int, int> BackupVehicleStopRequestBySuspectHandle { get; private set; } =
+            new Dictionary<int, int>();
         // Some urgent callouts have a second Police-owned participant.  The
         // victim/witness stays in the scene until the officer has investigated
         // it, so a carjacking or robbery is visibly different from a lone
@@ -2147,19 +2297,36 @@ namespace LSImmersiveLife
         internal bool VictimWasExistingAmbient { get; set; }
         internal Vehicle VictimVehicle { get; set; }
         internal bool VictimVehicleRecovered { get; set; }
+        internal bool VehicleVictimSeatReady { get; set; }
+        internal int VehicleVictimSeatPedHandle { get; set; }
+        internal int VehicleVictimSeatVehicleHandle { get; set; }
+        internal int VehicleVictimSeatTaskAttempts { get; set; }
+        internal DateTime VehicleVictimSeatNextTaskAt { get; set; }
         internal List<Ped> AdditionalParticipants { get; private set; } = new List<Ped>();
         internal Vehicle SuspectVehicle { get; set; }
         internal List<Vehicle> SuspectVehicles { get; private set; } = new List<Vehicle>();
         internal Dictionary<int, int> SuspectVehicleByPedHandle { get; private set; } = new Dictionary<int, int>();
+        // Dispatch preparation keeps the one supported secondary vehicle point
+        // committed with this occurrence, then records the physical staging
+        // point for each Dispatch-owned suspect vehicle.
+        internal Vector3 AdditionalSuspectVehicleStagingPlan { get; set; }
+        internal float AdditionalSuspectVehicleHeadingPlan { get; set; }
+        internal Dictionary<int, Vector3> SuspectVehicleStagingPositionsByHandle { get; private set; } =
+            new Dictionary<int, Vector3>();
         internal Dictionary<int, int> VehicleEntrySeatByPedHandle { get; private set; } = new Dictionary<int, int>();
         internal HashSet<int> VehicleEncounterResponseHandles { get; private set; } = new HashSet<int>();
         internal int VehicleActivityStage { get; set; }
         internal bool VehicleActivityThreatStarted { get; set; }
         internal int VehicleActivityEntryAttempts { get; set; }
+        internal int VehicleVictimExitAttempts { get; set; }
         internal DateTime VehicleActivityStartedAt { get; set; }
         internal DateTime VehicleActivityNextTaskAt { get; set; }
         internal DateTime VehicleActivityNextCheckAt { get; set; }
         internal DateTime VehicleActivityEntryDeadlineAt { get; set; }
+        internal bool VehicleVictimExitTaskIssued { get; set; }
+        internal bool VehicleVictimExitConfirmed { get; set; }
+        internal bool VehicleVictimHandsUpIssued { get; set; }
+        internal bool VehicleForcedCarjackEntryCompleted { get; set; }
         internal Vehicle ParkedPlayerUtility { get; set; }
         internal bool InteriorUtilityRequirementReported { get; set; }
         internal bool InteriorUtilityArrivalValidated { get; set; }
@@ -2173,6 +2340,7 @@ namespace LSImmersiveLife
         internal bool ScenePreparationCompleted { get; set; }
         internal DateTime ScenePreparationDeadline { get; set; }
         internal DateTime ScenePreparationNextRetryAt { get; set; }
+        internal bool ScenePreparationReadinessGraceUsed { get; set; }
         internal int ScenePreparationActorRetryCount { get; set; }
         internal int ScenePreparationVehicleGroundRetryCount { get; set; }
         internal string ScenePreparationFailureStage { get; set; }
@@ -2225,8 +2393,30 @@ namespace LSImmersiveLife
             new Dictionary<int, int>();
         internal Dictionary<int, int> PursuitVehicleTireBurstMaskAtStart { get; private set; } =
             new Dictionary<int, int>();
+        internal Dictionary<int, int> PursuitVehicleTireAvailabilityMaskAtStart { get; private set; } =
+            new Dictionary<int, int>();
+        internal HashSet<int> PursuitVehicleCollisionObservedHandles { get; private set; } =
+            new HashSet<int>();
+        internal Dictionary<int, DateTime> VehicleFleeLastProgressAt { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal Dictionary<int, Vector3> VehicleFleeLastPositionByPedHandle { get; private set; } =
+            new Dictionary<int, Vector3>();
+        internal Dictionary<int, int> VehicleFleeRecoveryCountByPedHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal HashSet<int> VehicleFleeRecoveryExhaustedHandles { get; private set; } =
+            new HashSet<int>();
+        internal Dictionary<int, int> VehicleFootFleeRecoveryCountByPedHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal Dictionary<int, int> VehicleStopSurrenderTaskFailuresByPedHandle { get; private set; } =
+            new Dictionary<int, int>();
+        internal Dictionary<int, DateTime> VehicleStopSurrenderNextAttemptAtByPedHandle { get; private set; } =
+            new Dictionary<int, DateTime>();
+        internal HashSet<int> VehicleFleeTaskIssuedHandles { get; private set; } =
+            new HashSet<int>();
         internal Dictionary<int, DateTime> PursuitVehicleStoppedAt { get; private set; } =
             new Dictionary<int, DateTime>();
+        internal Dictionary<int, int> PursuitVehiclePhysicalStopConfirmedVehicleByPedHandle { get; private set; } =
+            new Dictionary<int, int>();
         internal Dictionary<int, DateTime> PursuitVehicleExitTaskAt { get; private set; } =
             new Dictionary<int, DateTime>();
         internal HashSet<int> PursuitVehicleExitRequestedHandles { get; private set; } =
@@ -2344,6 +2534,7 @@ namespace LSImmersiveLife
             return new LSPDDispatchEvent
             {
                 Id = definition.Id + "-" + Guid.NewGuid().ToString("N"),
+                EventDefinitionId = definition.Id,
                 Title = definition.Title,
                 Briefing = definition.Briefing,
                 IncidentType = definition.IncidentType,
@@ -2358,6 +2549,12 @@ namespace LSImmersiveLife
                 SceneAnimationPrimaryClip = definition.SceneAnimationPrimaryClip,
                 SceneAnimationSecondaryClip = definition.SceneAnimationSecondaryClip,
                 PreparedActivity = definition.PreparedActivity,
+                RammingTargetTypes = definition.RammingTargetTypes == null
+                    ? new List<string>() : new List<string>(definition.RammingTargetTypes),
+                RammingTargetType = string.Empty,
+                RammingTargetInitialHealth = 0f,
+                RammingImpactStopTaskAttempts = 0,
+                RammingImpactStopTaskIssued = false,
                 PreArrivalActivity = definition.PreArrivalActivity,
                 SuspectResponseBranches = definition.SuspectResponseBranches == null
                     ? new List<string>() : new List<string>(definition.SuspectResponseBranches),
@@ -2386,6 +2583,9 @@ namespace LSImmersiveLife
                 RequiresVehicle = definition.RequiresVehicle,
                 VehicleStagingRequired = definition.VehicleStagingRequired,
                 VehicleActivity = definition.VehicleActivity,
+                VictimVehicleSeat = definition.VictimVehicleSeat,
+                HasVictimVehicleSeat = definition.HasVictimVehicleSeat,
+                VehicleVictimExitBehavior = definition.VehicleVictimExitBehavior,
                 Mobile = definition.Mobile,
                 StartPursuitOnAccept = definition.StartPursuitOnAccept,
                 Armed = definition.Armed || profileArmed,
@@ -2462,6 +2662,7 @@ namespace LSImmersiveLife
                 ScenePreparationStartedAt = DateTime.MinValue,
                 ScenePreparationCompletedAt = DateTime.MinValue,
                 ScenePreparationNextRetryAt = DateTime.MinValue,
+                ScenePreparationReadinessGraceUsed = false,
                 ScenePreparationActorRetryCount = 0,
                 ScenePreparationVehicleGroundRetryCount = 0,
                 ScenePreparationFailureStage = string.Empty,
@@ -2488,6 +2689,9 @@ namespace LSImmersiveLife
                 MappedInteriorDoorwayCrossedAt = DateTime.MinValue,
                 LastMappedInteriorEscalationCheckAt = DateTime.MinValue,
                 MappedInteriorEntryEvidence = string.Empty,
+                LastAcceptedInteriorVisibilityCheckAt = DateTime.MinValue,
+                AcceptedInteriorPlayerWasInside = false,
+                AcceptedInteriorVisibilityEntryCount = 0,
                 PursuitLocationUpdateCount = 0,
                 LastEncounterResponseCheckAt = DateTime.MinValue,
                 SceneBehaviorStage = 0,
@@ -2537,6 +2741,18 @@ namespace LSImmersiveLife
                     return candidate;
             }
             return candidates[candidates.Count - 1];
+        }
+
+        internal string ChooseRammingTargetType(Random random)
+        {
+            if (!string.IsNullOrWhiteSpace(RammingTargetType))
+                return RammingTargetType;
+            if (RammingTargetTypes == null || RammingTargetTypes.Count == 0)
+                return string.Empty;
+
+            int selectedIndex = random == null ? 0 : random.Next(RammingTargetTypes.Count);
+            RammingTargetType = RammingTargetTypes[selectedIndex];
+            return RammingTargetType;
         }
 
         private int GetSuspectResponseWeight(string response)
@@ -2621,8 +2837,31 @@ namespace LSImmersiveLife
             int vehicleHandle;
             if (!SuspectVehicleByPedHandle.TryGetValue(suspect.Handle, out vehicleHandle))
                 return null;
-            return SuspectVehicles.FirstOrDefault(value => value != null
+            Vehicle assignedVehicle = SuspectVehicles.FirstOrDefault(value => value != null
                 && value.Exists() && value.Handle == vehicleHandle);
+            if (assignedVehicle != null)
+                return assignedVehicle;
+
+            // Recover a temporarily incomplete wrapper/list association only
+            // when the live Ped is physically inside the exact recorded car.
+            // This never adopts a replacement or nearby vehicle.
+            try
+            {
+                Vehicle currentVehicle = suspect.IsInVehicle()
+                    ? suspect.CurrentVehicle : null;
+                if (currentVehicle == null || !currentVehicle.Exists()
+                    || currentVehicle.Handle != vehicleHandle)
+                    return null;
+                if (SuspectVehicles != null
+                    && !SuspectVehicles.Any(value => value != null
+                        && value.Exists() && value.Handle == vehicleHandle))
+                    SuspectVehicles.Add(currentVehicle);
+                return currentVehicle;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         internal Ped CurrentPursuitTarget

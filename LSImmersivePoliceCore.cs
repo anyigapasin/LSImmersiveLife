@@ -25,6 +25,14 @@ namespace LSImmersiveLife
     /// </summary>
     internal sealed class LSImmersivePoliceCore : IDisposable
     {
+        private enum StartupProfileAssetStage
+        {
+            None,
+            PlayerPed,
+            Armory,
+            Utility
+        }
+
         // Construction stays passive. Runtime ownership begins only after
         // EnterPoliceAuthority and Process receives an active game tick.
         private readonly LSImmersiveLog _log;
@@ -39,6 +47,10 @@ namespace LSImmersiveLife
         private readonly Dictionary<int, DispatchArrestInvincibilityState>
             _dispatchArrestInvincibilityStates =
                 new Dictionary<int, DispatchArrestInvincibilityState>();
+        private readonly Dictionary<string, DispatchOfficerAssistantUnavailableState>
+            _dispatchOfficerAssistantUnavailableStates =
+                new Dictionary<string, DispatchOfficerAssistantUnavailableState>(
+                    StringComparer.Ordinal);
         private readonly List<Vehicle> _npcProtectedVehicles = new List<Vehicle>(12);
         private readonly List<Ped> _npcTrafficOperationActors = new List<Ped>(12);
         private readonly List<Vehicle> _npcTrafficOperationVehicles = new List<Vehicle>(8);
@@ -56,6 +68,10 @@ namespace LSImmersiveLife
         private string _preferredPoliceVehiclePlacementRetryMessage = string.Empty;
         private bool _preferredPoliceVehiclePlacementRetryAllowsStationFallback;
         private bool _preferredPoliceVehiclePlacementRetryForceReplaceManagedVehicle;
+        private readonly List<Vector3> _recentRejectedStationParkingPositions = new List<Vector3>();
+        private string _recentRejectedStationParkingKey = string.Empty;
+        private Vector3 _recentRejectedStationParkingPlayerPosition;
+        private DateTime _recentRejectedStationParkingUntil = DateTime.MinValue;
         private string _lastPreferredPoliceVehicleSpawnSource = string.Empty;
         private Blip _preferredPoliceVehicleBlip;
         private int _preferredPoliceVehicleBlipTargetHandle;
@@ -83,7 +99,6 @@ namespace LSImmersiveLife
         private bool _interiorAccessEnterKeyDown;
         private bool _dispatchSuspectLocatorKeyDown;
         private bool _dispatchSuspectLocatorVisible;
-        private bool _dispatchSuspectLocatorHiddenForInvestigation;
         private string _dispatchSuspectLocatorIncidentId = string.Empty;
         private string _pendingDispatchTransportIncidentId = string.Empty;
         private string _dispatchGroupFinalHandoffIncidentId = string.Empty;
@@ -107,6 +122,16 @@ namespace LSImmersiveLife
         private bool _pendingProfileVehicleApply;
         private bool _pendingProfileWeaponsApply;
         private string _pendingProfilePedSelectionModelName = string.Empty;
+        private StartupProfileAssetStage _startupProfileAssetStage;
+        private readonly List<LSPDPoliceFavoriteWeapon> _startupProfileWeapons =
+            new List<LSPDPoliceFavoriteWeapon>();
+        private readonly List<LSPDPoliceFavoriteWeapon> _startupProfileWeaponRetries =
+            new List<LSPDPoliceFavoriteWeapon>();
+        private int _startupProfileWeaponIndex;
+        private int _startupProfileWeaponRetryIndex;
+        private DateTime _startupProfileWeaponRetryAfterUtc = DateTime.MinValue;
+        private bool _startupProfileActiveWeaponFallbackPending;
+        private bool _startupProfileApplyHadFailures;
         private readonly HashSet<string> _profileRestoreAppliedWeaponIds =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private DateTime _nextPendingProfileApply = DateTime.MinValue;
@@ -168,12 +193,13 @@ namespace LSImmersiveLife
         private const int PersonalUtilityDeliveryMaximumRecoveryAttempts = 1;
         private const int PersonalUtilityFetchRetryBackoffMilliseconds = 8000;
         private const float PersonalUtilityFetchRetryPositionTolerance = 25f;
-        private const float PersonalUtilityRecoveryMaximumDistance = 48f;
+        private const float PersonalUtilityRecoveryMaximumDistance = 64f;
         private const float PersonalUtilityRecoveryGroundProbeHeight = 10f;
         private const int PersonalUtilityRecoveryCollisionTimeoutSeconds = 6;
         private const int PersonalUtilityRecoverySettleTimeoutSeconds = 6;
         private const int PreferredPoliceVehiclePlacementRetryBackoffMilliseconds = 8000;
         private const float PreferredPoliceVehiclePlacementRetryPositionTolerance = 3f;
+        private const int RejectedStationParkingMemorySeconds = 120;
         private const float PersonalUtilityRecoveryDistance = 45f;
         private const float SelectedStationGarageAccessDistance = 75f;
         private const float SelectedStationParkingMatchDistance = 24f;
@@ -316,11 +342,32 @@ namespace LSImmersiveLife
                     && incident.State != LSPDDispatchState.Failed
                     && string.Equals(_dispatchSuspectLocatorIncidentId, incident.Id,
                         StringComparison.Ordinal)
-                    && _dispatchSuspectLocatorVisible
-                    && !_dispatchSuspectLocatorHiddenForInvestigation;
+                    && _dispatchSuspectLocatorVisible;
             }
         }
         internal string LastOperationMessage { get; private set; }
+
+        internal string PersonalUtilityStatusText
+        {
+            get
+            {
+                if (_personalUtilityRecoveryState != PersonalUtilityRecoveryState.None)
+                    return "Utility: Recovering nearby";
+                if (_managedPoliceVehicle != null && _managedPoliceVehicle.Exists())
+                    return "Utility: Ready";
+                if (_pendingProfileVehicleApply)
+                    return "Utility: Loading " + _profile.SelectedVehicleModelName;
+                string currentStationKey = _profile.SelectedVehicleModelName
+                    + "|" + _profile.Selection.StationId;
+                if ((_recentRejectedStationParkingPositions.Count > 0
+                        && DateTime.UtcNow < _recentRejectedStationParkingUntil
+                        && string.Equals(_recentRejectedStationParkingKey,
+                            currentStationKey, StringComparison.OrdinalIgnoreCase))
+                    || !string.IsNullOrWhiteSpace(_preferredPoliceVehiclePlacementRetryCategory))
+                    return "Utility: Placement deferred";
+                return "Utility: Not placed";
+            }
+        }
         internal bool HasPendingPreferredUtilityTransportChoice
         {
             get { return IsPendingPreferredUtilityTransportChoiceCurrent(); }
@@ -363,6 +410,7 @@ namespace LSImmersiveLife
 
         internal bool EnterPoliceAuthority()
         {
+            ClearAllDispatchOfficerAssistantUnavailable();
             if (IsPoliceAuthorityActive)
             {
                 LastOperationMessage = "Police Authority is already active.";
@@ -423,16 +471,8 @@ namespace LSImmersiveLife
             bool profileApplied = true;
             if (_profile.StationSetupComplete)
             {
-                bool pedApplied;
-                bool vehicleApplied;
-                bool weaponsApplied;
-                profileApplied = ApplySavedProfile(
-                    false,
-                    out pedApplied,
-                    out vehicleApplied,
-                    out weaponsApplied);
-                if (!profileApplied)
-                    QueuePendingSavedProfileApply(pedApplied, vehicleApplied, weaponsApplied);
+                QueueStagedStartupProfileApply();
+                profileApplied = false;
             }
             else
             {
@@ -448,10 +488,12 @@ namespace LSImmersiveLife
         {
             if (!IsPoliceAuthorityActive)
             {
+                ClearAllDispatchOfficerAssistantUnavailable();
                 RestoreAllDispatchArrestInvincibility("PoliceAuthorityInactive");
                 return;
             }
 
+            ClearAllDispatchOfficerAssistantUnavailable();
             RestoreAllDispatchArrestInvincibility("PoliceAuthorityDeactivated");
             RestorePolicePedScreenFade();
             CancelPersonalUtilityDelivery("PoliceAuthorityDeactivated");
@@ -1612,42 +1654,26 @@ namespace LSImmersiveLife
             {
                 _dispatchSuspectLocatorIncidentId = incident.Id ?? string.Empty;
                 _dispatchSuspectLocatorVisible = true;
-                _dispatchSuspectLocatorHiddenForInvestigation =
-                    Dispatch.HasPendingVictimInvestigation;
                 _dispatchSuspectLocatorKeyDown = keyDown;
                 if (_log != null)
                     _log.Runtime(
                         "POLICE_DISPATCH_SUSPECT_LOCATOR_OPENED",
                         "Incident=" + incident.Id
-                        + "; Visible=" + !_dispatchSuspectLocatorHiddenForInvestigation
-                        + "; HiddenForInvestigation="
-                        + _dispatchSuspectLocatorHiddenForInvestigation
+                        + "; Visible=true; CoexistsWithInvestigation=true"
                         + "; Source=AcceptedDispatch; InputKey="
                         + controls.InvestigateKey);
                 return;
             }
 
             bool investigationPending = Dispatch.HasPendingVictimInvestigation;
-            if (investigationPending && !_dispatchSuspectLocatorHiddenForInvestigation)
+            if (investigationPending && !_dispatchSuspectLocatorVisible)
             {
-                _dispatchSuspectLocatorHiddenForInvestigation = true;
+                _dispatchSuspectLocatorVisible = true;
                 if (_log != null)
                     _log.Runtime(
-                        "POLICE_DISPATCH_SUSPECT_LOCATOR_HIDDEN_FOR_INVESTIGATION",
+                        "POLICE_DISPATCH_SUSPECT_LOCATOR_RESTORED_FOR_INVESTIGATION",
                         "Incident=" + incident.Id
-                        + "; Reason=InvestigationObjectiveAvailable"
-                        + "; InputKey=" + controls.InvestigateKey
-                        + "; InputOwner=DispatchInvestigation");
-            }
-            else if (!investigationPending
-                && _dispatchSuspectLocatorHiddenForInvestigation)
-            {
-                _dispatchSuspectLocatorHiddenForInvestigation = false;
-                if (_log != null)
-                    _log.Runtime(
-                        "POLICE_DISPATCH_SUSPECT_LOCATOR_RESTORED",
-                        "Incident=" + incident.Id
-                        + "; Reason=InvestigationObjectiveCompleted");
+                        + "; Visible=true; Reason=VictimInvestigationPending");
             }
 
             bool keyPressed = keyDown && !_dispatchSuspectLocatorKeyDown;
@@ -1671,7 +1697,6 @@ namespace LSImmersiveLife
         private void ResetDispatchSuspectLocatorState()
         {
             _dispatchSuspectLocatorVisible = false;
-            _dispatchSuspectLocatorHiddenForInvestigation = false;
             _dispatchSuspectLocatorIncidentId = string.Empty;
         }
 
@@ -1801,14 +1826,14 @@ namespace LSImmersiveLife
             }
             else
             {
-                bool vehicleReady = PreparePatrolVehicle();
-                if (!vehicleReady)
+                Ped player = Game.Player.Character;
+                string startFailure;
+                if (!CanStartPatrolWithoutReadyUtility(player, out startFailure))
                 {
-                    LastOperationMessage = GetPatrolUtilityPreparationMessage();
+                    LastOperationMessage = startFailure;
                     _log.Runtime(
-                        "POLICE_PATROL_START_BLOCKED_UTILITY_UNAVAILABLE",
-                        "Patrol remains inactive until the selected Police Utility is physically ready; Model="
-                        + _profile.SelectedVehicleModelName);
+                        "POLICE_PATROL_START_BLOCKED_PLAYER_VEHICLE",
+                        "Patrol did not start because the Player is unavailable or using an unrecognized vehicle.");
                     return false;
                 }
 
@@ -1818,14 +1843,53 @@ namespace LSImmersiveLife
                     "POLICE_PATROL_INITIAL_ACTIVITY",
                     "DispatchReady=" + Dispatch.HasOffer
                     + "; InitialOfferDelaySeconds=" + LSPDDispatch.InitialPatrolOfferDelaySeconds
+                    + "; StartedOnFoot=" + (player != null && player.Exists()
+                        && !player.IsInVehicle())
+                    + "; UtilityReady=" + (_managedPoliceVehicle != null
+                        && _managedPoliceVehicle.Exists())
+                    + "; UtilityRecovery=" + _personalUtilityRecoveryState
+                    + "; UtilityDelivery=" + _personalUtilityDeliveryState
                     + "; Result=" + dispatchStatus);
-                return Succeed("POLICE_PATROL_AVAILABILITY",
-                    IsSelectedStationPoliceVehiclePlacement(_lastPreferredPoliceVehicleSpawnSource)
-                        ? "Player’s Utility is ready at the selected Station. Dispatch is standing by."
-                        : "Your Police Utility is ready. Dispatch is standing by.");
+                bool startedOnFoot = player != null && player.Exists()
+                    && !player.IsInVehicle();
+                return Succeed("POLICE_PATROL_AVAILABILITY", startedOnFoot
+                    ? "Patrol is active on foot. Dispatch is standing by; Utility loading or recovery continues separately."
+                    : "Patrol is active in a Police vehicle. Dispatch is standing by.");
             }
             return Succeed("POLICE_PATROL_AVAILABILITY",
                 "Patrol availability ended.");
+        }
+
+        private bool CanStartPatrolWithoutReadyUtility(
+            Ped player,
+            out string failureReason)
+        {
+            failureReason = string.Empty;
+            if (_startupProfileAssetStage == StartupProfileAssetStage.PlayerPed
+                || _startupProfileAssetStage == StartupProfileAssetStage.Armory
+                || _pendingProfilePedApply
+                || _pendingProfileWeaponsApply)
+            {
+                failureReason = "Preferred Player and Armory resources are still loading. Wait for them to finish; Patrol can start on foot while the Utility loads.";
+                return false;
+            }
+
+            if (player == null || !player.Exists())
+            {
+                failureReason = "The Player is unavailable; Patrol was not started.";
+                return false;
+            }
+
+            if (!player.IsInVehicle())
+                return true;
+
+            Vehicle vehicle = player.CurrentVehicle;
+            if (vehicle != null && vehicle.Exists()
+                && IsKnownPoliceVehicle(vehicle))
+                return true;
+
+            failureReason = "Exit the current non-Police vehicle or enter a Police vehicle before starting Patrol.";
+            return false;
         }
 
         internal bool StartPatrolTowardSelectedStation()
@@ -1898,9 +1962,11 @@ namespace LSImmersiveLife
             LastOperationMessage = !accept.HasValue
                 ? "Dispatch information acknowledged."
                 : accept.Value
-                    ? Dispatch.HasIncident
-                        ? "Dispatch accepted. Proceed to the marked scene."
-                        : "The Dispatch scene could not be created safely. The assignment was cancelled."
+                    ? Dispatch.HasOffer
+                        ? "Dispatch scene check is still pending. This call remains available."
+                        : Dispatch.HasIncident
+                            ? "Dispatch accepted. Proceed to the marked scene."
+                            : "The Dispatch scene could not be accepted. Review the reported scene status."
                     : "Dispatch declined. You remain available for patrol.";
             return result;
         }
@@ -1935,13 +2001,14 @@ namespace LSImmersiveLife
                     LastOperationMessage = "Police Patrol is disabled in LS Immersive settings.";
                     return LastOperationMessage;
                 }
-                if (!PreparePatrolVehicle())
+                Ped player = Game.Player.Character;
+                string startFailure;
+                if (!CanStartPatrolWithoutReadyUtility(player, out startFailure))
                 {
-                    LastOperationMessage = GetPatrolUtilityPreparationMessage();
+                    LastOperationMessage = startFailure;
                     _log.Runtime(
-                        "POLICE_DISPATCH_REQUEST_BLOCKED_UTILITY_UNAVAILABLE",
-                        "Explicit radio request did not start Patrol because the selected Police Utility was not physically ready; Model="
-                        + _profile.SelectedVehicleModelName);
+                        "POLICE_DISPATCH_REQUEST_BLOCKED_PLAYER_VEHICLE",
+                        "Explicit radio request did not start Patrol because the Player is unavailable or using an unrecognized vehicle.");
                     return LastOperationMessage;
                 }
 
@@ -1950,7 +2017,10 @@ namespace LSImmersiveLife
                     "POLICE_PATROL_INITIAL_ACTIVITY",
                     "DispatchReady=" + Dispatch.HasOffer
                     + "; InitialOfferDelaySeconds=" + LSPDDispatch.InitialPatrolOfferDelaySeconds
-                    + "; Result=Patrol started by explicit radio request; automatic grace period bypassed for this request.");
+                    + "; StartedOnFoot=" + !player.IsInVehicle()
+                    + "; UtilityReady=" + (_managedPoliceVehicle != null
+                        && _managedPoliceVehicle.Exists())
+                    + "; Result=Patrol started by explicit radio request without waiting for Utility; automatic grace period bypassed for this request.");
             }
 
             LastOperationMessage = Dispatch.RequestOfferNow(Game.Player.Character);
@@ -2115,13 +2185,16 @@ namespace LSImmersiveLife
                 _profile.SelectedVehicleModelName,
                 true,
                 false,
-                false))
+                true,
+                false,
+                2))
             {
                 string placementFailure = LastOperationMessage;
                 if (IsPreferredPoliceVehiclePlacementFailure(placementFailure))
                 {
-                    LastOperationMessage = "The Police Utility could not be placed safely. Move to a clear roadside location and retry after repositioning. "
-                        + placementFailure;
+                    LastOperationMessage = "Utility placement deferred. Move to clear ground and retry Fetch. "
+                        + "The saved " + _profile.SelectedVehicleModelName
+                        + " was not replaced; details are in LSDebug.log.";
                     RememberPersonalUtilityFetchRetry(
                         null, player, LastOperationMessage);
                 }
@@ -2225,6 +2298,11 @@ namespace LSImmersiveLife
             }
 
             string lastFailure = "The nearby candidates did not pass final footprint validation.";
+            bool provisionalFound = false;
+            Vector3 provisionalPosition = Vector3.Zero;
+            float provisionalHeading = 0f;
+            string provisionalSource = string.Empty;
+            string provisionalFailure = string.Empty;
             List<Vector3> rejectedPositions = _personalUtilityRecoveryRejectedPositions;
             List<float> rejectedHeadings = _personalUtilityRecoveryRejectedHeadings;
             for (int index = 0; index < requestedPositions.Count; index++)
@@ -2262,11 +2340,44 @@ namespace LSImmersiveLife
                     continue;
                 }
 
+                string groundPlaneReason;
+                PreferredVehiclePlacementResult groundPlane =
+                    CheckPersonalUtilityRecoveryGroundPlane(
+                        managedUtility.Model, safePosition, safeHeading,
+                        out groundPlaneReason);
+                if (groundPlane == PreferredVehiclePlacementResult.ConfirmedUnsafe)
+                {
+                    lastFailure = groundPlaneReason;
+                    rejectedPositions.Add(safePosition);
+                    rejectedHeadings.Add(safeHeading);
+                    continue;
+                }
+                if (groundPlane == PreferredVehiclePlacementResult.Inconclusive)
+                {
+                    if (!provisionalFound)
+                    {
+                        provisionalFound = true;
+                        provisionalPosition = safePosition;
+                        provisionalHeading = safeHeading;
+                        provisionalSource = requestedSources[index] + "_GroundProvisional";
+                        provisionalFailure = groundPlaneReason;
+                    }
+                    continue;
+                }
+
                 destination = safePosition;
                 destinationHeading = safeHeading;
-                source = requestedSources[index]
-                    + (groundOnlyProvisional ? "_GroundProvisional" : string.Empty);
-                failure = groundOnlyProvisional ? candidateFailure : string.Empty;
+                source = requestedSources[index];
+                failure = string.Empty;
+                return true;
+            }
+
+            if (provisionalFound)
+            {
+                destination = provisionalPosition;
+                destinationHeading = provisionalHeading;
+                source = provisionalSource;
+                failure = provisionalFailure;
                 return true;
             }
 
@@ -2360,6 +2471,92 @@ namespace LSImmersiveLife
                 position.Z + PersonalUtilityRecoveryGroundProbeHeight);
         }
 
+        private PreferredVehiclePlacementResult CheckPersonalUtilityRecoveryGroundPlane(
+            Model model, Vector3 center, float heading, out string reason)
+        {
+            reason = "The Utility footprint ground is still loading.";
+            if (!model.IsValid || !model.IsVehicle
+                || float.IsNaN(heading) || float.IsInfinity(heading))
+                return PreferredVehiclePlacementResult.ConfirmedUnsafe;
+
+            try
+            {
+            float groundZ;
+            Vector3 normal;
+            if (!World.GetGroundHeightAndNormal(
+                CreatePersonalUtilityRecoveryGroundProbe(center), out groundZ, out normal)
+                || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
+                || float.IsNaN(normal.X) || float.IsNaN(normal.Y)
+                || float.IsNaN(normal.Z))
+                return PreferredVehiclePlacementResult.Inconclusive;
+
+            // A pre-move grade stricter than the general roadside check keeps
+            // the logged 9-10 degree motorcycle poses out of the hidden move.
+            const float minimumNormalZ = 0.990f;
+            if (normal.Z < minimumNormalZ || Math.Abs(center.Z - groundZ) > 2f)
+            {
+                reason = "The candidate center is too steep or above unsupported ground.";
+                return PreferredVehiclePlacementResult.ConfirmedUnsafe;
+            }
+
+            Vector3 minimum;
+            Vector3 maximum;
+            using (OutputArgument min = new OutputArgument())
+            using (OutputArgument max = new OutputArgument())
+            {
+                Function.Call(Hash.GET_MODEL_DIMENSIONS, model.Hash, min, max);
+                minimum = min.GetResult<Vector3>();
+                maximum = max.GetResult<Vector3>();
+            }
+            if (Math.Abs(maximum.X - minimum.X) < 0.7f
+                || Math.Abs(maximum.Y - minimum.Y) < 1.5f)
+            {
+                reason = "The saved Utility model has no usable footprint dimensions.";
+                return PreferredVehiclePlacementResult.Inconclusive;
+            }
+
+            double radians = NormalizePreferredVehicleHeading(heading) * Math.PI / 180.0;
+            Vector3 forward = new Vector3(
+                -(float)Math.Sin(radians), (float)Math.Cos(radians), 0f);
+            Vector3 right = new Vector3(
+                (float)Math.Cos(radians), (float)Math.Sin(radians), 0f);
+            foreach (float x in new[] { minimum.X * 0.75f, maximum.X * 0.75f })
+            foreach (float y in new[] { minimum.Y * 0.75f, maximum.Y * 0.75f })
+            {
+                Vector3 point = new Vector3(
+                    center.X + right.X * x + forward.X * y,
+                    center.Y + right.Y * x + forward.Y * y,
+                    center.Z);
+                float sampleZ;
+                Vector3 sampleNormal;
+                if (!World.GetGroundHeightAndNormal(
+                    CreatePersonalUtilityRecoveryGroundProbe(point),
+                    out sampleZ, out sampleNormal)
+                    || float.IsNaN(sampleZ) || float.IsInfinity(sampleZ)
+                    || float.IsNaN(sampleNormal.X) || float.IsInfinity(sampleNormal.X)
+                    || float.IsNaN(sampleNormal.Y) || float.IsInfinity(sampleNormal.Y)
+                    || float.IsNaN(sampleNormal.Z) || float.IsInfinity(sampleNormal.Z))
+                    return PreferredVehiclePlacementResult.Inconclusive;
+                if (sampleNormal.Z < minimumNormalZ
+                    || Math.Abs(sampleZ - groundZ) > 0.35f
+                    || Vector3.Dot(normal, sampleNormal) < 0.99f)
+                {
+                    reason = "The candidate has uneven or steep support under its footprint.";
+                    return PreferredVehiclePlacementResult.ConfirmedUnsafe;
+                }
+            }
+
+            reason = string.Empty;
+            return PreferredVehiclePlacementResult.ConfirmedSafe;
+            }
+            catch (Exception ex)
+            {
+                reason = "The candidate pavement probe could not finish: "
+                    + ex.GetType().Name + ".";
+                return PreferredVehiclePlacementResult.Inconclusive;
+            }
+        }
+
         private void ProcessPersonalUtilityRecovery(bool paused)
         {
             if (paused || _personalUtilityRecoveryState == PersonalUtilityRecoveryState.None)
@@ -2430,8 +2627,9 @@ namespace LSImmersiveLife
                             return;
                         }
 
-                        if (_personalUtilityRecoveryNextSampleAt == DateTime.MinValue
-                            || now >= _personalUtilityRecoveryNextSampleAt)
+                        bool groundSampleDue = _personalUtilityRecoveryNextSampleAt == DateTime.MinValue
+                            || now >= _personalUtilityRecoveryNextSampleAt;
+                        if (groundSampleDue)
                         {
                             if (_personalUtilityRecoveryGroundSamples == 0
                                 || Math.Abs(groundZ - _personalUtilityRecoveryLastGroundZ) <= 0.35f)
@@ -2446,6 +2644,27 @@ namespace LSImmersiveLife
                         if (_personalUtilityRecoveryGroundSamples
                             >= StationVehicleRequiredStableSamples)
                         {
+                            if (!groundSampleDue)
+                                return;
+                            string planeReason;
+                            PreferredVehiclePlacementResult groundPlane =
+                                CheckPersonalUtilityRecoveryGroundPlane(
+                                    vehicle.Model, _personalUtilityRecoveryDestination,
+                                    _personalUtilityRecoveryDestinationHeading,
+                                    out planeReason);
+                            if (groundPlane == PreferredVehiclePlacementResult.ConfirmedUnsafe)
+                            {
+                                RetryPersonalUtilityRecoveryCandidate(
+                                    "Pre-move pavement check rejected the candidate: " + planeReason);
+                                return;
+                            }
+                            if (groundPlane == PreferredVehiclePlacementResult.Inconclusive)
+                            {
+                                if (now >= _personalUtilityRecoveryDeadline)
+                                    RetryPersonalUtilityRecoveryCandidate(
+                                        "Pre-move pavement support stayed inconclusive after the collision wait.");
+                                return;
+                            }
                             _personalUtilityRecoveryDestination = new Vector3(
                                 _personalUtilityRecoveryDestination.X,
                                 _personalUtilityRecoveryDestination.Y,
@@ -2559,6 +2778,12 @@ namespace LSImmersiveLife
                         return;
                     }
 
+                    _log.Runtime("POLICE_PERSONAL_UTILITY_RECOVERY_REVEAL_STARTED",
+                        "Vehicle=" + vehicle.Handle
+                        + "; Position=" + FormatVehiclePosition(vehicle.Position)
+                        + "; SameManagedHandle=" + (_managedPoliceVehicle != null
+                            && _managedPoliceVehicle.Exists()
+                            && _managedPoliceVehicle.Handle == vehicle.Handle));
                     BeginPreferredPoliceVehicleFade(vehicle);
                     _personalUtilityRecoveryState = PersonalUtilityRecoveryState.FadingIn;
                     _personalUtilityRecoveryRevealDeadline = now.AddMilliseconds(1500);
@@ -2602,9 +2827,33 @@ namespace LSImmersiveLife
                 return;
             }
 
-            try { Function.Call(Hash.RESET_ENTITY_ALPHA, vehicle.Handle); } catch { }
-            try { vehicle.IsPersistent = true; } catch { }
-            try { HoldManagedUtilityForPickup(vehicle); } catch { }
+            if (_fadingPoliceVehicle != null && _fadingPoliceVehicle.Exists()
+                && _fadingPoliceVehicle.Handle == vehicle.Handle)
+                ResetPreferredPoliceVehicleFade();
+            bool revealConfirmed;
+            try
+            {
+                Function.Call(Hash.RESET_ENTITY_ALPHA, vehicle.Handle);
+                Function.Call(Hash.SET_ENTITY_VISIBLE, vehicle.Handle, true, false);
+                vehicle.IsPersistent = true;
+                HoldManagedUtilityForPickup(vehicle);
+                bool visible = Function.Call<bool>(Hash.IS_ENTITY_VISIBLE, vehicle.Handle);
+                int alpha = Function.Call<int>(Hash.GET_ENTITY_ALPHA, vehicle.Handle);
+                revealConfirmed = visible && alpha == 255 && vehicle.IsPersistent
+                    && _managedPoliceVehicle != null && _managedPoliceVehicle.Exists()
+                    && _managedPoliceVehicle.Handle == vehicle.Handle;
+            }
+            catch (Exception ex)
+            {
+                FailPersonalUtilityRecovery("The Utility reveal could not be confirmed: "
+                    + ex.GetType().Name + ".");
+                return;
+            }
+            if (!revealConfirmed)
+            {
+                FailPersonalUtilityRecovery("The same Utility could not be confirmed visible and managed after recovery.");
+                return;
+            }
             EnsurePreferredPoliceVehicleBlip(vehicle);
             if (_config.ShowWaypoint && !Dispatch.HasIncident)
             {
@@ -2630,6 +2879,86 @@ namespace LSImmersiveLife
             Notify(LastOperationMessage);
         }
 
+        private bool RestorePersonalUtilityRecoveryOrigin(Vehicle vehicle)
+        {
+            if (vehicle == null || !vehicle.Exists()
+                || vehicle.Handle != _personalUtilityRecoveryVehicleHandle)
+                return false;
+
+            bool positionRestored = !_personalUtilityRecoveryMoved;
+            try
+            {
+                if (_personalUtilityRecoveryMoved)
+                {
+                    Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
+                        _personalUtilityRecoveryOrigin.X,
+                        _personalUtilityRecoveryOrigin.Y,
+                        _personalUtilityRecoveryOrigin.Z);
+                    vehicle.Position = _personalUtilityRecoveryOrigin;
+                    vehicle.Heading = _personalUtilityRecoveryOriginHeading;
+                    vehicle.Velocity = Vector3.Zero;
+                    // The captured origin was already a confirmed parking pose.
+                    // PlaceOnGround here raised its Z by 0.5 m on every retry.
+                    positionRestored = vehicle.Position.DistanceTo(
+                        _personalUtilityRecoveryOrigin) <= 1.0f
+                        && PreferredVehicleHeadingDifference(
+                            vehicle.Heading, _personalUtilityRecoveryOriginHeading) <= 5f;
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_ROLLBACK_POSITION_FAILED", ex);
+                positionRestored = false;
+            }
+
+            // Reveal and retain the same managed handle even if position
+            // restoration failed; a hidden, unregistered Utility must not remain.
+            try { Function.Call(Hash.RESET_ENTITY_ALPHA, vehicle.Handle); }
+            catch (Exception ex) { _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_ALPHA_RESTORE_FAILED", ex); }
+            try { Function.Call(Hash.SET_ENTITY_VISIBLE, vehicle.Handle, true, false); }
+            catch (Exception ex) { _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_VISIBILITY_RESTORE_FAILED", ex); }
+            try { vehicle.IsPersistent = true; }
+            catch (Exception ex) { _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_PERSISTENCE_RESTORE_FAILED", ex); }
+            bool pickupHoldApplied = false;
+            try { HoldManagedUtilityForPickup(vehicle); pickupHoldApplied = true; }
+            catch (Exception ex) { _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_HANDBRAKE_RESTORE_FAILED", ex); }
+            try { EnsurePreferredPoliceVehicleBlip(vehicle); }
+            catch (Exception ex) { _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_BLIP_RESTORE_FAILED", ex); }
+
+            bool visible = false;
+            int alpha = -1;
+            bool persistent = false;
+            Vector3 observedPosition = Vector3.Zero;
+            try
+            {
+                visible = Function.Call<bool>(Hash.IS_ENTITY_VISIBLE, vehicle.Handle);
+                alpha = Function.Call<int>(Hash.GET_ENTITY_ALPHA, vehicle.Handle);
+                persistent = vehicle.IsPersistent;
+                observedPosition = vehicle.Position;
+            }
+            catch (Exception ex)
+            {
+                _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_VISIBILITY_CHECK_FAILED", ex);
+            }
+            bool managedSameHandle = _managedPoliceVehicle != null
+                && _managedPoliceVehicle.Exists()
+                && _managedPoliceVehicle.Handle == vehicle.Handle;
+            bool confirmed = positionRestored && visible && alpha == 255
+                && persistent && pickupHoldApplied && managedSameHandle;
+            _log.Runtime(
+                "POLICE_PERSONAL_UTILITY_RECOVERY_ORIGIN_RESTORE",
+                "Vehicle=" + vehicle.Handle
+                + "; PositionRestored=" + positionRestored
+                + "; Position=" + FormatVehiclePosition(observedPosition)
+                + "; Visible=" + visible
+                + "; Alpha=" + alpha
+                + "; Persistent=" + persistent
+                + "; PickupHoldApplied=" + pickupHoldApplied
+                + "; ManagedSameHandle=" + managedSameHandle
+                + "; Confirmed=" + confirmed);
+            return confirmed;
+        }
+
         private void FailPersonalUtilityRecovery(string reason)
         {
             Vehicle vehicle = _personalUtilityRecoveryVehicle;
@@ -2638,37 +2967,14 @@ namespace LSImmersiveLife
                 && _fadingPoliceVehicle.Exists()
                 && _fadingPoliceVehicle.Handle == _personalUtilityRecoveryVehicleHandle)
                 ResetPreferredPoliceVehicleFade();
-            try
-            {
-                if (vehicle != null && vehicle.Exists()
-                    && vehicle.Handle == _personalUtilityRecoveryVehicleHandle)
-                {
-                    if (moved)
-                    {
-                        Function.Call(Hash.SET_ENTITY_ALPHA, vehicle.Handle, 0, false);
-                        Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
-                            _personalUtilityRecoveryOrigin.X,
-                            _personalUtilityRecoveryOrigin.Y,
-                            _personalUtilityRecoveryOrigin.Z);
-                        vehicle.Position = _personalUtilityRecoveryOrigin;
-                        vehicle.Heading = _personalUtilityRecoveryOriginHeading;
-                        vehicle.PlaceOnGround();
-                    }
-                    Function.Call(Hash.RESET_ENTITY_ALPHA, vehicle.Handle);
-                    vehicle.IsPersistent = true;
-                    HoldManagedUtilityForPickup(vehicle);
-                    EnsurePreferredPoliceVehicleBlip(vehicle);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_ROLLBACK_FAILED", ex);
-            }
+            bool rollbackConfirmed = RestorePersonalUtilityRecoveryOrigin(vehicle);
 
             LSPDPoliceStationDefinition station = null;
-            bool atStation = vehicle != null && vehicle.Exists()
+            bool atStation = rollbackConfirmed && vehicle != null && vehicle.Exists()
                 && IsManagedUtilityAtSelectedStation(vehicle, out station);
-            LastOperationMessage = atStation && station != null
+            LastOperationMessage = !rollbackConfirmed
+                ? "The same managed Utility could not be confirmed at its previous visible position. Do not use it until its position and visibility are checked. " + reason
+                : atStation && station != null
                 ? "Your Police Utility remains ready at " + station.DisplayName
                     + ". Nearby recovery was not confirmed; it was returned to its Station position. " + reason
                 : "Your same managed Police Utility remains at its previous safe location. Nearby recovery was not confirmed. " + reason;
@@ -2676,7 +2982,8 @@ namespace LSImmersiveLife
                 "POLICE_PERSONAL_UTILITY_RECOVERY_FAILED",
                 "Vehicle=" + (vehicle == null || !vehicle.Exists() ? 0 : vehicle.Handle)
                 + "; Reason=" + reason
-                + "; RolledBack=" + moved
+                + "; RolledBack=" + rollbackConfirmed
+                + "; HadMoved=" + moved
                 + "; ActiveDispatch=" + Dispatch.HasIncident
                 + "; ReplacementSpawned=false; CustodyChoicePreserved=true");
             if (vehicle != null && vehicle.Exists() && Game.Player.Character != null
@@ -2698,13 +3005,12 @@ namespace LSImmersiveLife
             {
                 try
                 {
-                    if (_personalUtilityRecoveryMoved)
+                    if (_personalUtilityRecoveryMoved
+                        && !RestorePersonalUtilityRecoveryOrigin(vehicle))
                     {
-                        Function.Call(Hash.SET_ENTITY_ALPHA, vehicle.Handle, 0, false);
-                        vehicle.Position = _personalUtilityRecoveryOrigin;
-                        vehicle.Heading = _personalUtilityRecoveryOriginHeading;
-                        vehicle.PlaceOnGround();
-                        HoldManagedUtilityForPickup(vehicle);
+                        FailPersonalUtilityRecovery(
+                            "The same Utility could not be visibly restored before another candidate was tried.");
+                        return;
                     }
                     Vector3 destination;
                     float heading;
@@ -2755,37 +3061,13 @@ namespace LSImmersiveLife
                 && _fadingPoliceVehicle.Exists()
                 && _fadingPoliceVehicle.Handle == _personalUtilityRecoveryVehicleHandle)
                 ResetPreferredPoliceVehicleFade();
-            try
-            {
-                if (vehicle != null && vehicle.Exists()
-                    && vehicle.Handle == _personalUtilityRecoveryVehicleHandle)
-                {
-                    if (moved)
-                    {
-                        Function.Call(Hash.SET_ENTITY_ALPHA, vehicle.Handle, 0, false);
-                        Function.Call(Hash.REQUEST_COLLISION_AT_COORD,
-                            _personalUtilityRecoveryOrigin.X,
-                            _personalUtilityRecoveryOrigin.Y,
-                            _personalUtilityRecoveryOrigin.Z);
-                        vehicle.Position = _personalUtilityRecoveryOrigin;
-                        vehicle.Heading = _personalUtilityRecoveryOriginHeading;
-                        vehicle.PlaceOnGround();
-                    }
-                    Function.Call(Hash.RESET_ENTITY_ALPHA, vehicle.Handle);
-                    vehicle.IsPersistent = true;
-                    HoldManagedUtilityForPickup(vehicle);
-                    EnsurePreferredPoliceVehicleBlip(vehicle);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.Exception("POLICE_PERSONAL_UTILITY_RECOVERY_CANCEL_RESTORE_FAILED", ex);
-            }
+            bool rollbackConfirmed = RestorePersonalUtilityRecoveryOrigin(vehicle);
             _log.Runtime(
                 "POLICE_PERSONAL_UTILITY_RECOVERY_CANCELLED",
                 "Vehicle=" + _personalUtilityRecoveryVehicleHandle
                 + "; Reason=" + reason
-                + "; RolledBack=" + moved
+                + "; RolledBack=" + rollbackConfirmed
+                + "; HadMoved=" + moved
                 + "; ReplacementSpawned=false");
             ClearPersonalUtilityRecoveryState();
         }
@@ -3445,8 +3727,6 @@ namespace LSImmersiveLife
         {
             if (!RequireActive())
                 return LastOperationMessage;
-            if (Dispatch.HasPendingVictimInvestigation)
-                _dispatchSuspectLocatorHiddenForInvestigation = true;
             string message = Dispatch.Investigate(Game.Player.Character);
             LastOperationMessage = message;
             return message;
@@ -3481,6 +3761,7 @@ namespace LSImmersiveLife
                         "ARREST", "Police Authority is inactive");
                     return false;
                 }
+                ClearDispatchOfficerAssistantUnavailable("ARREST");
                 Ped target;
                 string reason;
                 if (!Dispatch.TryGetOfficerArrestCommandTarget(
@@ -3503,6 +3784,7 @@ namespace LSImmersiveLife
                         "ARREST", "Police Authority is inactive");
                     return "Unavailable: Police Authority is inactive.";
                 }
+                ClearDispatchOfficerAssistantUnavailable("ARREST");
                 Ped target;
                 string reason;
                 if (!Dispatch.TryGetOfficerArrestCommandTarget(
@@ -3554,6 +3836,7 @@ namespace LSImmersiveLife
                         "LOAD", "Police Authority is inactive");
                     return false;
                 }
+                ClearDispatchOfficerAssistantUnavailable("LOAD");
                 return Convoy.CanAskOfficerToLoadSuspect;
             }
         }
@@ -3568,6 +3851,7 @@ namespace LSImmersiveLife
                         "LOAD", "Police Authority is inactive");
                     return "Unavailable: Police Authority is inactive.";
                 }
+                ClearDispatchOfficerAssistantUnavailable("LOAD");
                 return Convoy.OfficerLoadUnavailableReason;
             }
         }
@@ -3590,6 +3874,7 @@ namespace LSImmersiveLife
                         "UNLOAD", "Police Authority is inactive");
                     return false;
                 }
+                ClearDispatchOfficerAssistantUnavailable("UNLOAD");
                 return Convoy.CanAskOfficerToUnloadSuspect;
             }
         }
@@ -3604,6 +3889,7 @@ namespace LSImmersiveLife
                         "UNLOAD", "Police Authority is inactive");
                     return "Unavailable: Police Authority is inactive.";
                 }
+                ClearDispatchOfficerAssistantUnavailable("UNLOAD");
                 return Convoy.OfficerUnloadUnavailableReason;
             }
         }
@@ -3620,21 +3906,68 @@ namespace LSImmersiveLife
             string command,
             string reason)
         {
-            if (_log == null)
+            if (_log == null || !_log.RuntimeLoggingEnabled)
+            {
+                ClearDispatchOfficerAssistantUnavailable(command);
                 return;
+            }
             LSPDDispatchEvent incident = Dispatch == null ? null : Dispatch.Current;
             string occurrence = incident == null ? "none" : incident.Id;
+            DispatchOfficerAssistantUnavailableState previous;
+            if (_dispatchOfficerAssistantUnavailableStates.TryGetValue(
+                    command, out previous)
+                && string.Equals(previous.OccurrenceId, occurrence,
+                    StringComparison.Ordinal)
+                && string.Equals(previous.Reason, reason,
+                    StringComparison.Ordinal))
+                return;
+
+            _dispatchOfficerAssistantUnavailableStates[command] =
+                new DispatchOfficerAssistantUnavailableState
+                {
+                    OccurrenceId = occurrence,
+                    Reason = reason
+                };
             string state = "Command=" + command
                 + ";Incident=" + occurrence
                 + ";Result=Unavailable;Reason=" + reason;
             _log.RuntimeTransition(
-                "POLICE_CORE_DISPATCH_OFFICER_COMMAND_AVAILABILITY",
+                DispatchOfficerAssistantAvailabilityCategory(command),
                 state,
                 "Command=" + command
                 + "; Incident=" + occurrence
                 + "; Suspect=not-evaluated; Officer=not-evaluated"
                 + "; Vehicle=not-evaluated; Result=Unavailable"
                 + "; Reason=" + reason);
+        }
+
+        private void ClearDispatchOfficerAssistantUnavailable(string command)
+        {
+            if (_dispatchOfficerAssistantUnavailableStates.Remove(command)
+                && _log != null)
+                _log.ClearRuntimeTransition(
+                    DispatchOfficerAssistantAvailabilityCategory(command));
+        }
+
+        private void ClearAllDispatchOfficerAssistantUnavailable()
+        {
+            ClearDispatchOfficerAssistantUnavailable("ARREST");
+            ClearDispatchOfficerAssistantUnavailable("LOAD");
+            ClearDispatchOfficerAssistantUnavailable("UNLOAD");
+        }
+
+        private static string DispatchOfficerAssistantAvailabilityCategory(
+            string command)
+        {
+            return "POLICE_CORE_DISPATCH_OFFICER_COMMAND_AVAILABILITY_"
+                + (string.IsNullOrWhiteSpace(command)
+                    ? "UNKNOWN" : command.Trim().ToUpperInvariant());
+        }
+
+        private sealed class DispatchOfficerAssistantUnavailableState
+        {
+            internal string OccurrenceId;
+            internal string Reason;
         }
 
         private void MaintainDispatchArrestInvincibility()
@@ -4946,23 +5279,26 @@ namespace LSImmersiveLife
 
         internal string ResetPoliceRuntime()
         {
-            if (!RequireActive())
+            if (!IsPoliceAuthorityActive)
+            {
+                LastOperationMessage = "Police Authority must be active before the Police runtime can be reset.";
                 return LastOperationMessage;
+            }
             AmbientWorld.CancelAllInteriorAccessSessions("PoliceRuntimeReset");
             ClearPendingPreferredUtilityTransportChoice();
-            Convoy.Reset();
-            Dispatch.Reset();
-            Response.Reset();
-            Backup.Reset();
+            Convoy.ResetPreservingActors();
+            Dispatch.ResetPreservingActors();
+            Response.ResetPreservingActors();
+            Backup.ResetPreservingActors();
             _gangResponse.Reset();
             NpcResponse.Reset();
-            CrimeActivity.Reset();
+            CrimeActivity.ResetPreservingActors();
             _gangIncidentWasActive = false;
             _crimeActivityWasActive = false;
             _npcInteractionWasActive = false;
             ClearPendingSavedProfileApply();
-            LastOperationMessage = "Police runtime recovered. Authority remains active.";
-            _log.Runtime("POLICE_RUNTIME_RECOVERED", "Dispatch, Convoy, Backup, Response, Gang, Crime Activity, and NPC-owned state reset.");
+            LastOperationMessage = "Police runtime recovered. Existing scene actors were retained for safe cleanup. Player and Police profile were left unchanged.";
+            _log.Runtime("POLICE_RUNTIME_RECOVERED", "Dispatch, Convoy, Backup, Response, Gang, Crime Activity, and NPC-owned state reset through actor-preserving recovery paths. No scene actors were immediately deleted; existing owner cleanup policies still apply. Police Authority, Player ped, and Police profile were left unchanged.");
             return LastOperationMessage;
         }
 
@@ -5413,6 +5749,9 @@ namespace LSImmersiveLife
             bool vehicleApplied,
             bool weaponsApplied)
         {
+            ClearStartupProfileWeaponQueue();
+            _startupProfileAssetStage = StartupProfileAssetStage.None;
+            _startupProfileApplyHadFailures = false;
             _pendingProfilePedApply = !pedApplied
                 && !string.IsNullOrWhiteSpace(_profile.SelectedPedModelName);
             _pendingProfileVehicleApply = !vehicleApplied
@@ -5431,6 +5770,46 @@ namespace LSImmersiveLife
                 "Ped=" + _pendingProfilePedApply
                 + "; Vehicle=" + _pendingProfileVehicleApply
                 + "; Weapons=" + _pendingProfileWeaponsApply);
+        }
+
+        private void QueueStagedStartupProfileApply()
+        {
+            ClearPendingSavedProfileApply();
+            _pendingProfilePedSelectionModelName = _profile.SelectedPedModelName;
+            _pendingProfilePedApply = !string.IsNullOrWhiteSpace(
+                _profile.SelectedPedModelName);
+            _pendingProfileWeaponsApply = true;
+            _pendingProfileVehicleApply = !string.IsNullOrWhiteSpace(
+                _profile.SelectedVehicleModelName);
+            _startupProfileApplyHadFailures = false;
+
+            if (_profile.Selection.UsePersonalLoadout)
+            {
+                _startupProfileWeapons.AddRange(
+                    _profile.PersonalWeapons.Where(weapon => weapon != null));
+                _startupProfileActiveWeaponFallbackPending =
+                    _startupProfileWeapons.Count > 0
+                    && !_startupProfileWeapons.Any(weapon => string.Equals(
+                        weapon.Id,
+                        _profile.Selection.PersonalActiveWeaponId,
+                        StringComparison.OrdinalIgnoreCase));
+            }
+
+            _startupProfileAssetStage = _pendingProfilePedApply
+                ? StartupProfileAssetStage.PlayerPed
+                : StartupProfileAssetStage.Armory;
+            DateTime now = DateTime.UtcNow;
+            _nextPendingProfileApply = now.AddMilliseconds(250);
+            _pendingProfileApplyDeadline = now.AddSeconds(
+                GetStagedStartupProfileDeadlineSeconds());
+            _log.Runtime(
+                "POLICE_PROFILE_ASSETS_QUEUED",
+                "Ped=" + _pendingProfilePedApply
+                + "; Vehicle=" + _pendingProfileVehicleApply
+                + "; Weapons=true"
+                + "; Order=PreferredPed>Armory>Utility"
+                + "; StartupStaged=true"
+                + "; PersonalWeaponCount=" + _startupProfileWeapons.Count);
         }
 
         private bool HasPendingSavedProfileAssets
@@ -5463,6 +5842,12 @@ namespace LSImmersiveLife
 
         private void ProcessPendingSavedProfileApply(bool paused)
         {
+            if (_startupProfileAssetStage != StartupProfileAssetStage.None)
+            {
+                ProcessStagedStartupProfileApply(paused);
+                return;
+            }
+
             if (paused || !IsPoliceAuthorityActive
                 || (!_pendingProfilePedApply
                     && !_pendingProfileVehicleApply
@@ -5481,7 +5866,8 @@ namespace LSImmersiveLife
             if (HasActivePoliceGameplayOwner)
             {
                 _nextPendingProfileApply = now.AddMilliseconds(750);
-                _pendingProfileApplyDeadline = now.AddSeconds(20);
+                _pendingProfileApplyDeadline = now.AddSeconds(
+                    GetStagedStartupProfileDeadlineSeconds());
                 return;
             }
 
@@ -5566,9 +5952,8 @@ namespace LSImmersiveLife
                         : vehicleWasPending
                         ? "The Police Utility did not finish loading. Press "
                             + _config.PoliceControls.DispatchMenuKey
-                            + ", choose Spawn the Personal Utility to retry, then press "
-                            + _config.PoliceControls.PatrolKey + " when it is ready."
-                        : "Some saved Police assets did not finish loading. Reopen Police Authority to retry them; Patrol still requires a ready Utility.";
+                            + ", choose Spawn the Personal Utility to retry later. You can start Patrol on foot while it loads."
+                        : "Some saved Police assets did not finish loading. Reopen Police Authority to retry them; Patrol can continue on foot while Utility is retried separately.";
                     Notification.PostTicker(LastOperationMessage, false, false);
                 }
                 return;
@@ -5634,12 +6019,357 @@ namespace LSImmersiveLife
             _nextPendingProfileApply = now.AddMilliseconds(750);
         }
 
+        private void ProcessStagedStartupProfileApply(bool paused)
+        {
+            if (paused || !IsPoliceAuthorityActive
+                || _startupProfileAssetStage == StartupProfileAssetStage.None)
+                return;
+
+            DateTime now = DateTime.UtcNow;
+            if (now < _nextPendingProfileApply)
+                return;
+
+            if (HasActivePoliceGameplayOwner)
+            {
+                _nextPendingProfileApply = now.AddMilliseconds(750);
+                _pendingProfileApplyDeadline = now.AddSeconds(20);
+                return;
+            }
+
+            if (now >= _pendingProfileApplyDeadline)
+            {
+                HandleStagedStartupProfileTimeout(now);
+                return;
+            }
+
+            string previousMessage = LastOperationMessage;
+            switch (_startupProfileAssetStage)
+            {
+                case StartupProfileAssetStage.PlayerPed:
+                    _pendingProfilePedApply = !ApplyPedModel(
+                        _profile.SelectedPedModelName,
+                        false,
+                        false);
+                    if (!_pendingProfilePedApply)
+                        AdvanceStagedStartupProfileStage(now);
+                    else
+                        _nextPendingProfileApply = now.AddMilliseconds(500);
+                    break;
+
+                case StartupProfileAssetStage.Armory:
+                    if (_ownsPolicePedScreenFade)
+                    {
+                        _nextPendingProfileApply = now.AddMilliseconds(100);
+                        break;
+                    }
+
+                    if (ApplyNextStagedStartupProfileWeapon())
+                    {
+                        _pendingProfileWeaponsApply = false;
+                        AdvanceStagedStartupProfileStage(now);
+                    }
+                    else
+                        _nextPendingProfileApply = now.AddMilliseconds(100);
+                    break;
+
+                case StartupProfileAssetStage.Utility:
+                    string previousUtilityMessage = LastOperationMessage;
+                    bool vehicleReady = !_pendingProfileVehicleApply
+                        || SpawnPoliceVehicle(
+                            _profile.SelectedVehicleModelName,
+                            false,
+                            false,
+                            true,
+                            true,
+                            1);
+                    bool placementRejected = !vehicleReady
+                        && !string.Equals(
+                            previousUtilityMessage,
+                            LastOperationMessage,
+                            StringComparison.Ordinal)
+                        && IsPreferredPoliceVehiclePlacementFailure(
+                            LastOperationMessage);
+                    _pendingProfileVehicleApply = !vehicleReady;
+                    if (placementRejected)
+                    {
+                        _pendingProfileVehicleApply = false;
+                        _startupProfileApplyHadFailures = true;
+                        _log.Debug(
+                            "POLICE_PROFILE_STARTUP_UTILITY_PLACEMENT_DEFERRED",
+                            "Automatic startup stopped after a bounded Utility placement failure. "
+                            + "No repeated vehicle creation was attempted; the explicit Fetch action can retry placement.");
+                        AdvanceStagedStartupProfileStage(now);
+                    }
+                    else if (vehicleReady)
+                    {
+                        if (!string.IsNullOrWhiteSpace(
+                            _profile.SelectedVehicleModelName))
+                            EnsureManagedStationUtilityGuidance();
+                        AdvanceStagedStartupProfileStage(now);
+                    }
+                    else
+                        _nextPendingProfileApply = now.AddMilliseconds(750);
+                    break;
+            }
+
+            if (_startupProfileAssetStage != StartupProfileAssetStage.None)
+                LastOperationMessage = previousMessage;
+        }
+
+        private bool ApplyNextStagedStartupProfileWeapon()
+        {
+            if (!_profile.Selection.UsePersonalLoadout)
+                return ApplyPersonalLoadoutInternal(
+                    false,
+                    false,
+                    _profileRestoreAppliedWeaponIds);
+
+            if (_startupProfileWeapons.Count == 0)
+                return true;
+
+            if (_startupProfileWeaponIndex < _startupProfileWeapons.Count)
+            {
+                LSPDPoliceFavoriteWeapon weapon =
+                    _startupProfileWeapons[_startupProfileWeaponIndex++];
+                if (weapon == null || string.IsNullOrWhiteSpace(weapon.Id))
+                {
+                    _startupProfileApplyHadFailures = true;
+                    return false;
+                }
+
+                if (_profileRestoreAppliedWeaponIds.Contains(weapon.Id))
+                    return false;
+
+                bool equip = string.Equals(
+                    weapon.Id,
+                    _profile.Selection.PersonalActiveWeaponId,
+                    StringComparison.OrdinalIgnoreCase);
+                if (GiveWeapon(weapon.WeaponName, weapon.Ammo, equip,
+                    weapon, false))
+                    _profileRestoreAppliedWeaponIds.Add(weapon.Id);
+                else
+                    _startupProfileWeaponRetries.Add(weapon);
+                return false;
+            }
+
+            if (_startupProfileWeaponRetries.Count > 0)
+            {
+                if (DateTime.UtcNow < _startupProfileWeaponRetryAfterUtc)
+                    return false;
+
+                if (_startupProfileWeaponRetryIndex
+                    >= _startupProfileWeaponRetries.Count)
+                {
+                    _startupProfileWeaponRetryIndex = 0;
+                    _startupProfileWeaponRetryAfterUtc = DateTime.UtcNow
+                        .AddMilliseconds(750);
+                    return false;
+                }
+
+                LSPDPoliceFavoriteWeapon retry =
+                    _startupProfileWeaponRetries[
+                        _startupProfileWeaponRetryIndex];
+                bool equipRetry = string.Equals(
+                    retry.Id,
+                    _profile.Selection.PersonalActiveWeaponId,
+                    StringComparison.OrdinalIgnoreCase);
+                if (GiveWeapon(retry.WeaponName, retry.Ammo, equipRetry,
+                    retry, false))
+                {
+                    _profileRestoreAppliedWeaponIds.Add(retry.Id);
+                    _startupProfileWeaponRetries.RemoveAt(
+                        _startupProfileWeaponRetryIndex);
+                    if (_startupProfileWeaponRetryIndex
+                        >= _startupProfileWeaponRetries.Count)
+                    {
+                        _startupProfileWeaponRetryIndex = 0;
+                        _startupProfileWeaponRetryAfterUtc = DateTime.UtcNow
+                            .AddMilliseconds(750);
+                    }
+                }
+                else
+                {
+                    _startupProfileWeaponRetryIndex++;
+                    if (_startupProfileWeaponRetryIndex
+                        >= _startupProfileWeaponRetries.Count)
+                    {
+                        _startupProfileWeaponRetryIndex = 0;
+                        _startupProfileWeaponRetryAfterUtc = DateTime.UtcNow
+                            .AddMilliseconds(750);
+                    }
+                }
+                return false;
+            }
+
+            if (_startupProfileActiveWeaponFallbackPending)
+            {
+                LSPDPoliceFavoriteWeapon first = _startupProfileWeapons[0];
+                if (first == null || string.IsNullOrWhiteSpace(first.Id))
+                {
+                    _startupProfileActiveWeaponFallbackPending = false;
+                    _startupProfileApplyHadFailures = true;
+                    return true;
+                }
+
+                _profile.SelectPersonalWeapon(first.Id);
+                if (GiveWeapon(first.WeaponName, first.Ammo, true,
+                    first, false))
+                {
+                    _profileRestoreAppliedWeaponIds.Add(first.Id);
+                    _startupProfileActiveWeaponFallbackPending = false;
+                    return true;
+                }
+
+                if (!_startupProfileWeaponRetries.Any(weapon =>
+                    weapon != null && string.Equals(weapon.Id, first.Id,
+                        StringComparison.OrdinalIgnoreCase)))
+                    _startupProfileWeaponRetries.Add(first);
+                _startupProfileActiveWeaponFallbackPending = false;
+                _startupProfileWeaponRetryAfterUtc = DateTime.MinValue;
+                return false;
+            }
+
+            return true;
+        }
+
+        private void HandleStagedStartupProfileTimeout(DateTime now)
+        {
+            switch (_startupProfileAssetStage)
+            {
+                case StartupProfileAssetStage.PlayerPed:
+                    bool pedFallbackApplied = TryApplySelectedAddonPedFallback(
+                        _profile.SelectedPedModelName,
+                        "StartupProfilePedStreamTimeout",
+                        false);
+                    _pendingProfilePedApply = false;
+                    if (pedFallbackApplied)
+                        _profileRestoreAppliedWeaponIds.Clear();
+                    _startupProfileApplyHadFailures = true;
+                    _log.Debug(
+                        "POLICE_PROFILE_STARTUP_PED_TIMEOUT",
+                        "The preferred Ped did not load before the bounded startup deadline. "
+                        + "CatalogFallbackApplied=" + pedFallbackApplied
+                        + "; ExistingPlayerPedRetained=" + !pedFallbackApplied
+                        + "; UtilityNotStartedBeforePedStage=true.");
+                    break;
+
+                case StartupProfileAssetStage.Armory:
+                    int pendingWeapons = Math.Max(0,
+                        _startupProfileWeapons.Count
+                        - _profileRestoreAppliedWeaponIds.Count);
+                    bool selectedWeaponPending =
+                        !_profile.Selection.UsePersonalLoadout
+                        && !string.IsNullOrWhiteSpace(
+                            _profile.SelectedWeaponName)
+                        && !_profileRestoreAppliedWeaponIds.Contains(
+                            "selected:" + _profile.SelectedWeaponName);
+                    _pendingProfileWeaponsApply = false;
+                    _startupProfileApplyHadFailures = pendingWeapons > 0
+                        || _startupProfileWeaponRetries.Count > 0
+                        || _startupProfileActiveWeaponFallbackPending
+                        || selectedWeaponPending;
+                    _log.Debug(
+                        "POLICE_PROFILE_STARTUP_ARMORY_TIMEOUT",
+                        "The staged weapon restore reached its bounded deadline. "
+                        + "Applied=" + _profileRestoreAppliedWeaponIds.Count
+                        + "; Pending=" + pendingWeapons
+                        + "; SelectedWeaponPending=" + selectedWeaponPending
+                        + "; UtilityNotStartedBeforeArmoryStage=true.");
+                    break;
+
+                case StartupProfileAssetStage.Utility:
+                    bool vehicleFallbackApplied = _pendingProfileVehicleApply
+                        && TrySpawnSelectedAddonVehicleFallback(
+                            _profile.SelectedVehicleModelName,
+                            "StartupProfileUtilityStreamTimeout",
+                            1);
+                    _pendingProfileVehicleApply = false;
+                    if (vehicleFallbackApplied)
+                        EnsureManagedStationUtilityGuidance();
+                    _startupProfileApplyHadFailures = true;
+                    _log.Debug(
+                        "POLICE_PROFILE_STARTUP_UTILITY_TIMEOUT",
+                        "The preferred Utility did not reach a confirmed ready state before its bounded startup deadline. "
+                        + "CatalogFallbackApplied=" + vehicleFallbackApplied
+                        + "; NoUnsupportedPlacementForced=true.");
+                    break;
+            }
+
+            AdvanceStagedStartupProfileStage(now);
+        }
+
+        private void AdvanceStagedStartupProfileStage(DateTime now)
+        {
+            if (_pendingProfilePedApply)
+                _startupProfileAssetStage = StartupProfileAssetStage.PlayerPed;
+            else if (_pendingProfileWeaponsApply)
+                _startupProfileAssetStage = StartupProfileAssetStage.Armory;
+            else if (_pendingProfileVehicleApply)
+                _startupProfileAssetStage = StartupProfileAssetStage.Utility;
+            else
+            {
+                CompleteStagedStartupProfileApply();
+                return;
+            }
+
+            _nextPendingProfileApply = now.AddMilliseconds(250);
+            _pendingProfileApplyDeadline = now.AddSeconds(
+                GetStagedStartupProfileDeadlineSeconds());
+        }
+
+        private int GetStagedStartupProfileDeadlineSeconds()
+        {
+            if (_startupProfileAssetStage != StartupProfileAssetStage.Armory)
+                return 20;
+
+            // The 20-second deadline cut off the observed 102-weapon saved
+            // collection after 74 entries, then advanced to Utility placement.
+            // Keep the stage bounded while allowing larger saved sets to finish.
+            return Math.Min(60, Math.Max(20,
+                (_startupProfileWeapons.Count / 3) + 10));
+        }
+
+        private void CompleteStagedStartupProfileApply()
+        {
+            int appliedWeapons = _profileRestoreAppliedWeaponIds.Count;
+            bool hadFailures = _startupProfileApplyHadFailures;
+            string message = hadFailures
+                ? "Police Authority is ready. Some preferred assets could not be confirmed; Patrol can continue on foot, and the Utility can be retried later."
+                : BuildPoliceAuthorityEntryMessage(true);
+
+            _log.Runtime(
+                hadFailures
+                    ? "POLICE_PROFILE_ASSETS_PARTIAL"
+                    : "POLICE_PROFILE_ASSETS_APPLIED",
+                "StartupStageOrder=PreferredPed>Armory>Utility"
+                + "; AppliedPersonalWeapons=" + appliedWeapons
+                + "; UtilityReady=" + (_managedPoliceVehicle != null
+                    && _managedPoliceVehicle.Exists())
+                + "; FailureObserved=" + hadFailures);
+            ClearPendingSavedProfileApply();
+            LastOperationMessage = message;
+            Notification.PostTicker(LastOperationMessage, false, false);
+        }
+
+        private void ClearStartupProfileWeaponQueue()
+        {
+            _startupProfileWeapons.Clear();
+            _startupProfileWeaponRetries.Clear();
+            _startupProfileWeaponIndex = 0;
+            _startupProfileWeaponRetryIndex = 0;
+            _startupProfileWeaponRetryAfterUtc = DateTime.MinValue;
+            _startupProfileActiveWeaponFallbackPending = false;
+        }
+
         private void ClearPendingSavedProfileApply()
         {
             _pendingProfilePedApply = false;
             _pendingProfileVehicleApply = false;
             _pendingProfileWeaponsApply = false;
             _pendingProfilePedSelectionModelName = string.Empty;
+            _startupProfileAssetStage = StartupProfileAssetStage.None;
+            _startupProfileApplyHadFailures = false;
+            ClearStartupProfileWeaponQueue();
             _profileRestoreAppliedWeaponIds.Clear();
             _nextPendingProfileApply = DateTime.MinValue;
             _pendingProfileApplyDeadline = DateTime.MinValue;
@@ -7143,7 +7873,8 @@ namespace LSImmersiveLife
 
         private bool TrySpawnSelectedAddonVehicleFallback(
             string unavailableModelName,
-            string reason)
+            string reason,
+            int maximumCandidateCreations = 12)
         {
             if (!IsSelectedAddonVehiclePreference(unavailableModelName))
                 return false;
@@ -7152,7 +7883,8 @@ namespace LSImmersiveLife
                 unavailableModelName);
             if (string.IsNullOrWhiteSpace(fallbackModelName)
                 || !SpawnPoliceVehicle(
-                    fallbackModelName, false, false, true, false))
+                    fallbackModelName, false, false, true, false,
+                    maximumCandidateCreations))
                 return false;
 
             _log.Runtime(
@@ -7173,11 +7905,13 @@ namespace LSImmersiveLife
             bool reportFailure,
             bool forceReplaceManagedVehicle = false,
             bool allowSelectedStationFallback = true,
-            bool allowAddonFallback = true)
+            bool allowAddonFallback = true,
+            int maximumCandidateCreations = 12)
         {
             _lastPreferredPoliceVehicleSpawnSource = string.Empty;
             Model model = default(Model);
             bool releaseModel = false;
+            Vehicle uncommittedCandidate = null;
             try
             {
                 if (string.IsNullOrWhiteSpace(modelName))
@@ -7350,8 +8084,27 @@ namespace LSImmersiveLife
                 bool stationParkingFallbackSelected =
                     string.Equals(spawnSource, "StationParking", StringComparison.Ordinal)
                     || string.Equals(spawnSource, "SelectedStationParkingFallback", StringComparison.Ordinal);
-                const int maximumCreatedCandidates = 12;
-                for (int attempt = 0; attempt < maximumCreatedCandidates; attempt++)
+                string stationParkingKey = modelName + "|"
+                    + (station == null ? string.Empty : station.Id);
+                if (!string.Equals(stationParkingKey,
+                        _recentRejectedStationParkingKey, StringComparison.OrdinalIgnoreCase)
+                    || DateTime.UtcNow >= _recentRejectedStationParkingUntil
+                    || Distance2D(player.Position,
+                        _recentRejectedStationParkingPlayerPosition) > 30f)
+                {
+                    _recentRejectedStationParkingPositions.Clear();
+                    _recentRejectedStationParkingKey = stationParkingKey;
+                }
+                if (stationParkingFallbackSelected)
+                    rejectedPositions.AddRange(_recentRejectedStationParkingPositions);
+                int candidateCreationLimit = Math.Max(
+                    1,
+                    Math.Min(12, maximumCandidateCreations));
+                int candidatesCreated = 0;
+                int remoteGroundInconclusiveCandidates = 0;
+                for (int attempt = 0;
+                    candidatesCreated < candidateCreationLimit;
+                    attempt++)
                 {
                     if (!TryFindSafePreferredVehiclePose(
                         model, player, requestedSpawn, requestedHeading,
@@ -7376,6 +8129,7 @@ namespace LSImmersiveLife
                             spawnSource = "SelectedStationParkingFallback";
                             stationParkingFallbackSelected = true;
                             rejectedPositions.Clear();
+                            rejectedPositions.AddRange(_recentRejectedStationParkingPositions);
                             rejectedHeadings.Clear();
                             _log.Runtime(
                                 "POLICE_PREFERRED_VEHICLE_STATION_FALLBACK_SELECTED",
@@ -7387,9 +8141,11 @@ namespace LSImmersiveLife
                         }
                         if (!string.IsNullOrWhiteSpace(stationFallbackFailure))
                             stationParkingFailure = stationFallbackFailure;
-                        else if (stationParkingFallbackSelected)
+                        else if (stationParkingFallbackSelected
+                            && remoteGroundInconclusiveCandidates == 0)
                             stationParkingFailure = preCreateValidation;
-                        lastPlacementFailure = preCreateValidation;
+                        if (remoteGroundInconclusiveCandidates == 0)
+                            lastPlacementFailure = preCreateValidation;
                         if (!string.IsNullOrWhiteSpace(stationFallbackFailure))
                             lastPlacementFailure = (string.IsNullOrWhiteSpace(preCreateValidation)
                                 ? string.Empty
@@ -7399,10 +8155,36 @@ namespace LSImmersiveLife
                         break;
                     }
 
+                    // A selected Station can be far from the Player. Clearance
+                    // alone cannot authorize remote creation when GTA has not
+                    // returned ground support for the candidate.
+                    if (stationParkingFallbackSelected
+                        && !enhancedValidationConfirmed
+                        && Distance2D(player.Position, spawn) > 100f)
+                    {
+                        remoteGroundInconclusiveCandidates++;
+                        lastPlacementFailure = "Selected Station parking is distant and its ground support was not confirmed. Move nearer the Station or retry Fetch from clear roadside ground.";
+                        stationParkingFailure = lastPlacementFailure;
+                        _log.Runtime("POLICE_PREFERRED_VEHICLE_REMOTE_GROUND_DEFERRED",
+                            "Model=" + modelName
+                            + "; Station=" + (station == null ? string.Empty : station.Id)
+                            + "; Position=" + FormatVehiclePosition(spawn)
+                            + "; Heading=" + spawnHeading.ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; DistanceFromPlayer=" + Distance2D(player.Position, spawn).ToString("0.0", CultureInfo.InvariantCulture)
+                            + "; GroundConfirmed=false; VehicleCreated=false");
+                        rejectedPositions.Add(spawn);
+                        rejectedHeadings.Add(spawnHeading);
+                        if (remoteGroundInconclusiveCandidates >= 3)
+                            break;
+                        continue;
+                    }
+
                     Vehicle candidate = World.CreateVehicle(model, spawn, spawnHeading);
                     if (candidate == null || !candidate.Exists())
                         return Fail("POLICE_VEHICLE_SPAWN_FAILED",
                             "Police vehicle could not be created: " + modelName + ".");
+                    uncommittedCandidate = candidate;
+                    candidatesCreated++;
 
                     candidate.IsPersistent = true;
                     candidate.PlaceOnGround();
@@ -7442,8 +8224,45 @@ namespace LSImmersiveLife
                         if (!string.IsNullOrWhiteSpace(settleEvidence))
                             finalPoseFailure += "; " + settleEvidence;
                     }
+                    float candidateGroundZ = float.NaN;
+                    Vector3 candidateGroundNormal = Vector3.Zero;
+                    Vector3 candidateRotation = Vector3.Zero;
+                    bool candidateGroundFound = false;
+                    bool candidateAllWheels = false;
+                    try
+                    {
+                        candidateGroundFound = World.GetGroundHeightAndNormal(
+                            CreatePersonalUtilityRecoveryGroundProbe(candidate.Position),
+                            out candidateGroundZ, out candidateGroundNormal);
+                        candidateAllWheels = Function.Call<bool>(
+                            Hash.IS_VEHICLE_ON_ALL_WHEELS, candidate);
+                        candidateRotation = candidate.Rotation;
+                    }
+                    catch { }
+                    if (stationParkingFallbackSelected
+                        && finalResult == PreferredVehiclePlacementResult.ConfirmedSafeGroundInconclusive
+                        && Distance2D(player.Position, candidate.Position) > 100f)
+                    {
+                        remoteGroundInconclusiveCandidates++;
+                        finalResult = PreferredVehiclePlacementResult.ConfirmedUnsafe;
+                        finalPoseFailure += " Distant Station candidate did not retain confirmed ground after creation.";
+                    }
+                    _log.Runtime("POLICE_PREFERRED_VEHICLE_CANDIDATE_CHECKED",
+                        "Model=" + modelName
+                        + "; Source=" + spawnSource
+                        + "; Position=" + FormatVehiclePosition(candidate.Position)
+                        + "; Heading=" + candidate.Heading.ToString("0.0", CultureInfo.InvariantCulture)
+                        + "; Rotation=" + candidateRotation
+                        + "; GroundFound=" + candidateGroundFound
+                        + "; GroundZ=" + candidateGroundZ
+                        + "; GroundNormal=" + candidateGroundNormal
+                        + "; AllWheels=" + candidateAllWheels
+                        + "; Result=" + finalResult
+                        + "; FootprintAndEntry=" + finalPoseFailure
+                        + "; Settle=" + settleEvidence);
                     if (finalResult == PreferredVehiclePlacementResult.Inconclusive
                         && !stationParkingFallbackSelected
+                        && candidatesCreated < candidateCreationLimit
                         && allowSelectedStationFallback
                         && station != null && !_stationSetupCompletionPending)
                     {
@@ -7454,11 +8273,13 @@ namespace LSImmersiveLife
                         {
                             nearbyPlacementFailure = finalPoseFailure;
                             try { candidate.Delete(); } catch { }
+                            uncommittedCandidate = null;
                             requestedSpawn = spawn;
                             requestedHeading = spawnHeading;
                             spawnSource = "SelectedStationParkingFallback";
                             stationParkingFallbackSelected = true;
                             rejectedPositions.Clear();
+                            rejectedPositions.AddRange(_recentRejectedStationParkingPositions);
                             rejectedHeadings.Clear();
                             _log.Runtime(
                                 "POLICE_PREFERRED_VEHICLE_STATION_FALLBACK_SELECTED",
@@ -7479,6 +8300,7 @@ namespace LSImmersiveLife
                             && finalResult == PreferredVehiclePlacementResult.ConfirmedSafeGroundInconclusive))
                     {
                         created = candidate;
+                        uncommittedCandidate = null;
                         finalPoseInconclusive = finalResult
                             == PreferredVehiclePlacementResult.ConfirmedSafeGroundInconclusive;
                         break;
@@ -7493,14 +8315,28 @@ namespace LSImmersiveLife
                         + "; FinalPosition=" + FormatVehiclePosition(candidate.Position)
                         + "; FinalHeading=" + candidate.Heading.ToString("0.0", CultureInfo.InvariantCulture)
                         + "; Failure=" + finalPoseFailure
-                        + "; NextCandidate=" + (attempt + 1 < maximumCreatedCandidates);
+                        + "; NextCandidate=" + (candidatesCreated < candidateCreationLimit);
                     _log.Runtime("POLICE_PREFERRED_VEHICLE_PLACEMENT_REJECTED", evidence);
                     try { candidate.Delete(); } catch { }
+                    uncommittedCandidate = null;
                     rejectedPositions.Add(spawn);
                     rejectedHeadings.Add(spawnHeading);
+                    if (stationParkingFallbackSelected
+                        && finalResult == PreferredVehiclePlacementResult.ConfirmedUnsafe
+                        && !_recentRejectedStationParkingPositions.Any(position =>
+                            Distance2D(position, spawn) < 1.5f))
+                    {
+                        _recentRejectedStationParkingPositions.Add(spawn);
+                        _recentRejectedStationParkingKey = stationParkingKey;
+                        _recentRejectedStationParkingPlayerPosition = player.Position;
+                        _recentRejectedStationParkingUntil = DateTime.UtcNow.AddSeconds(
+                            RejectedStationParkingMemorySeconds);
+                    }
                     lastPlacementFailure = finalPoseFailure;
                     if (stationParkingFallbackSelected)
                         stationParkingFailure = finalPoseFailure;
+                    if (remoteGroundInconclusiveCandidates >= 3)
+                        break;
                 }
 
                 if (created == null)
@@ -7530,6 +8366,7 @@ namespace LSImmersiveLife
                 Vehicle previous = _managedPoliceVehicle;
                 _managedPoliceVehicle = created;
                 _lastPreferredPoliceVehicleSpawnSource = spawnSource;
+                _recentRejectedStationParkingPositions.Clear();
                 ClearPreferredPoliceVehiclePlacementRetry();
                 EnsurePreferredPoliceVehicleBlip(created);
                 BeginPreferredPoliceVehicleFade(created);
@@ -7573,6 +8410,18 @@ namespace LSImmersiveLife
             }
             catch (Exception ex)
             {
+                if (uncommittedCandidate != null)
+                {
+                    try
+                    {
+                        if (uncommittedCandidate.Exists()
+                            && (_managedPoliceVehicle == null
+                                || !_managedPoliceVehicle.Exists()
+                                || _managedPoliceVehicle.Handle != uncommittedCandidate.Handle))
+                            uncommittedCandidate.Delete();
+                    }
+                    catch { }
+                }
                 return Fail("POLICE_VEHICLE_ERROR", "Police vehicle could not be created: " + modelName + ".", ex);
             }
             finally
@@ -7664,8 +8513,8 @@ namespace LSImmersiveLife
                         }
                     }
 
-                    if (supportedSlopeRecovery && rejectedPositions != null
-                        && rejectedPositions.Any(rejected => Distance2D(rejected, groundedCandidate) < 3f))
+                    if (rejectedPositions != null
+                        && rejectedPositions.Any(rejected => Distance2D(rejected, groundedCandidate) < 1.5f))
                         continue;
 
                     List<float> headings = new List<float>(3)
@@ -8304,14 +9153,28 @@ namespace LSImmersiveLife
             pitch = Math.Min(pitch, 360.0f - pitch);
             if (roll > 8.0f || pitch > 8.0f)
             {
-                string slopeFailure = string.Empty;
-                if (!supportedSlopeRecovery
-                    || !TryConfirmUtilitySlopeSupport(vehicle, out slopeFailure))
+                bool bikeBodyTiltCandidate = vehicle.Model.IsBike
+                    && roll <= 12.0f && pitch <= 12.0f;
+                string slopeEvidence = "Tilt exceeds the checked vehicle class limit.";
+                bool slopeSupported = (supportedSlopeRecovery || bikeBodyTiltCandidate)
+                    && TryConfirmUtilitySlopeSupport(vehicle,
+                        bikeBodyTiltCandidate, out slopeEvidence);
+                _log.Runtime("POLICE_UTILITY_TILT_VALIDATION",
+                    "Vehicle=" + vehicle.Handle
+                    + "; Model=" + vehicle.Model.Hash
+                    + "; Rotation=" + rotation
+                    + "; UpVector=" + vehicle.UpVector
+                    + "; Roll=" + roll.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; Pitch=" + pitch.ToString("0.0", CultureInfo.InvariantCulture)
+                    + "; BikeGroundBaselineCheck=" + bikeBodyTiltCandidate
+                    + "; Supported=" + slopeSupported
+                    + "; Evidence=" + slopeEvidence);
+                if (!slopeSupported)
                 {
                     failure = "Final vehicle tilt lacks supported pavement alignment; Roll="
                         + roll.ToString("0.0", CultureInfo.InvariantCulture)
                         + "; Pitch=" + pitch.ToString("0.0", CultureInfo.InvariantCulture)
-                        + "; " + slopeFailure;
+                        + "; " + slopeEvidence;
                     return PreferredVehiclePlacementResult.ConfirmedUnsafe;
                 }
             }
@@ -8377,25 +9240,42 @@ namespace LSImmersiveLife
                 : PreferredVehiclePlacementResult.ConfirmedSafe;
         }
 
-        private static bool TryConfirmUtilitySlopeSupport(Vehicle vehicle, out string failure)
+        private static bool TryConfirmUtilitySlopeSupport(Vehicle vehicle,
+            bool bikeBodyTiltCandidate, out string failure)
         {
             failure = "The tilted Utility has no confirmed continuous pavement support.";
             try
             {
                 float groundZ;
                 Vector3 normal;
-                if (!Function.Call<bool>(Hash.IS_VEHICLE_ON_ALL_WHEELS, vehicle)
-                    || !World.GetGroundHeightAndNormal(
-                        CreatePersonalUtilityRecoveryGroundProbe(vehicle.Position), out groundZ, out normal)
+                bool allWheels = Function.Call<bool>(Hash.IS_VEHICLE_ON_ALL_WHEELS, vehicle);
+                bool groundFound = World.GetGroundHeightAndNormal(
+                    CreatePersonalUtilityRecoveryGroundProbe(vehicle.Position),
+                    out groundZ, out normal);
+                if (!allWheels || !groundFound
                     || float.IsNaN(groundZ) || float.IsInfinity(groundZ)
-                    || float.IsNaN(normal.Z) || normal.Z < 0.80f)
+                    || !IsFiniteVehicleVector(normal)
+                    || Math.Abs(vehicle.Position.Z - groundZ) > 2f
+                    || normal.Z < (bikeBodyTiltCandidate ? 0.99f : 0.80f))
+                {
+                    failure = "Ground center not confirmed; AllWheels=" + allWheels
+                        + "; GroundFound=" + groundFound
+                        + "; GroundZ=" + groundZ
+                        + "; Normal=" + normal;
                     return false;
+                }
 
                 Vector3 up = vehicle.UpVector;
                 float alignment = Vector3.Dot(up, normal);
                 if (float.IsNaN(alignment) || float.IsInfinity(alignment)
-                    || alignment < (float)Math.Cos(8.0 * Math.PI / 180.0))
+                    || alignment < (float)Math.Cos(
+                        (bikeBodyTiltCandidate ? 12.0 : 8.0) * Math.PI / 180.0))
+                {
+                    failure = "Vehicle up-vector is not aligned with checked ground; "
+                        + "GroundNormal=" + normal + "; VehicleUp=" + up
+                        + "; UpGroundDot=" + alignment;
                     return false;
+                }
 
                 Vector3 minimum;
                 Vector3 maximum;
@@ -8415,17 +9295,36 @@ namespace LSImmersiveLife
                     if (!World.GetGroundHeightAndNormal(
                         CreatePersonalUtilityRecoveryGroundProbe(point), out sampleZ, out sampleNormal)
                         || float.IsNaN(sampleZ) || float.IsInfinity(sampleZ)
-                        || float.IsNaN(sampleNormal.Z) || sampleNormal.Z < 0.80f)
+                        || !IsFiniteVehicleVector(sampleNormal)
+                        || sampleNormal.Z < (bikeBodyTiltCandidate ? 0.99f : 0.80f))
+                    {
+                        failure = "A footprint corner lacked level ground; Point="
+                            + FormatVehiclePosition(point)
+                            + "; GroundZ=" + sampleZ
+                            + "; Normal=" + sampleNormal;
                         return false;
+                    }
                     float expectedZ = groundZ - (normal.X * (point.X - vehicle.Position.X)
                         + normal.Y * (point.Y - vehicle.Position.Y)) / normal.Z;
                     float normalAlignment = Vector3.Dot(normal, sampleNormal);
                     if (float.IsNaN(expectedZ) || float.IsInfinity(expectedZ)
                         || Math.Abs(sampleZ - expectedZ) > 0.35f
                         || float.IsNaN(normalAlignment) || normalAlignment < 0.99f)
+                    {
+                        failure = "A footprint corner did not match the center ground plane; Point="
+                            + FormatVehiclePosition(point)
+                            + "; GroundZ=" + sampleZ
+                            + "; ExpectedZ=" + expectedZ
+                            + "; Normal=" + sampleNormal
+                            + "; NormalAlignment=" + normalAlignment;
                         return false;
+                    }
                 }
-                failure = string.Empty;
+                failure = "AllWheels=true; GroundZ=" + groundZ
+                    + "; GroundNormal=" + normal
+                    + "; VehicleUp=" + up
+                    + "; UpGroundDot=" + alignment
+                    + "; Corners=4/4 matched ground plane";
                 return true;
             }
             catch (Exception ex)
@@ -8433,6 +9332,13 @@ namespace LSImmersiveLife
                 failure += " " + ex.GetType().Name + ".";
                 return false;
             }
+        }
+
+        private static bool IsFiniteVehicleVector(Vector3 value)
+        {
+            return !float.IsNaN(value.X) && !float.IsInfinity(value.X)
+                && !float.IsNaN(value.Y) && !float.IsInfinity(value.Y)
+                && !float.IsNaN(value.Z) && !float.IsInfinity(value.Z);
         }
 
         private PreferredVehiclePlacementResult TryValidatePreferredVehicleDriverEntrySpace(
@@ -10506,7 +11412,16 @@ namespace LSImmersiveLife
             string message,
             bool reportFailure)
         {
-            LastOperationMessage = message;
+            string displayMessage = category == "POLICE_VEHICLE_FINAL_POSE_REJECTED"
+                ? "No confirmed safe parking pose was found for "
+                    + _profile.SelectedVehicleModelName
+                    + ". Move to clear ground and retry Fetch. Details are in LSDebug.log."
+                : category == "POLICE_VEHICLE_SAFE_SPAWN_UNAVAILABLE"
+                    ? "No safe parking place was found for "
+                        + _profile.SelectedVehicleModelName
+                        + ". Move to a clear roadside area and retry Fetch."
+                    : message;
+            LastOperationMessage = displayMessage;
             string signature = category + "|" + message;
             if (string.Equals(
                 signature,
@@ -10516,7 +11431,10 @@ namespace LSImmersiveLife
 
             _lastPreferredPoliceVehiclePlacementFailureSignature = signature;
             if (reportFailure)
-                return Fail(category, message);
+            {
+                _log.Debug(category, message);
+                return false;
+            }
             _log.Debug(category, message);
             return false;
         }
